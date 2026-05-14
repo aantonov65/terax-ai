@@ -17,6 +17,10 @@ import {
 import { Tool } from "@/components/ai-elements/tool";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SLASH_COMMANDS, TERAX_CMD_RE } from "../lib/slashCommands";
+import {
+  hasSuccessfulWwxToolResult,
+  isRecoverableWwxFollowupError,
+} from "../lib/wwxToolResult";
 import { Spinner } from "@/components/ui/spinner";
 import type {
   ChatStatus,
@@ -83,6 +87,9 @@ export function AiChatView({
   const isBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages[messages.length - 1];
   const showSpinner = isBusy && lastMessage?.role === "user";
+  const hasWwxToolSuccess = hasSuccessfulWwxToolResult(messages);
+  const recoverableWwxError =
+    hasWwxToolSuccess && isRecoverableWwxFollowupError(error);
 
   const onApproval = useCallback(
     (id: string, approved: boolean) => addToolApprovalResponse({ id, approved }),
@@ -115,10 +122,22 @@ export function AiChatView({
           </div>
         )}
         {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            <div className="font-medium">Something went wrong.</div>
+          <div
+            className={
+              recoverableWwxError
+                ? "rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                : "rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            }
+          >
+            <div className="font-medium">
+              {recoverableWwxError
+                ? "WWX checkpoint completed."
+                : "Something went wrong."}
+            </div>
             <div className="mt-0.5 leading-relaxed opacity-90">
-              {error.message}
+              {recoverableWwxError
+                ? "The follow-up assistant response failed to load, but the LFS job finished this checkpoint and saved its artifacts."
+                : error.message}
             </div>
             <button
               type="button"

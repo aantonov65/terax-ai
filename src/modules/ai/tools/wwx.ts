@@ -5,7 +5,8 @@ import { getKey } from "../lib/keyring";
 import { native } from "../lib/native";
 import { resolvePath, type ToolContext } from "./context";
 
-const OUTPUT_LIMIT = 8_000;
+const DIAGNOSTIC_LIMIT = 2_000;
+const ARTIFACT_LIMIT = 50;
 
 type WwxBinding = NonNullable<ReturnType<NonNullable<ToolContext["getWwxBinding"]>>>;
 
@@ -55,8 +56,8 @@ function requireBinding(ctx: ToolContext): WwxBinding {
 
 function shortOutput(value: string): string | undefined {
   if (!value) return undefined;
-  return value.length > OUTPUT_LIMIT
-    ? `${value.slice(0, OUTPUT_LIMIT)}\n...[truncated]`
+  return value.length > DIAGNOSTIC_LIMIT
+    ? `${value.slice(0, DIAGNOSTIC_LIMIT)}\n...[truncated]`
     : value;
 }
 
@@ -153,7 +154,7 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
 }
 
 function publicArtifacts(artifacts: NativeArtifact[]) {
-  return artifacts.map((artifact) => ({
+  return artifacts.slice(0, ARTIFACT_LIMIT).map((artifact) => ({
     id: artifact.id,
     path: `app://wwx/artifacts/${artifact.id}`,
     label: artifact.label || artifact.filename,
@@ -163,6 +164,16 @@ function publicArtifacts(artifacts: NativeArtifact[]) {
 }
 
 function jobResult(workflow: string, result: NativeJobResult) {
+  const artifactCount = result.artifacts.length;
+  const stage = result.currentStage ?? result.status;
+  const reason = shortOutput(result.reason ?? "") ?? undefined;
+  const diagnostics = result.ok
+    ? undefined
+    : {
+        stdout: shortOutput(result.stdout),
+        stderr: shortOutput(result.stderr),
+      };
+
   return {
     ok: result.ok,
     workflow,
@@ -173,13 +184,17 @@ function jobResult(workflow: string, result: NativeJobResult) {
     current_stage: result.currentStage ?? undefined,
     awaiting_review: result.awaitingReview,
     retryable: result.retryable,
-    reason: result.reason ?? undefined,
+    reason,
+    summary: result.ok
+      ? `${stage} finished; ${artifactCount} artifact${artifactCount === 1 ? "" : "s"} available.`
+      : `${stage} failed${reason ? `: ${reason}` : "."}`,
     next_actions: result.ok
       ? ["Review public artifacts.", "Run advance_lfs_job to approve and continue."]
       : ["Read the job status and public artifacts for the failed checkpoint."],
     artifacts: publicArtifacts(result.artifacts),
-    stdout: shortOutput(result.stdout),
-    stderr: shortOutput(result.stderr),
+    artifact_count: artifactCount,
+    artifacts_truncated: artifactCount > ARTIFACT_LIMIT,
+    diagnostics,
     exit_code: result.exitCode,
   };
 }

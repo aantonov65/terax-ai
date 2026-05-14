@@ -52,6 +52,17 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   open_preview: { label: "Preview", icon: EyeIcon },
   run_subagent: { label: "Subagent", icon: RobotIcon },
   todo_write: { label: "Todos", icon: CheckListIcon },
+  submit_lfs_job: { label: "Submit LFS", icon: ToolsIcon },
+  advance_lfs_job: { label: "Advance LFS", icon: ToolsIcon },
+  resume_lfs_job: { label: "Resume LFS", icon: ToolsIcon },
+  get_lfs_job: { label: "LFS status", icon: ToolsIcon },
+  list_lfs_artifacts: { label: "LFS artifacts", icon: File01Icon },
+  read_lfs_artifact: { label: "Read artifact", icon: File01Icon },
+  edit_lfs_artifact: { label: "Edit artifact", icon: FileEditIcon },
+  rerun_lfs_checks: { label: "Rerun LFS", icon: CheckListIcon },
+  retry_lfs_failures: { label: "Retry LFS", icon: ToolsIcon },
+  export_lfs: { label: "Export LFS", icon: File01Icon },
+  cancel_lfs_job: { label: "Cancel LFS", icon: ToolsIcon },
 };
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
@@ -104,6 +115,20 @@ function deriveSummary(toolName: string, input: unknown): string | null {
       return str("path") ?? str("url");
     case "run_subagent":
       return str("agent") ?? str("task");
+    case "submit_lfs_job":
+      return str("angles_path") ?? "attached angle";
+    case "advance_lfs_job":
+    case "resume_lfs_job":
+    case "get_lfs_job":
+    case "list_lfs_artifacts":
+    case "rerun_lfs_checks":
+    case "retry_lfs_failures":
+    case "export_lfs":
+    case "cancel_lfs_job":
+      return str("batch_id") ?? "bound batch";
+    case "read_lfs_artifact":
+    case "edit_lfs_artifact":
+      return str("artifact_id") ?? str("batch_id");
     case "todo_write": {
       const items = Array.isArray(i.todos) ? i.todos : null;
       return items
@@ -136,6 +161,12 @@ const HEAVY_CONTENT_TOOLS = new Set([
   "todo_write",
 ]);
 
+const HEAVY_INPUT_TOOLS = new Set([
+  ...HEAVY_CONTENT_TOOLS,
+  "submit_lfs_job",
+  "edit_lfs_artifact",
+]);
+
 const ToolImpl = ({
   className,
   toolName,
@@ -152,11 +183,12 @@ const ToolImpl = ({
   const summary = deriveSummary(toolName, input);
   const isError = state === "output-error";
   const open = defaultOpen ?? isError;
-  const isHeavy = HEAVY_CONTENT_TOOLS.has(toolName);
-  // For heavy tools, only show details on error — never the streamed input
-  // body, which is huge and re-renders per token.
-  const showInputBody = !isHeavy && Boolean(input);
-  const showOutputBody = !isHeavy && output !== undefined;
+  const hidesInput = HEAVY_INPUT_TOOLS.has(toolName);
+  const hidesOutput = HEAVY_CONTENT_TOOLS.has(toolName);
+  // Some tools carry large file bodies in input; the header plus compact output
+  // is enough and avoids re-rendering streamed content on every token.
+  const showInputBody = !hidesInput && Boolean(input);
+  const showOutputBody = !hidesOutput && output !== undefined;
   const hasDetails =
     showInputBody || showOutputBody || Boolean(errorText);
 
@@ -234,7 +266,7 @@ export const Tool = memo(ToolImpl, (a, b) => {
   if (a.errorText !== b.errorText) return false;
   if (a.output !== b.output) return false;
   if (a.className !== b.className) return false;
-  if (HEAVY_CONTENT_TOOLS.has(a.toolName)) {
+  if (HEAVY_INPUT_TOOLS.has(a.toolName)) {
     return deriveSummary(a.toolName, a.input) ===
       deriveSummary(b.toolName, b.input);
   }
@@ -441,6 +473,10 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
     return <BashRunOutput data={o} />;
   }
 
+  if (isWwxTool(toolName)) {
+    return <WwxToolOutput data={o} />;
+  }
+
   if (toolName === "suggest_command") {
     const cmd = typeof o.command === "string" ? o.command : null;
     const explanation =
@@ -584,6 +620,127 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
   }
 
   return null;
+}
+
+function isWwxTool(toolName: string): boolean {
+  return (
+    toolName.endsWith("_lfs_job") ||
+    toolName === "get_lfs_job" ||
+    toolName === "list_lfs_artifacts" ||
+    toolName === "read_lfs_artifact" ||
+    toolName === "edit_lfs_artifact" ||
+    toolName === "rerun_lfs_checks" ||
+    toolName === "retry_lfs_failures" ||
+    toolName === "export_lfs" ||
+    toolName === "cancel_lfs_job"
+  );
+}
+
+function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
+  const ok = data.ok !== false;
+  const summary = typeof data.summary === "string" ? data.summary : null;
+  const status = typeof data.status === "string" ? data.status : null;
+  const stage =
+    typeof data.current_stage === "string" ? data.current_stage : null;
+  const batch = typeof data.batch_id === "string" ? data.batch_id : null;
+  const product = typeof data.product === "string" ? data.product : null;
+  const retryable = data.retryable === true;
+  const awaitingReview = data.awaiting_review === true;
+  const artifactCount =
+    typeof data.artifact_count === "number" ? data.artifact_count : null;
+  const artifacts = Array.isArray(data.artifacts)
+    ? (data.artifacts as Array<Record<string, unknown>>)
+    : [];
+  const reason = typeof data.reason === "string" ? data.reason : null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 font-medium",
+            ok
+              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+              : "bg-destructive/15 text-destructive",
+          )}
+        >
+          {ok ? "ok" : "failed"}
+        </span>
+        {awaitingReview ? (
+          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+            awaiting review
+          </span>
+        ) : null}
+        {status ? <span className="text-muted-foreground">{status}</span> : null}
+        {stage ? (
+          <span className="font-mono text-muted-foreground">· {stage}</span>
+        ) : null}
+        {product || batch ? (
+          <span className="font-mono text-muted-foreground">
+            · {[product, batch].filter(Boolean).join(" / ")}
+          </span>
+        ) : null}
+      </div>
+      {summary || reason ? (
+        <div className="text-[11px] leading-relaxed text-muted-foreground">
+          {summary ?? reason}
+        </div>
+      ) : null}
+      {artifacts.length > 0 ? (
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-muted-foreground">
+            Artifacts
+            {artifactCount != null && artifactCount !== artifacts.length
+              ? ` ${artifacts.length}/${artifactCount}`
+              : artifactCount != null
+                ? ` ${artifactCount}`
+                : ""}
+          </div>
+          <div className="max-h-44 overflow-auto rounded bg-muted/30 font-mono text-[11px]">
+            {artifacts.map((artifact, idx) => {
+              const label =
+                typeof artifact.label === "string"
+                  ? artifact.label
+                  : typeof artifact.path === "string"
+                    ? artifact.path
+                    : `artifact ${idx + 1}`;
+              const kind =
+                typeof artifact.kind === "string" ? artifact.kind : null;
+              const size =
+                typeof artifact.size === "number"
+                  ? formatBytes(artifact.size)
+                  : null;
+              return (
+                <div
+                  key={`${label}-${idx}`}
+                  className="flex gap-2 border-b border-border/30 px-2 py-1 last:border-b-0"
+                >
+                  <span className="min-w-0 flex-1 truncate text-foreground">
+                    {label}
+                  </span>
+                  {kind ? (
+                    <span className="shrink-0 text-muted-foreground">
+                      {kind}
+                    </span>
+                  ) : null}
+                  {size ? (
+                    <span className="shrink-0 text-muted-foreground">
+                      {size}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {!ok && retryable ? (
+        <div className="text-[10px] text-muted-foreground">
+          Retryable after the failed checkpoint is reviewed.
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function BashRunOutput({ data }: { data: Record<string, unknown> }) {

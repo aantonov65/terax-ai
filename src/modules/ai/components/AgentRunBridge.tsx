@@ -5,6 +5,7 @@ import type { AiDiffStatus } from "@/modules/tabs";
 import { native } from "../lib/native";
 import { checkReadable } from "../lib/security";
 import { resolvePath } from "../tools/tools";
+import { hasSuccessfulWwxToolResult } from "../lib/wwxToolResult";
 import {
   flushPersist,
   getOrCreateChat,
@@ -101,13 +102,17 @@ function Bridge({
     }
     return n;
   }, [messages]);
+  const hasWwxToolSuccess = useMemo(
+    () => hasSuccessfulWwxToolResult(messages),
+    [messages],
+  );
 
   useEffect(() => {
     let runStatus: AgentRunStatus;
     if (approvalsPending > 0) runStatus = "awaiting-approval";
     else if (status === "submitted") runStatus = "thinking";
     else if (status === "streaming") runStatus = "streaming";
-    else if (status === "error") runStatus = "error";
+    else if (status === "error" && !hasWwxToolSuccess) runStatus = "error";
     else runStatus = "idle";
     patch({
       status: runStatus,
@@ -117,7 +122,7 @@ function Bridge({
         : {}),
       ...(runStatus === "idle" ? { error: null } : {}),
     });
-  }, [status, approvalsPending, patch]);
+  }, [status, approvalsPending, hasWwxToolSuccess, patch]);
 
   useEffect(() => {
     if (approvalsPending > 0) openMini();
