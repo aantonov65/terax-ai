@@ -20,10 +20,15 @@ export const usePreferencesStore = create<State>((set) => ({
   init: async () => {
     if (initialized) return;
     initialized = true;
-    const prefs = await loadPreferences();
+    const prefs = await loadPreferences().catch((error) => {
+      console.warn("settings preferences hydration failed", error);
+      return DEFAULT_PREFERENCES;
+    });
     set({ ...prefs, hydrated: true });
     void onPreferencesChange((key, value) => {
       set({ [key]: value } as Partial<State>);
+    }).catch((error) => {
+      console.warn("settings preferences subscription failed", error);
     });
   },
 }));

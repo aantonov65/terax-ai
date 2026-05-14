@@ -22,6 +22,42 @@ export function leafIds(n: PaneNode): PaneId[] {
   return n.children.flatMap(leafIds);
 }
 
+function leafNodes(n: PaneNode): Extract<PaneNode, { kind: "leaf" }>[] {
+  if (isLeaf(n)) return [n];
+  return n.children.flatMap(leafNodes);
+}
+
+function splitIds(n: PaneNode): PaneId[] {
+  if (isLeaf(n)) return [];
+  return [n.id, ...n.children.flatMap(splitIds)];
+}
+
+export function normalizePaneTree(n: PaneNode): PaneNode {
+  const leaves = leafNodes(n);
+  if (leaves.length !== 3) return n;
+
+  const ids = splitIds(n);
+  const rootId = n.kind === "split" ? n.id : ids[0] ?? leaves[0].id;
+  const nestedId =
+    ids.find((id) => id !== rootId) ??
+    -Number(`${Math.abs(leaves[1].id)}${Math.abs(leaves[2].id)}`);
+
+  return {
+    kind: "split",
+    id: rootId,
+    dir: "row",
+    children: [
+      leaves[0],
+      {
+        kind: "split",
+        id: nestedId,
+        dir: "col",
+        children: [leaves[1], leaves[2]],
+      },
+    ],
+  };
+}
+
 export function findLeafCwd(n: PaneNode, id: PaneId): string | undefined {
   if (isLeaf(n)) return n.id === id ? n.cwd : undefined;
   for (const c of n.children) {

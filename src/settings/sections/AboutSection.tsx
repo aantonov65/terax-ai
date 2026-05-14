@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { useUpdater } from "@/modules/updater";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getName, getVersion } from "@tauri-apps/api/app";
@@ -9,7 +8,7 @@ import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
 const REPO_URL = "https://github.com/crynta/terax-ai";
-const WEBSITE = "https://terax.app";
+const ARCHITECTURE_DOC = "blackbox-architecture.md";
 
 const PLATFORM_LABEL: Record<string, string> = {
   macos: "macOS",
@@ -22,31 +21,8 @@ const PLATFORM_LABEL: Record<string, string> = {
 
 export function AboutSection() {
   const [version, setVersion] = useState("");
-  const [name, setName] = useState("Terax");
+  const [name, setName] = useState("WWX");
   const [build, setBuild] = useState("");
-  const { status, check, install } = useUpdater({ autoCheck: false });
-  const checking = status.kind === "checking";
-  const downloading = status.kind === "downloading";
-  const available = status.kind === "available";
-  const ready = status.kind === "ready";
-  const checkLabel =
-    status.kind === "uptodate"
-      ? "You're up to date"
-      : status.kind === "error"
-        ? "Check failed — retry"
-        : checking
-          ? "Checking…"
-          : downloading
-            ? "Downloading…"
-            : ready
-              ? "Restart to install"
-              : available
-                ? `Install v${status.update.version}`
-                : "Check for updates";
-  const onUpdateClick = () => {
-    if (available) void install();
-    else void check({ manual: true });
-  };
 
   useEffect(() => {
     void getVersion().then(setVersion);
@@ -72,7 +48,7 @@ export function AboutSection() {
             {name}
           </span>
           <span className="text-[11px] text-muted-foreground">
-            Open-source AI-native terminal emulator
+            Private creative terminal shell for blackbox WW-2 workflows
           </span>
           <span className="mt-1 font-mono text-[11px] text-muted-foreground">
             v{version || "—"}
@@ -87,12 +63,12 @@ export function AboutSection() {
         </dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
-        <dd className="font-mono text-[11.5px]">app.crynta.terax</dd>
+        <dd className="font-mono text-[11.5px]">com.boris.wwx</dd>
 
         <dt className="text-muted-foreground">License</dt>
-        <dd>Apache 2.0</dd>
+        <dd>Apache 2.0 base; private WWX adaptation</dd>
 
-        <dt className="text-muted-foreground">Source code</dt>
+        <dt className="text-muted-foreground">Base project</dt>
         <dd>
           <button
             type="button"
@@ -103,28 +79,12 @@ export function AboutSection() {
             crynta/terax-ai
           </button>
         </dd>
-        <dt className="text-muted-foreground">Website</dt>
-        <dd>
-          <button
-            type="button"
-            onClick={() => void openUrl(WEBSITE)}
-            className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
-          >
-            <HugeiconsIcon icon={Globe02Icon} size={12} strokeWidth={1.75} />
-            terax.app
-          </button>
-        </dd>
+        <dt className="text-muted-foreground">Architecture</dt>
+        <dd className="font-mono text-[11.5px]">{ARCHITECTURE_DOC}</dd>
       </dl>
 
       <div className="flex flex-col gap-1.5">
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={onUpdateClick}
-            disabled={checking || downloading || ready}
-          >
-            {checkLabel}
-          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -132,30 +92,21 @@ export function AboutSection() {
             className="gap-1.5"
           >
             <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
-            View on GitHub
+            Terax source
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => void openUrl(`${REPO_URL}/issues/new`)}
+            onClick={() => void openUrl("https://terax.app")}
           >
-            Report an issue
+            <HugeiconsIcon icon={Globe02Icon} size={12} strokeWidth={1.75} />
+            Terax website
           </Button>
         </div>
-        {status.kind === "error" && (
-          <p className="font-mono text-[10.5px] break-all text-destructive/80">
-            {status.message}
-          </p>
-        )}
-        {downloading && status.contentLength ? (
-          <p className="text-[11px] text-muted-foreground">
-            {Math.min(
-              100,
-              Math.round((status.downloaded / status.contentLength) * 100),
-            )}
-            %
-          </p>
-        ) : null}
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Auto-update endpoints are intentionally not configured for this MVP
+          shell. WW-2 engine updates should ship through the private backend.
+        </p>
       </div>
     </div>
   );

@@ -65,12 +65,17 @@ export function SettingsApp() {
         setActive(detail as SettingsTab);
       }
     };
-    const unlistenPromise = getCurrentWebviewWindow().listen<string>(
-      "terax:settings-tab",
-      (e) => apply(e.payload),
-    );
+    let unlistenPromise: Promise<() => void> | null = null;
+    try {
+      unlistenPromise = getCurrentWebviewWindow().listen<string>(
+        "terax:settings-tab",
+        (e) => apply(e.payload),
+      );
+    } catch (error) {
+      console.warn("settings tab event listener unavailable:", error);
+    }
     return () => {
-      void unlistenPromise.then((un) => un());
+      void unlistenPromise?.then((un) => un());
     };
   }, []);
 

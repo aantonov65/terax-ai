@@ -1,156 +1,133 @@
+import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import {
-  AgentRunBridge,
-  AiInputBar,
-  AiMiniWindow,
+  AgentTerminal,
   getAllKeys,
   hasAnyKey,
-  SelectionAskAi,
   useChatStore,
 } from "@/modules/ai";
-import { AiInputBarConnect } from "@/modules/ai/components/AiInputBar";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
-import { redactSensitive } from "@/modules/ai/lib/redact";
+import { native } from "@/modules/ai/lib/native";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
-import {
-  AiDiffStack,
-  EditorStack,
-  NewEditorDialog,
-  type EditorPaneHandle,
-} from "@/modules/editor";
-import { FileExplorer } from "@/modules/explorer";
-import {
-  Header,
-  type SearchInlineHandle,
-  type SearchTarget,
-} from "@/modules/header";
-import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
-import {
-  ShortcutsDialog,
-  useGlobalShortcuts,
-  type ShortcutHandlers,
-} from "@/modules/shortcuts";
-import { StatusBar } from "@/modules/statusbar";
-import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
-import {
-  disposeSession,
-  hasLeaf,
-  leafIds,
-  respawnSession,
-  TerminalStack,
-  type TerminalPaneHandle,
-} from "@/modules/terminal";
 import { ThemeProvider } from "@/modules/theme";
-import { UpdaterDialog } from "@/modules/updater";
+import {
+  CreateBatchDialog,
+  CreateProductDialog,
+  type ProductDraft,
+} from "@/modules/wwx/WwxCreateDialogs";
+import { createWwxBatch, createWwxProduct } from "@/modules/wwx/mutations";
+import {
+  useWwxIndex,
+  WwxInspector,
+  WwxSidebar,
+  type AgentWindow,
+  type BatchSummary,
+  type ProductSummary,
+} from "@/modules/wwx";
+import {
+  Cancel01Icon,
+  Copy01Icon,
+  LayoutLeftIcon,
+  Settings01Icon,
+  SidebarLeftIcon,
+  SquareIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { homeDir } from "@tauri-apps/api/path";
-import type { SearchAddon } from "@xterm/addon-search";
-import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 
+const WWX_WORKSPACE_STORAGE_KEY = "wwx.workspaceRoot";
+const DEFAULT_WWX_WORKSPACE_ROOT = "/Users/aantonov1/boris/ww-2";
+const CREATIVE_STRATEGIST_ID = "builtin:creative-strategist";
 
 export default function App() {
-  const {
-    tabs,
-    activeId,
-    setActiveId,
-    newTab,
-    newPrivateTab,
-    openFileTab,
-    pinTab,
-    newPreviewTab,
-    openAiDiffTab,
-    setAiDiffStatus,
-    closeTab,
-    updateTab,
-    selectByIndex,
-    setLeafCwd,
-    focusPane,
-    focusNextPaneInTab,
-    splitActivePane,
-    closeActivePane,
-    closePaneByLeaf,
-  } = useTabs();
-
-  // Mirror `tabs` into a ref so callbacks scheduled with `setTimeout`
-  // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
-  const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
-
-  const activeTerminalTab = useMemo(() => {
-    const t = tabs.find((x) => x.id === activeId);
-    return t && t.kind === "terminal" ? t : null;
-  }, [tabs, activeId]);
-  const activeLeafId = activeTerminalTab?.activeLeafId ?? null;
-
-  const searchAddons = useRef<Map<number, SearchAddon>>(new Map());
-  const [activeSearchAddon, setActiveSearchAddon] =
-    useState<SearchAddon | null>(null);
-  const searchInlineRef = useRef<SearchInlineHandle | null>(null);
-  const terminalRefs = useRef<Map<number, TerminalPaneHandle>>(new Map());
-  const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
-  const previewRefs = useRef<Map<number, PreviewPaneHandle>>(new Map());
-  const [activeEditorHandle, setActiveEditorHandle] =
-    useState<EditorPaneHandle | null>(null);
-  const sidebarRef = useRef<PanelImperativeHandle | null>(null);
-  const toggleSidebar = useCallback(() => {
-    const p = sidebarRef.current;
-    if (!p) return;
-    if (p.getSize().asPercentage <= 0) p.expand();
-    else p.collapse();
-  }, []);
-
   const [home, setHome] = useState<string | null>(null);
-  const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
-  useEffect(() => {
-    // Forward-slash form so explorerRoot stays equal across home → OSC 7.
-    homeDir()
-      .then((p) => setHome(p.replace(/\\/g, "/")))
-      .catch(() => setHome(null));
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
+    if (typeof window === "undefined") return DEFAULT_WWX_WORKSPACE_ROOT;
+    return (
+      window.localStorage.getItem(WWX_WORKSPACE_STORAGE_KEY) ||
+      DEFAULT_WWX_WORKSPACE_ROOT
+    );
+  });
+  const effectiveWorkspaceRoot = workspaceRoot || home || DEFAULT_WWX_WORKSPACE_ROOT;
+  const wwxIndex = useWwxIndex(effectiveWorkspaceRoot);
+
+  const sidebarRef = useRef<PanelImperativeHandle | null>(null);
+  const inspectorRef = useRef<PanelImperativeHandle | null>(null);
+  const togglePanel = useCallback((ref: RefObject<PanelImperativeHandle | null>) => {
+    const panel = ref.current;
+    if (!panel) return;
+    if (panel.getSize().asPercentage <= 0) panel.expand();
+    else panel.collapse();
   }, []);
 
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [newEditorOpen, setNewEditorOpen] = useState(false);
-  const miniOpen = useChatStore((s) => s.mini.open);
-  const openMini = useChatStore((s) => s.openMini);
-  const focusInput = useChatStore((s) => s.focusInput);
-  const openPanel = useChatStore((s) => s.openPanel);
-  const panelOpen = useChatStore((s) => s.panelOpen);
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null);
+  const [agentWindows, setAgentWindows] = useState<AgentWindow[]>([]);
+  const [createProductOpen, setCreateProductOpen] = useState(false);
+  const [batchDialogProduct, setBatchDialogProduct] =
+    useState<ProductSummary | null>(null);
+  const [batchDialogTitle, setBatchDialogTitle] = useState("Create Batch");
+  const firstBatchProductRef = useRef<ProductSummary | null>(null);
+
   const apiKeys = useChatStore((s) => s.apiKeys);
   const setApiKeys = useChatStore((s) => s.setApiKeys);
   const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
   const setLive = useChatStore((s) => s.setLive);
-  const respondToApproval = useChatStore((s) => s.respondToApproval);
+  const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   const hasComposer = hasAnyKey(apiKeys);
 
-  const [keysLoaded, setKeysLoaded] = useState(false);
+  useEffect(() => {
+    homeDir()
+      .then((path) => setHome(path.replace(/\\/g, "/")))
+      .catch(() => setHome(null));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const assertWwRoot = async () => {
+      const root = (workspaceRoot || DEFAULT_WWX_WORKSPACE_ROOT).replace(/\/+$/, "");
+      try {
+        await native.readFile(`${root}/tools/ww`);
+        return;
+      } catch {
+        if (root === DEFAULT_WWX_WORKSPACE_ROOT) return;
+      }
+
+      try {
+        await native.readFile(`${DEFAULT_WWX_WORKSPACE_ROOT}/tools/ww`);
+        if (alive) setWorkspaceRoot(DEFAULT_WWX_WORKSPACE_ROOT);
+      } catch {
+        // Keep the user's configured root if the bundled default is not available.
+      }
+    };
+    void assertWwRoot();
+    return () => {
+      alive = false;
+    };
+  }, [workspaceRoot]);
+
+  useEffect(() => {
+    if (!effectiveWorkspaceRoot || typeof window === "undefined") return;
+    window.localStorage.setItem(WWX_WORKSPACE_STORAGE_KEY, effectiveWorkspaceRoot);
+  }, [effectiveWorkspaceRoot]);
+
   useEffect(() => {
     let alive = true;
     const reload = () => {
       void getAllKeys().then((keys) => {
-        if (!alive) return;
-        setApiKeys(keys);
-        setKeysLoaded(true);
+        if (alive) setApiKeys(keys);
       });
     };
     reload();
@@ -161,8 +138,6 @@ export default function App() {
     };
   }, [setApiKeys]);
 
-  // Hydrate the cross-window preference store and mirror the default model
-  // into chatStore so the dropdown reflects what the user picked in Settings.
   const initPrefs = usePreferencesStore((s) => s.init);
   const prefDefaultModel = usePreferencesStore((s) => s.defaultModelId);
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
@@ -170,738 +145,516 @@ export default function App() {
     void initPrefs();
   }, [initPrefs]);
   useEffect(() => {
-    if (!prefsHydrated) return;
-    setSelectedModelId(prefDefaultModel);
+    if (prefsHydrated) setSelectedModelId(prefDefaultModel);
   }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
 
-  const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
     void hydrateSessions();
     void useAgentsStore.getState().hydrate();
     void useSnippetsStore.getState().hydrate();
+    useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
   }, [hydrateSessions]);
 
-  const activeTab = tabs.find((t) => t.id === activeId);
-  const isTerminalTab = activeTab?.kind === "terminal";
-  const isEditorTab = activeTab?.kind === "editor";
-  const isPreviewTab = activeTab?.kind === "preview";
-  const isAiDiffTab = activeTab?.kind === "ai-diff";
-
-  // When an AI diff is approved (write_file applied to disk), reload any
-  // open editor tabs for that path so the user sees the new content. We
-  // track which approvalIds we've already handled to fire the reload only
-  // once per applied diff.
-  const appliedDiffsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    for (const t of tabs) {
-      if (t.kind !== "ai-diff") continue;
-      if (t.status !== "approved") continue;
-      if (appliedDiffsRef.current.has(t.approvalId)) continue;
-      appliedDiffsRef.current.add(t.approvalId);
-      for (const e of tabs) {
-        if (e.kind !== "editor") continue;
-        if (e.path !== t.path) continue;
-        editorRefs.current.get(e.id)?.reload();
-      }
+    if (
+      selectedBatchId &&
+      wwxIndex.batches.some((batch) => batch.id === selectedBatchId)
+    ) {
+      return;
     }
-  }, [tabs]);
+    setSelectedBatchId(wwxIndex.batches[0]?.id ?? null);
+  }, [selectedBatchId, wwxIndex.batches]);
 
-  const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
-    activeTab,
-    tabs,
-    home,
+  const activeWindow = agentWindows.find((window) => window.active) ?? null;
+  const selectedBatch = useMemo(
+    () => wwxIndex.batches.find((batch) => batch.id === selectedBatchId) ?? null,
+    [selectedBatchId, wwxIndex.batches],
   );
 
-  useEffect(() => {
-    setActiveSearchAddon(
-      activeLeafId !== null ? (searchAddons.current.get(activeLeafId) ?? null) : null,
-    );
-    setActiveEditorHandle(editorRefs.current.get(activeId) ?? null);
-  }, [activeId, activeLeafId]);
-
-  const handleSearchReady = useCallback(
-    (leafId: number, addon: SearchAddon) => {
-      searchAddons.current.set(leafId, addon);
-      if (leafId === activeLeafId) setActiveSearchAddon(addon);
-    },
-    [activeLeafId],
+  const productForBatch = useCallback(
+    (batch: BatchSummary): ProductSummary | null =>
+      wwxIndex.products.find((product) =>
+        product.batches.some((item) => item.id === batch.id),
+      ) ?? null,
+    [wwxIndex.products],
   );
 
-  const disposeTab = useCallback(
-    (id: number) => {
-      // Terminal-leaf-keyed maps (terminalRefs/searchAddons) are pruned by
-      // the effect below as the pane tree changes; only the tab-id-keyed
-      // handles need explicit cleanup here.
-      editorRefs.current.delete(id);
-      previewRefs.current.delete(id);
-      closeTab(id);
-    },
-    [closeTab],
-  );
-
-  // Drives session disposal off the pane tree, not React lifecycles —
-  // split/unsplit re-mount components but the leaf is still live.
-  const liveLeavesRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    const live = new Set<number>();
-    for (const t of tabs) {
-      if (t.kind === "terminal") {
-        for (const id of leafIds(t.paneTree)) live.add(id);
-      }
-    }
-    for (const id of liveLeavesRef.current) {
-      if (!live.has(id)) disposeSession(id);
-    }
-    liveLeavesRef.current = live;
-    for (const k of [...terminalRefs.current.keys()])
-      if (!live.has(k)) terminalRefs.current.delete(k);
-    for (const k of [...searchAddons.current.keys()])
-      if (!live.has(k)) searchAddons.current.delete(k);
-  }, [tabs]);
-
-  const handleClose = useCallback(
-    (id: number) => {
-      const t = tabs.find((x) => x.id === id);
-      if (t?.kind === "editor" && t.dirty) {
-        setPendingCloseTab(id);
-        return;
-      }
-      disposeTab(id);
-    },
-    [tabs, disposeTab],
-  );
-
-  const confirmClose = useCallback(() => {
-    if (pendingCloseTab !== null) {
-      disposeTab(pendingCloseTab);
-      setPendingCloseTab(null);
-    }
-  }, [pendingCloseTab, disposeTab]);
-
-  const cancelClose = useCallback(() => {
-    setPendingCloseTab(null);
+  const selectBatch = useCallback((batchId: string) => {
+    setSelectedBatchId(batchId);
+    setSelectedArtifactPath(null);
   }, []);
 
-  const cycleTab = useCallback(
-    (delta: 1 | -1) => {
-      if (tabs.length < 2) return;
-      const idx = tabs.findIndex((t) => t.id === activeId);
-      const nextIdx = (idx + delta + tabs.length) % tabs.length;
-      setActiveId(tabs[nextIdx].id);
-    },
-    [tabs, activeId, setActiveId],
-  );
-
-  const captureActiveSelection = useCallback((): string | null => {
-    const t = tabs.find((x) => x.id === activeId);
-    if (!t) return null;
-    if (t.kind === "terminal") {
-      const lid = t.activeLeafId;
-      return terminalRefs.current.get(lid)?.getSelection() ?? null;
+  const focusAgentWindow = useCallback((windowId: string) => {
+    setAgentWindows((current) =>
+      current.map((window) => ({ ...window, active: window.id === windowId })),
+    );
+    const window = agentWindows.find((item) => item.id === windowId);
+    if (window) {
+      setSelectedBatchId(window.batchId);
+      useChatStore.getState().switchSession(window.sessionId);
+      useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
     }
-    if (t.kind === "editor") {
-      return editorRefs.current.get(activeId)?.getSelection() ?? null;
-    }
-    return null;
-  }, [tabs, activeId]);
+  }, [agentWindows]);
 
-  const togglePanelAndFocus = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    if (panelOpen) {
-      useChatStore.getState().closePanel();
-    } else {
-      openPanel();
-      focusInput(null);
-    }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
-
-  const attachSelection = useChatStore((s) => s.attachSelection);
-
-  const handleAttachFileToAgent = useCallback(
-    (path: string) => {
-      if (!hasComposer) {
-        void openSettingsWindow("models");
-        return;
+  const ensureAgentWindowForBatch = useCallback(
+    (batch: BatchSummary, seedPrompt?: string) => {
+      const existing = agentWindows.find((window) => window.batchId === batch.id);
+      if (existing) {
+        setAgentWindows((current) =>
+          current.map((window) => ({
+            ...window,
+            active: window.id === existing.id,
+            seedPrompt: window.id === existing.id ? seedPrompt ?? window.seedPrompt : window.seedPrompt,
+          })),
+        );
+        setSelectedBatchId(batch.id);
+        useChatStore.getState().switchSession(existing.sessionId);
+        useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
+        return existing.id;
       }
-      // Dispatch a window event the composer listens for. Same pattern as
-      // selections — keeps file-explorer decoupled from the AI module.
-      window.dispatchEvent(
-        new CustomEvent<string>("terax:ai-attach-file", { detail: path }),
-      );
-      openPanel();
-      focusInput(null);
+
+      const product = productForBatch(batch);
+      const sessionId = useChatStore.getState().newSession();
+      const next: AgentWindow = {
+        id: `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        productId: product?.id ?? batch.productCode ?? "legacy",
+        productCode: product?.code ?? batch.productCode,
+        batchId: batch.id,
+        batchPath: batch.path,
+        sessionId,
+        active: true,
+        createdAt: Date.now(),
+        seedPrompt,
+      };
+      setAgentWindows((current) => [
+        ...current.map((window) => ({ ...window, active: false })),
+        next,
+      ]);
+      setSelectedBatchId(batch.id);
+      useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
+      return next.id;
     },
-    [hasComposer, openPanel, focusInput],
+    [agentWindows, productForBatch],
   );
 
-  const askFromSelection = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    const selection = captureActiveSelection();
-    if (!selection || !selection.trim()) {
-      focusInput(null);
-      return;
-    }
-    const source: "terminal" | "editor" =
-      activeTab?.kind === "editor" ? "editor" : "terminal";
-    attachSelection(selection, source);
-  }, [
-    hasComposer,
-    captureActiveSelection,
-    focusInput,
-    attachSelection,
-    activeTab,
-  ]);
+  const closeAgentWindow = useCallback((windowId: string) => {
+    setAgentWindows((current) => {
+      const filtered = current.filter((window) => window.id !== windowId);
+      if (filtered.some((window) => window.active) || filtered.length === 0) {
+        return filtered;
+      }
+      const last = filtered[filtered.length - 1];
+      setSelectedBatchId(last.batchId);
+      useChatStore.getState().switchSession(last.sessionId);
+      return filtered.map((window) => ({ ...window, active: window.id === last.id }));
+    });
+  }, []);
 
-  const [askPopup, setAskPopup] = useState<{ x: number; y: number } | null>(
-    null,
+  const continueBatchInAgent = useCallback(
+    (batch: BatchSummary) => {
+      ensureAgentWindowForBatch(
+        batch,
+        `Continue this workflow for ${batch.id} from the current checkpoint.`,
+      );
+    },
+    [ensureAgentWindowForBatch],
   );
+
+  const handleCreateProduct = useCallback(
+    async (draft: ProductDraft) => {
+      const created = await createWwxProduct({
+        workspaceRoot: effectiveWorkspaceRoot,
+        productFolder: draft.productFolder,
+        config: draft.config,
+      });
+      const product: ProductSummary = {
+        id: created.productId,
+        code: created.productCode,
+        name: String(draft.config.product_name ?? created.productFolder),
+        path: created.productPath,
+        configPath: `${created.productPath}/config.json`,
+        batchCount: 0,
+        statusCounts: {
+          draft: 0,
+          ready: 0,
+          running: 0,
+          review: 0,
+          complete: 0,
+          blocked: 0,
+          unknown: 0,
+        },
+        batches: [],
+      };
+      firstBatchProductRef.current = product;
+      setBatchDialogProduct(product);
+      setBatchDialogTitle("Create Your First Batch");
+    },
+    [effectiveWorkspaceRoot],
+  );
+
+  const handleCreateBatch = useCallback(
+    async (batchName: string) => {
+      const product = batchDialogProduct;
+      if (!product) return;
+      const created = await createWwxBatch({
+        workspaceRoot: effectiveWorkspaceRoot,
+        productFolder: product.id,
+        batchName,
+      });
+      const batch: BatchSummary = {
+        id: created.batchId,
+        name: batchName,
+        path: created.batchPath,
+        product: product.name,
+        productCode: product.code,
+        productPath: product.path,
+        status: "draft",
+        batchMetaPath: created.metaPath,
+        nextAction: "Start guided workflow for this batch.",
+        artifacts: [
+          {
+            id: created.metaPath,
+            batchId: created.batchId,
+            label: "Batch Metadata",
+            path: created.metaPath,
+            kind: "json",
+          },
+        ],
+        runs: [],
+        alerts: [],
+      };
+      setSelectedBatchId(created.batchId);
+      ensureAgentWindowForBatch(
+        batch,
+        `Start the guided workflow for ${created.batchId}. This agent window is tied to that batch.`,
+      );
+      firstBatchProductRef.current = null;
+    },
+    [batchDialogProduct, effectiveWorkspaceRoot, ensureAgentWindowForBatch],
+  );
+
+  const openBatchDialog = useCallback((product: ProductSummary) => {
+    setBatchDialogProduct(product);
+    setBatchDialogTitle("Create Batch");
+  }, []);
 
   useEffect(() => {
-    const isInsideAi = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      if (!el) return false;
-      return !!(
-        el.closest("[data-selection-ask-ai]") ||
-        el.closest("[data-ai-input-bar]") ||
-        el.closest("[data-ai-mini-window]")
-      );
-    };
-
-    const onDown = (e: MouseEvent) => {
-      if (isInsideAi(e.target)) return;
-      setAskPopup(null);
-    };
-    const onUp = (e: MouseEvent) => {
-      if (isInsideAi(e.target)) return;
-      // Defer one tick so xterm/CodeMirror finalize the selection.
-      setTimeout(() => {
-        const text = captureActiveSelection();
-        if (text && text.trim().length > 0) {
-          setAskPopup({ x: e.clientX, y: e.clientY });
-        } else {
-          setAskPopup(null);
-        }
-      }, 0);
-    };
-
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [captureActiveSelection]);
-
-  const onAskFromSelection = useCallback(() => {
-    askFromSelection();
-    setAskPopup(null);
-  }, [askFromSelection]);
-
-  const openNewTab = useCallback(() => {
-    newTab(inheritedCwdForNewTab());
-  }, [newTab, inheritedCwdForNewTab]);
-
-  const openNewPrivateTab = useCallback(() => {
-    newPrivateTab(inheritedCwdForNewTab());
-  }, [newPrivateTab, inheritedCwdForNewTab]);
-
-  const sendCd = useCallback(
-    (path: string) => {
-      if (activeLeafId === null) return;
-      const term = terminalRefs.current.get(activeLeafId);
-      if (!term) return;
-      const quoted = path.includes(" ")
-        ? `'${path.replace(/'/g, `'\\''`)}'`
-        : path;
-      term.write(`cd ${quoted}\r`);
-      term.focus();
-    },
-    [activeLeafId],
-  );
-
-  const cdInNewTab = useCallback(
-    (path: string) => {
-      const tabId = newTab(path);
-      setTimeout(() => {
-        const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
-        const t = terminalRefs.current.get(tab.activeLeafId);
-        if (!t) return;
-        const quoted = path.includes(" ")
-          ? `'${path.replace(/'/g, `'\\''`)}'`
-          : path;
-        t.write(`cd ${quoted}\r`);
-        t.focus();
-      }, 80);
-    },
-    [newTab],
-  );
-
-  const handleOpenFile = useCallback(
-    (path: string, pin?: boolean) => {
-      // Explorer defaults to preview (pin=false); explicit actions like
-      // context-menu "Open" pass pin=true for a persistent tab.
-      openFileTab(path, pin ?? false);
-    },
-    [openFileTab],
-  );
-
-  const handlePathRenamed = useCallback(
-    (from: string, to: string) => {
-      for (const t of tabs) {
-        if (t.kind !== "editor") continue;
-        if (t.path === from) {
-          const i = to.lastIndexOf("/");
-          updateTab(t.id, { path: to, title: i === -1 ? to : to.slice(i + 1) });
-        } else if (t.path.startsWith(`${from}/`)) {
-          const suffix = t.path.slice(from.length);
-          const newPath = `${to}${suffix}`;
-          const i = newPath.lastIndexOf("/");
-          updateTab(t.id, {
-            path: newPath,
-            title: i === -1 ? newPath : newPath.slice(i + 1),
-          });
-        }
-      }
-    },
-    [tabs, updateTab],
-  );
-
-  const handlePathDeleted = useCallback(
-    (path: string) => {
-      for (const t of tabs) {
-        if (t.kind !== "editor") continue;
-        if (t.path === path || t.path.startsWith(`${path}/`)) {
-          disposeTab(t.id);
-        }
-      }
-    },
-    [tabs, disposeTab],
-  );
-
-  const activeFilePath = activeTab?.kind === "editor" ? activeTab.path : null;
-
-  const openPreviewTab = useCallback(
-    (url: string) => {
-      const id = newPreviewTab(url);
-      // Focus the address bar if the URL is empty so the user can type.
-      if (!url) {
-        setTimeout(() => previewRefs.current.get(id)?.focusAddressBar(), 0);
-      }
-      return id;
-    },
-    [newPreviewTab],
-  );
-
-  const splitActivePaneInActiveTab = useCallback(
-    (dir: "row" | "col") => {
-      const t = tabsRef.current.find((x) => x.id === activeId);
-      if (!t || t.kind !== "terminal") return;
-      splitActivePane(activeId, dir);
-    },
-    [activeId, splitActivePane],
-  );
-
-  const handleCloseTabOrPane = useCallback(() => {
-    const t = tabsRef.current.find((x) => x.id === activeId);
-    if (t?.kind === "terminal" && leafIds(t.paneTree).length > 1) {
-      closeActivePane(activeId);
-      return;
-    }
-    handleClose(activeId);
-  }, [activeId, closeActivePane, handleClose]);
-
-  const shortcutHandlers = useMemo<ShortcutHandlers>(
-    () => ({
-      "tab.new": openNewTab,
-      "tab.newPrivate": openNewPrivateTab,
-      "tab.newPreview": () => openPreviewTab(""),
-      "tab.newEditor": () => setNewEditorOpen(true),
-      "tab.close": handleCloseTabOrPane,
-      "tab.next": () => cycleTab(1),
-      "tab.prev": () => cycleTab(-1),
-      "tab.selectByIndex": (e) => selectByIndex(parseInt(e.key, 10) - 1),
-      "pane.splitRight": () => splitActivePaneInActiveTab("row"),
-      "pane.splitDown": () => splitActivePaneInActiveTab("col"),
-      "pane.focusNext": () => focusNextPaneInTab(activeId, 1),
-      "pane.focusPrev": () => focusNextPaneInTab(activeId, -1),
-      "search.focus": () => searchInlineRef.current?.focus(),
-      "ai.toggle": togglePanelAndFocus,
-      "ai.askSelection": askFromSelection,
-      "shortcuts.open": () => setShortcutsOpen((v) => !v),
-      "settings.open": () => void openSettingsWindow(),
-      "sidebar.toggle": toggleSidebar,
-    }),
-    [
-      activeId,
-      cycleTab,
-      handleCloseTabOrPane,
-      openNewTab,
-      openNewPrivateTab,
-      openPreviewTab,
-      selectByIndex,
-      splitActivePaneInActiveTab,
-      focusNextPaneInTab,
-      togglePanelAndFocus,
-      askFromSelection,
-      toggleSidebar,
-    ],
-  );
-
-  useGlobalShortcuts(shortcutHandlers);
-
-  const registerTerminalHandle = useCallback(
-    (leafId: number, h: TerminalPaneHandle | null) => {
-      if (h) terminalRefs.current.set(leafId, h);
-      else terminalRefs.current.delete(leafId);
-    },
-    [],
-  );
-
-  const registerEditorHandle = useCallback(
-    (id: number, h: EditorPaneHandle | null) => {
-      if (h) editorRefs.current.set(id, h);
-      else editorRefs.current.delete(id);
-      if (id === activeId) setActiveEditorHandle(h);
-    },
-    [activeId],
-  );
-
-  const registerPreviewHandle = useCallback(
-    (id: number, h: PreviewPaneHandle | null) => {
-      if (h) previewRefs.current.set(id, h);
-      else previewRefs.current.delete(id);
-    },
-    [],
-  );
-
-  const handlePreviewUrl = useCallback(
-    (id: number, url: string) => updateTab(id, { url }),
-    [updateTab],
-  );
-
-  const handleTerminalCwd = useCallback(
-    (leafId: number, cwd: string) => setLeafCwd(leafId, cwd),
-    [setLeafCwd],
-  );
-
-  const handleFocusLeaf = useCallback(
-    (tabId: number, leafId: number) => focusPane(tabId, leafId),
-    [focusPane],
-  );
-
-  const handleLeafExit = useCallback(
-    (leafId: number, _code: number) => {
-      const all = tabsRef.current;
-      const tab = all.find(
-        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
-      );
-      if (!tab || tab.kind !== "terminal") return;
-      const isLast =
-        leafIds(tab.paneTree).length === 1 &&
-        all.filter((t) => t.kind === "terminal").length === 1;
-      if (isLast) {
-        void respawnSession(leafId, tab.cwd);
-      } else {
-        closePaneByLeaf(leafId);
-      }
-    },
-    [closePaneByLeaf],
-  );
-
-  const handleEditorDirty = useCallback(
-    (id: number, dirty: boolean) => updateTab(id, { dirty }),
-    [updateTab],
-  );
-
-  const searchTarget = useMemo<SearchTarget>(() => {
-    if (isTerminalTab && activeSearchAddon)
-      return {
-        kind: "terminal",
-        addon: activeSearchAddon,
-        focus: () => terminalRefs.current.get(activeId)?.focus(),
-      };
-    if (isEditorTab && activeEditorHandle)
-      return {
-        kind: "editor",
-        handle: activeEditorHandle,
-        focus: () => activeEditorHandle.focus(),
-      };
-    return null;
-  }, [isTerminalTab, isEditorTab, activeId, activeSearchAddon, activeEditorHandle]);
-
-  const activeCwd =
-    activeTab?.kind === "terminal" ? (activeTab.cwd ?? null) : null;
-
-  useEffect(() => {
-    const findCwd = () => {
-      const active = tabs.find((x) => x.id === activeId);
-      if (active?.kind === "terminal" && active.cwd) return active.cwd;
-      for (let i = tabs.length - 1; i >= 0; i--) {
-        const t = tabs[i];
-        if (t.kind === "terminal" && t.cwd) return t.cwd;
-      }
-      return explorerRoot ?? home ?? null;
-    };
-
     setLive({
-      getCwd: findCwd,
-      getTerminalContext: () => {
-        const t = tabs.find((x) => x.id === activeId);
-        if (t?.kind !== "terminal") return null;
-        if (t.private) return null;
-        const buf = terminalRefs.current.get(t.activeLeafId)?.getBuffer(300);
-        return buf ? redactSensitive(buf) : null;
-      },
-      isActiveTerminalPrivate: () => {
-        const t = tabs.find((x) => x.id === activeId);
-        return t?.kind === "terminal" && t.private === true;
-      },
-      injectIntoActivePty: (text) => {
-        const t = tabs.find((x) => x.id === activeId);
-        if (t?.kind !== "terminal") return false;
-        const term = terminalRefs.current.get(t.activeLeafId);
-        if (!term) return false;
-        term.write(text);
-        term.focus();
-        return true;
-      },
-      getWorkspaceRoot: () => explorerRoot ?? home ?? null,
-      getActiveFile: () => {
-        const t = tabs.find((x) => x.id === activeId);
-        return t?.kind === "editor" ? t.path : null;
-      },
-      openPreview: (url: string) => {
-        openPreviewTab(url);
+      getCwd: () => effectiveWorkspaceRoot,
+      getTerminalContext: () => null,
+      isActiveTerminalPrivate: () => false,
+      injectIntoActivePty: () => false,
+      getWorkspaceRoot: () => effectiveWorkspaceRoot,
+      getWwxBinding: () =>
+        activeWindow
+          ? {
+              productId: activeWindow.productId,
+              productCode: activeWindow.productCode,
+              batchId: activeWindow.batchId,
+              batchPath: activeWindow.batchPath,
+            }
+          : null,
+      getActiveFile: () => null,
+      openPreview: (path) => {
+        setSelectedArtifactPath(path);
         return true;
       },
     });
-  }, [setLive, activeId, tabs, explorerRoot, home, openPreviewTab]);
+  }, [activeWindow, effectiveWorkspaceRoot, setLive]);
 
   const shell = (
     <ThemeProvider>
       <TooltipProvider>
-        <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
-          <Header
-            tabs={tabs}
-            activeId={activeId}
-            onSelect={setActiveId}
-            onNew={openNewTab}
-            onNewPrivate={openNewPrivateTab}
-            onNewPreview={() => openPreviewTab("")}
-            onNewEditor={() => setNewEditorOpen(true)}
-            onClose={handleClose}
-            onPin={pinTab}
-            onToggleSidebar={toggleSidebar}
-            onSplit={splitActivePaneInActiveTab}
-            canSplit={
-              activeTerminalTab !== null &&
-              leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
-            }
-            onOpenShortcuts={() => setShortcutsOpen(true)}
+        <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#17181b] text-slate-100">
+          <WwxHeader
+            selectedBatch={selectedBatch}
+            activeWindows={agentWindows.length}
+            onToggleSidebar={() => togglePanel(sidebarRef)}
+            onToggleInspector={() => togglePanel(inspectorRef)}
             onOpenSettings={() => void openSettingsWindow()}
-            searchTarget={searchTarget}
-            searchRef={searchInlineRef}
           />
 
-          <main className="flex min-h-0 flex-1 flex-col">
+          <main className="min-h-0 flex-1">
             <ResizablePanelGroup
               orientation="horizontal"
-              className="min-h-0 flex-1"
+              className="h-full min-h-0 bg-[#17181b]"
             >
               <ResizablePanel
-                id="sidebar"
+                id="wwx-sidebar"
                 panelRef={sidebarRef}
-                defaultSize="225px"
-                minSize="130px"
-                maxSize="450px"
+                defaultSize="252px"
+                minSize="210px"
+                maxSize="360px"
                 collapsible
                 collapsedSize={0}
+                className="min-w-0 overflow-hidden border-r border-white/15 bg-[#101114]"
               >
-                <div className="h-full border-r border-border/60 bg-card">
-                  <FileExplorer
-                    rootPath={explorerRoot}
-                    onOpenFile={handleOpenFile}
-                    onPathRenamed={handlePathRenamed}
-                    onPathDeleted={handlePathDeleted}
-                    onRevealInTerminal={cdInNewTab}
-                    onAttachToAgent={handleAttachFileToAgent}
-                  />
-                </div>
+                <WwxSidebar
+                  index={wwxIndex}
+                  selectedBatchId={selectedBatchId}
+                  onSelectBatch={selectBatch}
+                  onCreateProduct={() => setCreateProductOpen(true)}
+                  onCreateBatch={openBatchDialog}
+                  onOpenBatchAgent={ensureAgentWindowForBatch}
+                />
               </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
-                <div className="flex h-full min-h-0 flex-col">
-                  <div className="relative min-h-0 flex-1">
-                    <div
-                      className={cn(
-                        "absolute inset-0 px-3 pt-2 pb-2",
-                        !isTerminalTab && "invisible pointer-events-none",
-                      )}
-                      aria-hidden={!isTerminalTab}
-                    >
-                      <TerminalStack
-                        tabs={tabs}
-                        activeId={activeId}
-                        registerHandle={registerTerminalHandle}
-                        onSearchReady={handleSearchReady}
-                        onCwd={handleTerminalCwd}
-                        onExit={handleLeafExit}
-                        onFocusLeaf={handleFocusLeaf}
-                      />
-                    </div>
-                    <div
-                      className={cn(
-                        "absolute inset-0 px-3 pt-2 pb-2",
-                        !isEditorTab && "invisible pointer-events-none",
-                      )}
-                      aria-hidden={!isEditorTab}
-                    >
-                      <EditorStack
-                        tabs={tabs}
-                        activeId={activeId}
-                        registerHandle={registerEditorHandle}
-                        onDirtyChange={handleEditorDirty}
-                        onCloseTab={disposeTab}
-                      />
-                    </div>
-                    <div
-                      className={cn(
-                        "absolute inset-0 px-3 pt-2 pb-2",
-                        !isPreviewTab && "invisible pointer-events-none",
-                      )}
-                      aria-hidden={!isPreviewTab}
-                    >
-                      <PreviewStack
-                        tabs={tabs}
-                        activeId={activeId}
-                        registerHandle={registerPreviewHandle}
-                        onUrlChange={handlePreviewUrl}
-                      />
-                    </div>
-                    <div
-                      className={cn(
-                        "absolute inset-0 px-3 pt-2 pb-2",
-                        !isAiDiffTab && "invisible pointer-events-none",
-                      )}
-                      aria-hidden={!isAiDiffTab}
-                    >
-                      <AiDiffStack
-                        tabs={tabs}
-                        activeId={activeId}
-                        onAccept={(id) => respondToApproval(id, true)}
-                        onReject={(id) => respondToApproval(id, false)}
-                      />
-                    </div>
-                  </div>
-
-                  {keysLoaded ? (
-                    <motion.div
-                      data-ai-input-bar
-                      initial={false}
-                      animate={{
-                        height: panelOpen ? "auto" : 0,
-                        opacity: panelOpen ? 1 : 0,
-                      }}
-                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                      className="overflow-hidden"
-                      aria-hidden={!panelOpen}
-                    >
-                      {hasComposer ? (
-                        <AiInputBar />
-                      ) : (
-                        <AiInputBarConnect
-                          onAdd={() => void openSettingsWindow("models")}
-                        />
-                      )}
-                    </motion.div>
-                  ) : null}
-                </div>
+              <ResizableHandle withHandle className="bg-white/15" />
+              <ResizablePanel
+                id="agent-canvas"
+                defaultSize="70%"
+                minSize="42%"
+                className="min-w-0 overflow-hidden bg-[#1a1b1f]"
+              >
+                <AgentCanvas
+                  windows={agentWindows}
+                  batches={wwxIndex.batches}
+                  hasComposer={hasComposer}
+                  onFocus={focusAgentWindow}
+                  onClose={closeAgentWindow}
+                  onAddApiKey={() => void openSettingsWindow("models")}
+                />
+              </ResizablePanel>
+              <ResizableHandle withHandle className="bg-white/15" />
+              <ResizablePanel
+                id="wwx-inspector"
+                panelRef={inspectorRef}
+                defaultSize="290px"
+                minSize="250px"
+                maxSize="390px"
+                collapsible
+                collapsedSize={0}
+                className="min-w-0 overflow-hidden border-l border-white/15 bg-[#101114]"
+              >
+                <WwxInspector
+                  cwd={null}
+                  index={wwxIndex}
+                  selectedBatch={selectedBatch}
+                  selectedArtifactPath={selectedArtifactPath}
+                  onContinueInAgent={continueBatchInAgent}
+                />
               </ResizablePanel>
             </ResizablePanelGroup>
           </main>
 
-          <StatusBar
-            cwd={activeCwd}
-            filePath={activeFilePath}
-            home={home}
-            onCd={sendCd}
-            onOpenMini={openMini}
-            hasComposer={hasComposer}
-            privateActive={
-              activeTab?.kind === "terminal" && activeTab.private === true
-            }
+          <CreateProductDialog
+            open={createProductOpen}
+            onOpenChange={setCreateProductOpen}
+            onCreate={handleCreateProduct}
           />
-
-          {hasComposer ? (
-            <AgentRunBridge
-              openAiDiffTab={openAiDiffTab}
-              setAiDiffStatus={setAiDiffStatus}
-            />
-          ) : null}
-
-          <AnimatePresence>
-            {miniOpen && hasComposer ? <AiMiniWindow key="ai-mini" /> : null}
-            {askPopup ? (
-              <SelectionAskAi
-                key="ask-ai-popup"
-                x={askPopup.x}
-                y={askPopup.y}
-                onAsk={onAskFromSelection}
-                onDismiss={() => setAskPopup(null)}
-              />
-            ) : null}
-          </AnimatePresence>
-
-          <ShortcutsDialog
-            open={shortcutsOpen}
-            onOpenChange={setShortcutsOpen}
+          <CreateBatchDialog
+            open={Boolean(batchDialogProduct)}
+            product={batchDialogProduct}
+            title={batchDialogTitle}
+            onOpenChange={(open) => {
+              if (!open) {
+                setBatchDialogProduct(null);
+                firstBatchProductRef.current = null;
+              }
+            }}
+            onCreate={handleCreateBatch}
           />
-
-          <NewEditorDialog
-            open={newEditorOpen}
-            onOpenChange={setNewEditorOpen}
-            rootPath={explorerRoot ?? home}
-            onCreated={(path) => openFileTab(path)}
-          />
-
-          <UpdaterDialog />
-
-          <AlertDialog
-            open={pendingCloseTab !== null}
-            onOpenChange={(open) => !open && cancelClose()}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {tabs.find((t) => t.id === pendingCloseTab)?.title
-                    ? `"${
-                        tabs.find((t) => t.id === pendingCloseTab)?.title
-                      }" has unsaved changes. Close anyway?`
-                    : "This file has unsaved changes. Close anyway?"}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel onClick={cancelClose}>
-                  Cancel
-                </AlertDialogCancel>
-                <AlertDialogAction onClick={confirmClose}>
-                  Close Anyway
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
         </div>
       </TooltipProvider>
     </ThemeProvider>
   );
 
   return <AiComposerProvider>{shell}</AiComposerProvider>;
+}
+
+function WwxHeader({
+  selectedBatch,
+  activeWindows,
+  onToggleSidebar,
+  onToggleInspector,
+  onOpenSettings,
+}: {
+  selectedBatch: BatchSummary | null;
+  activeWindows: number;
+  onToggleSidebar: () => void;
+  onToggleInspector: () => void;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <header
+      data-tauri-drag-region
+      className="flex h-10 shrink-0 items-center gap-2 border-b border-white/15 bg-[#121316] px-2 select-none"
+    >
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        onClick={onToggleSidebar}
+        title="Toggle products"
+      >
+        <HugeiconsIcon icon={SidebarLeftIcon} size={17} strokeWidth={1.8} />
+      </Button>
+      <div className="flex min-w-0 flex-1 items-center gap-2" data-tauri-drag-region>
+        {selectedBatch ? (
+          <span className="truncate text-[10.5px] text-slate-300">
+            {selectedBatch.name}
+          </span>
+        ) : null}
+        <span className="text-[10.5px] text-slate-500">
+          {activeWindows} agent{activeWindows === 1 ? "" : "s"}
+        </span>
+      </div>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        onClick={onOpenSettings}
+        title="Settings"
+      >
+        <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.8} />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        onClick={onToggleInspector}
+        title="Toggle details"
+      >
+        <HugeiconsIcon
+          icon={LayoutLeftIcon}
+          size={15}
+          strokeWidth={1.9}
+          className="rotate-180"
+        />
+      </Button>
+    </header>
+  );
+}
+
+function AgentCanvas({
+  windows,
+  batches,
+  hasComposer,
+  onFocus,
+  onClose,
+  onAddApiKey,
+}: {
+  windows: AgentWindow[];
+  batches: BatchSummary[];
+  hasComposer: boolean;
+  onFocus: (windowId: string) => void;
+  onClose: (windowId: string) => void;
+  onAddApiKey: () => void;
+}) {
+  const [maximizedWindowId, setMaximizedWindowId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (
+      maximizedWindowId &&
+      !windows.some((window) => window.id === maximizedWindowId)
+    ) {
+      setMaximizedWindowId(null);
+    }
+  }, [maximizedWindowId, windows]);
+
+  if (windows.length === 0) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-8">
+        <div className="max-w-md border border-dashed border-white/20 bg-[#202126] p-6 text-center">
+          <div className="text-sm font-medium">No batch agent is open</div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Create a product, create a batch, or right-click an existing batch
+            and open it in an agent.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const visibleWindows = maximizedWindowId
+    ? windows.filter((window) => window.id === maximizedWindowId)
+    : windows;
+
+  return (
+    <div
+      className={cn(
+        "h-full min-h-0 overflow-hidden bg-[#17181b]",
+        maximizedWindowId
+          ? "grid grid-cols-1"
+          : agentCanvasGridClass(visibleWindows.length),
+      )}
+    >
+      {visibleWindows.map((window, index) => {
+        const batch = batches.find((item) => item.path === window.batchPath);
+        return (
+          <section
+            key={window.id}
+            onMouseDownCapture={() => onFocus(window.id)}
+            className={cn(
+              "relative flex min-h-0 min-w-0 flex-col overflow-hidden border border-white/15 bg-[#1f2024] shadow-[0_0_0_1px_rgba(0,0,0,0.32)]",
+              maximizedWindowId && "h-full min-h-0",
+              visibleWindows.length !== 1 && !maximizedWindowId && "min-h-[300px]",
+              visibleWindows.length === 3 && !maximizedWindowId && index === 0 && "xl:row-span-2",
+              window.active && !maximizedWindowId && "border-white/20 bg-[#222328]",
+            )}
+          >
+            {window.active ? (
+              <div className="absolute left-0 top-0 h-0 w-0 border-r-[12px] border-t-[12px] border-r-transparent border-t-[#9ca3af]" />
+            ) : null}
+            <div className="relative flex h-8 shrink-0 items-center justify-end gap-1 border-b border-white/15 bg-[#111216] px-2">
+              <div className="pointer-events-none absolute inset-x-12 text-center text-[11px] text-slate-400">
+                <span className="block truncate leading-none">
+                  {batch?.name ?? window.batchId}
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="rounded-none text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMaximizedWindowId((current) =>
+                    current === window.id ? null : window.id,
+                  );
+                }}
+                title={maximizedWindowId === window.id ? "Restore terminal" : "Maximize terminal"}
+              >
+                <HugeiconsIcon
+                  icon={maximizedWindowId === window.id ? Copy01Icon : SquareIcon}
+                  size={12}
+                  strokeWidth={2}
+                />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="rounded-none text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (maximizedWindowId === window.id) setMaximizedWindowId(null);
+                  onClose(window.id);
+                }}
+                title="Close agent"
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <AgentTerminal
+                sessionId={window.sessionId}
+                active={window.active}
+                hasComposer={hasComposer}
+                onAddApiKey={onAddApiKey}
+                initialPrompt={window.seedPrompt}
+                batchPath={window.batchPath}
+              />
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function agentCanvasGridClass(count: number): string {
+  if (count <= 1) return "grid grid-cols-1 grid-rows-1 gap-px";
+  if (count === 2) return "grid grid-cols-1 grid-rows-2 gap-px xl:grid-cols-2 xl:grid-rows-1";
+  if (count === 3) {
+    return "grid grid-cols-1 auto-rows-fr gap-px xl:grid-cols-2 xl:grid-rows-2";
+  }
+  return "grid grid-cols-1 auto-rows-fr gap-px xl:grid-cols-2";
 }

@@ -20,6 +20,7 @@ type Callbacks = {
   onSearchReady?: (addon: SearchAddon) => void;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
+  onArtifact?: (path: string) => void;
 };
 
 // Lives outside React so split/unsplit re-parent the DOM without tearing
@@ -46,6 +47,7 @@ type Session = {
   disposed: boolean;
   initialCwd: string | undefined;
   ptyOpening: boolean;
+  artifactBuffer: string;
 };
 
 const sessions = new Map<number, Session>();
@@ -102,6 +104,7 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     disposed: false,
     initialCwd,
     ptyOpening: false,
+    artifactBuffer: "",
   };
   sessions.set(leafId, session);
 
@@ -149,7 +152,10 @@ function openPtyForSession(
       // Hot path — keep this callback to a single statement. URL detection
       // runs out-of-band against the xterm buffer (see ensureSession's
       // scan interval), so no UTF-8 decode or regex happens per chunk.
-      onData: (bytes) => s.term.write(bytes),
+      onData: (bytes) => {
+        captureArtifactEvents(s, bytes);
+        s.term.write(bytes);
+      },
       onExit: (code) => {
         s.term.options.disableStdin = true;
         if (s.callbacks.onExit) s.callbacks.onExit(code);
@@ -358,6 +364,7 @@ type Options = {
   onSearchReady?: (addon: SearchAddon) => void;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
+  onArtifact?: (path: string) => void;
 };
 
 export function useTerminalSession({
@@ -369,16 +376,19 @@ export function useTerminalSession({
   onSearchReady,
   onExit,
   onCwd,
+  onArtifact,
 }: Options) {
   const cbRef = useRef({
     onSearchReady,
     onExit,
     onCwd,
+    onArtifact,
   });
   cbRef.current = {
     onSearchReady,
     onExit,
     onCwd,
+    onArtifact,
   };
 
   useEffect(() => {
@@ -390,6 +400,7 @@ export function useTerminalSession({
         onSearchReady: (a) => cbRef.current.onSearchReady?.(a),
         onExit: (c) => cbRef.current.onExit?.(c),
         onCwd: (c) => cbRef.current.onCwd?.(c),
+        onArtifact: (path) => cbRef.current.onArtifact?.(path),
       });
       if (visible && focused) s.term.focus();
     });
@@ -481,6 +492,35 @@ export function useTerminalSession({
   return { write, focus, getBuffer, getSelection, applyTheme };
 }
 
+function captureArtifactEvents(s: Session, bytes: Uint8Array): void {
+  const text = new TextDecoder().decode(bytes);
+  if (!text.includes("artifact") && !s.artifactBuffer) return;
+
+  s.artifactBuffer = `${s.artifactBuffer}${text}`;
+  const lines = s.artifactBuffer.split(/\r?\n/);
+  s.artifactBuffer = lines.pop()?.slice(-12_000) ?? "";
+
+  for (const raw of lines.slice(-80)) {
+    const line = stripAnsi(raw).trim();
+    if (!line.includes("artifact") || !line.includes("path")) continue;
+    try {
+      const event = JSON.parse(line) as { event?: string; path?: string };
+      if (
+        typeof event.path === "string" &&
+        (event.event === "artifact_manifest_written" || event.event === "artifact_created")
+      ) {
+        s.callbacks.onArtifact?.(event.path);
+      }
+    } catch {
+      // Most terminal lines are not JSON events.
+    }
+  }
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 function isCtrlBackspace(event: KeyboardEvent): boolean {
   return (
     event.type === "keydown" &&
@@ -490,4 +530,3 @@ function isCtrlBackspace(event: KeyboardEvent): boolean {
     !event.metaKey
   );
 }
-

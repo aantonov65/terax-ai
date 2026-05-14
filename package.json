@@ -1,13 +1,14 @@
 {
-  "name": "terax",
+  "name": "wwx-desktop",
   "private": true,
-  "version": "0.6.3",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "fixtures:wwx": "node scripts/create-wwx-demo-fixtures.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",

@@ -21,6 +21,7 @@ type Props = {
   onSearchReady?: (leafId: number, addon: SearchAddon) => void;
   onExit?: (leafId: number, code: number) => void;
   onCwd?: (leafId: number, cwd: string) => void;
+  onArtifact?: (leafId: number, path: string) => void;
 };
 
 export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
@@ -33,6 +34,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       onSearchReady,
       onExit,
       onCwd,
+      onArtifact,
     },
     ref,
   ) {
@@ -48,6 +50,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       onSearchReady: (a) => onSearchReady?.(leafId, a),
       onExit: (c) => onExit?.(leafId, c),
       onCwd: (c) => onCwd?.(leafId, c),
+      onArtifact: (path) => onArtifact?.(leafId, path),
     });
 
     useEffect(() => {
@@ -70,7 +73,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
     return (
       <div
         ref={containerRef}
-        className="h-full w-full"
+        className="h-full w-full bg-[#1f2024]"
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",

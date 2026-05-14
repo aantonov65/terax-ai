@@ -16,6 +16,13 @@ export type ToolContext = {
   readCache: Map<string, { size: number; hash: number }>;
   /** Active chat session id — used by tools that persist per-session state (todos). */
   getSessionId: () => string | null;
+  /** Bound WWX batch for the active agent window. Mutating WWX tools must honor this. */
+  getWwxBinding?: () => {
+    productId: string;
+    productCode?: string;
+    batchId: string;
+    batchPath?: string;
+  } | null;
 };
 
 export function resolvePath(rawPath: string, cwd: string | null): string {

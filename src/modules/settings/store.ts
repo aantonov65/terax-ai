@@ -116,6 +116,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+let memoryPreferences: Preferences = { ...DEFAULT_PREFERENCES };
 
 // LazyStore.onChange only fires within the writing process. The settings
 // page lives in a separate webview, so writes there never reach the main
@@ -124,15 +125,31 @@ const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 const PREFS_CHANGED_EVENT = "terax://prefs-changed";
 
 async function writePref<T>(key: string, value: T): Promise<void> {
-  await store.set(key, value);
-  await store.save();
-  await emit(PREFS_CHANGED_EVENT, { key, value });
+  memoryPreferences = { ...memoryPreferences, [key]: value };
+  try {
+    await store.set(key, value);
+    await store.save();
+  } catch (error) {
+    console.warn("settings store write unavailable; using memory fallback", error);
+  }
+  try {
+    await emit(PREFS_CHANGED_EVENT, { key, value });
+  } catch {
+    // Tauri events are unavailable when the settings page is rendered outside
+    // the desktop webview, such as Vite/browser development previews.
+  }
 }
 
 export async function loadPreferences(): Promise<Preferences> {
   // Single IPC roundtrip — fetching keys individually fans out to one
   // `plugin:store|get` per setting and is the dominant boot cost.
-  const entries = await store.entries();
+  let entries: [string, unknown][];
+  try {
+    entries = await store.entries();
+  } catch (error) {
+    console.warn("settings store read unavailable; using defaults", error);
+    return memoryPreferences;
+  }
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
   return {
@@ -276,13 +293,11 @@ export async function setTerminalFontSize(value: number): Promise<void> {
 export async function setShortcuts(
   value: Record<ShortcutId, KeyBinding[]> | {}
 ): Promise<void> {
-  await store.set(KEY_SHORTCUTS, value);
-  await store.save();
+  await writePref(KEY_SHORTCUTS, value);
 }
 
 export async function resetShortcuts(): Promise<void> {
-  await store.set(KEY_SHORTCUTS, DEFAULT_PREFERENCES.shortcuts);
-  await store.save();
+  await writePref(KEY_SHORTCUTS, DEFAULT_PREFERENCES.shortcuts);
 }
 
 export type PrefKey = keyof Preferences;
@@ -315,17 +330,27 @@ export async function onPreferencesChange(
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().
-  const unsubLocal = await store.onChange<unknown>((key, value) => {
-    const mapped = map[key];
-    if (mapped) cb(mapped, value);
-  });
-  const unsubEvent = await listen<{ key: string; value: unknown }>(
-    PREFS_CHANGED_EVENT,
-    (e) => {
-      const mapped = map[e.payload.key];
-      if (mapped) cb(mapped, e.payload.value);
-    },
-  );
+  let unsubLocal: UnlistenFn = () => {};
+  let unsubEvent: UnlistenFn = () => {};
+  try {
+    unsubLocal = await store.onChange<unknown>((key, value) => {
+      const mapped = map[key];
+      if (mapped) cb(mapped, value);
+    });
+  } catch (error) {
+    console.warn("settings store listener unavailable", error);
+  }
+  try {
+    unsubEvent = await listen<{ key: string; value: unknown }>(
+      PREFS_CHANGED_EVENT,
+      (e) => {
+        const mapped = map[e.payload.key];
+        if (mapped) cb(mapped, e.payload.value);
+      },
+    );
+  } catch {
+    // No cross-window events outside Tauri.
+  }
   return () => {
     unsubLocal();
     unsubEvent();
@@ -337,9 +362,13 @@ export async function onPreferencesChange(
 const KEYS_CHANGED_EVENT = "terax://ai-keys-changed";
 
 export async function emitKeysChanged(): Promise<void> {
-  await emit(KEYS_CHANGED_EVENT);
+  try {
+    await emit(KEYS_CHANGED_EVENT);
+  } catch {
+    // Tauri events are unavailable in browser previews.
+  }
 }
 
 export function onKeysChanged(cb: () => void): Promise<UnlistenFn> {
-  return listen(KEYS_CHANGED_EVENT, () => cb());
+  return listen(KEYS_CHANGED_EVENT, () => cb()).catch(() => () => {});
 }

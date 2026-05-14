@@ -40,6 +40,7 @@ type Live = {
   injectIntoActivePty: (text: string) => boolean;
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
+  getWwxBinding?: ToolContext["getWwxBinding"];
   openPreview: (url: string) => boolean;
 };
 
@@ -150,6 +151,7 @@ const NOOP_LIVE: Live = {
   injectIntoActivePty: () => false,
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
+  getWwxBinding: () => null,
   openPreview: () => false,
 };
 
@@ -211,6 +213,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     injectIntoActivePty: (text) =>
       useChatStore.getState().live.injectIntoActivePty(text),
     openPreview: (url) => useChatStore.getState().live.openPreview(url),
+    getWwxBinding: () => useChatStore.getState().live.getWwxBinding?.() ?? null,
     readCache,
     getSessionId: () => sessionId,
   };
@@ -234,6 +237,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         terminalPrivate: live.isActiveTerminalPrivate(),
         workspaceRoot: live.getWorkspaceRoot(),
         activeFile: live.getActiveFile(),
+        wwxBinding: live.getWwxBinding?.() ?? null,
       };
     },
     getPlanMode: () => usePlanStore.getState().active,

@@ -16,6 +16,7 @@ import {
 import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import {
+  ComputerTerminal02Icon,
   GridViewIcon,
   KeyboardIcon,
   LayoutTwoColumnIcon,
@@ -36,6 +37,7 @@ type Props = {
   activeId: number;
   onSelect: (id: number) => void;
   onNew: () => void;
+  onNewAgentTerminal: () => void;
   onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
@@ -59,6 +61,7 @@ export function Header({
   activeId,
   onSelect,
   onNew,
+  onNewAgentTerminal,
   onNewPrivate,
   onNewPreview,
   onNewEditor,
@@ -197,6 +200,19 @@ export function Header({
       {IS_MAC && <span className="mr-1 h-full w-px shrink-0 bg-border" />}
 
       <div
+        data-tauri-drag-region
+        className="hidden shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-semibold tracking-tight text-foreground/90 sm:flex"
+      >
+        <HugeiconsIcon
+          icon={ComputerTerminal02Icon}
+          size={14}
+          strokeWidth={1.85}
+          className="text-muted-foreground"
+        />
+        <span>WWX</span>
+      </div>
+
+      <div
         className="flex min-w-0 flex-1 items-center gap-2"
         data-tauri-drag-region
       >
@@ -205,6 +221,7 @@ export function Header({
           activeId={activeId}
           onSelect={onSelect}
           onNew={onNew}
+          onNewAgentTerminal={onNewAgentTerminal}
           onNewPrivate={onNewPrivate}
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}

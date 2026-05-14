@@ -1,4 +1,5 @@
 export { AgentRunBridge } from "./components/AgentRunBridge";
+export { AgentTerminal, AgentTerminalStack } from "./components/AgentTerminal";
 export { AgentStatusPill } from "./components/AgentStatusPill";
 export { AiInputBar } from "./components/AiInputBar";
 export { AiMiniWindow } from "./components/AiMiniWindow";

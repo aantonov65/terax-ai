@@ -4,6 +4,7 @@ export {
   useTabs,
   type Tab,
   type TerminalTab,
+  type AgentTerminalTab,
   type EditorTab,
   type PreviewTab,
   type AiDiffTab,

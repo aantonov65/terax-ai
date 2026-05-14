@@ -21,9 +21,13 @@ ReactDOM.createRoot(
 );
 
 const showWindow = () => {
-  getCurrentWindow()
-    .show()
-    .catch((e) => console.error("settings show failed:", e));
+  try {
+    getCurrentWindow()
+      .show()
+      .catch((e) => console.error("settings show failed:", e));
+  } catch (e) {
+    console.warn("settings window API unavailable:", e);
+  }
 };
 setTimeout(showWindow, 50);
 setTimeout(showWindow, 500);

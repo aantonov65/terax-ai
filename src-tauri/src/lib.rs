@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{fs, net, pty, secrets, shell};
+use modules::{fs, net, pty, secrets, shell, wwx};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
 
@@ -101,7 +101,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         // Skip restoring VISIBLE — frontend calls window.show() after first
         // paint so the user never sees a transparent window-shadow flash on
         // Windows/Linux.
@@ -155,6 +154,18 @@ pub fn run() {
             net::lm_ping,
             net::ai_http_request,
             net::ai_http_stream,
+            wwx::wwx_list_products,
+            wwx::wwx_create_product,
+            wwx::wwx_update_product,
+            wwx::wwx_list_batches,
+            wwx::wwx_create_batch,
+            wwx::wwx_list_artifacts,
+            wwx::wwx_read_artifact,
+            wwx::wwx_write_artifact,
+            wwx::wwx_start_lfs_job,
+            wwx::wwx_advance_lfs_job,
+            wwx::wwx_resume_lfs_job,
+            wwx::wwx_cancel_lfs_job,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

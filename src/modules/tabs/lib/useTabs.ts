@@ -3,6 +3,7 @@ import {
   hasLeaf,
   leafIds,
   nextLeafId,
+  normalizePaneTree,
   removeLeaf,
   setLeafCwd as setLeafCwdInTree,
   siblingLeafOf,
@@ -46,6 +47,16 @@ export type PreviewTab = {
   url: string;
 };
 
+export type AgentTerminalTab = {
+  id: number;
+  kind: "agent-terminal";
+  title: string;
+  agentId: string;
+  paneTree: PaneNode;
+  activeLeafId: number;
+  sessionsByLeaf: Record<number, string>;
+};
+
 export type AiDiffStatus = "pending" | "approved" | "rejected";
 
 export type AiDiffTab = {
@@ -62,7 +73,7 @@ export type AiDiffTab = {
   isNewFile: boolean;
 };
 
-export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab;
+export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab | AgentTerminalTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -70,6 +81,7 @@ export type TabPatch = Partial<{
   path: string;
   dirty: boolean;
   url: string;
+  agentLeafSession: { leafId: number; sessionId: string };
 }>;
 
 function basename(path: string): string {
@@ -86,18 +98,19 @@ function titleFromUrl(url: string): string {
   }
 }
 
-export function useTabs(initial?: Partial<TerminalTab>) {
+export function useTabs(_initial?: Partial<TerminalTab>) {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const tabId = 1;
     const leafId = 2;
     return [
       {
         id: tabId,
-        kind: "terminal",
-        title: initial?.title ?? "shell",
-        cwd: initial?.cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd: initial?.cwd },
+        kind: "agent-terminal",
+        title: "Creative Strategist",
+        agentId: "builtin:creative-strategist",
+        paneTree: { kind: "leaf", id: leafId },
         activeLeafId: leafId,
+        sessionsByLeaf: {},
       },
     ];
   });
@@ -135,6 +148,25 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         paneTree: { kind: "leaf", id: leafId, cwd },
         activeLeafId: leafId,
         private: true,
+      },
+    ]);
+    setActiveId(tabId);
+    return tabId;
+  }, []);
+
+  const newAgentTerminalTab = useCallback((sessionId?: string) => {
+    const tabId = nextIdRef.current++;
+    const leafId = nextIdRef.current++;
+    setTabs((t) => [
+      ...t,
+      {
+        id: tabId,
+        kind: "agent-terminal",
+        title: "Creative Strategist",
+        agentId: "builtin:creative-strategist",
+        paneTree: { kind: "leaf", id: leafId },
+        activeLeafId: leafId,
+        sessionsByLeaf: sessionId ? { [leafId]: sessionId } : {},
       },
     ]);
     setActiveId(tabId);
@@ -331,6 +363,18 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             }),
           };
         }
+        if (x.kind === "agent-terminal") {
+          return {
+            ...x,
+            ...(patch.title !== undefined && { title: patch.title }),
+            ...(patch.agentLeafSession !== undefined && {
+              sessionsByLeaf: {
+                ...x.sessionsByLeaf,
+                [patch.agentLeafSession.leafId]: patch.agentLeafSession.sessionId,
+              },
+            }),
+          };
+        }
         // editor tab: auto-promote from preview the moment the file becomes dirty.
         const autoPin =
           patch.dirty === true && (x as EditorTab).preview
@@ -371,7 +415,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const focusPane = useCallback((tabId: number, leafId: number) => {
     setTabs((curr) =>
       curr.map((t) => {
-        if (t.id !== tabId || t.kind !== "terminal") return t;
+        if (t.id !== tabId || (t.kind !== "terminal" && t.kind !== "agent-terminal")) return t;
         if (!hasLeaf(t.paneTree, leafId)) return t;
         if (t.activeLeafId === leafId) return t;
         return { ...t, activeLeafId: leafId };
@@ -383,7 +427,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     (tabId: number, delta: 1 | -1) => {
       setTabs((curr) =>
         curr.map((t) => {
-          if (t.id !== tabId || t.kind !== "terminal") return t;
+          if (t.id !== tabId || (t.kind !== "terminal" && t.kind !== "agent-terminal")) return t;
           const next = nextLeafId(t.paneTree, t.activeLeafId, delta);
           if (next === t.activeLeafId) return t;
           return { ...t, activeLeafId: next };
@@ -399,19 +443,20 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       let newLeafId: number | null = null;
       setTabs((curr) =>
         curr.map((t) => {
-          if (t.id !== tabId || t.kind !== "terminal") return t;
+          if (t.id !== tabId || (t.kind !== "terminal" && t.kind !== "agent-terminal")) return t;
           if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
           const splitId = nextIdRef.current++;
           const leafId = nextIdRef.current++;
           newLeafId = leafId;
-          const paneTree = splitLeaf(
+          const isTerminal = t.kind === "terminal";
+          const paneTree = normalizePaneTree(splitLeaf(
             t.paneTree,
             t.activeLeafId,
             splitId,
             leafId,
             dir,
-            t.cwd,
-          );
+            isTerminal ? t.cwd : undefined,
+          ));
           return { ...t, paneTree, activeLeafId: leafId };
         }),
       );
@@ -423,9 +468,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const closePaneByLeaf = useCallback((leafId: number): void => {
     setTabs((curr) => {
       const tab = curr.find(
-        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
+        (t) => (t.kind === "terminal" || t.kind === "agent-terminal") && hasLeaf(t.paneTree, leafId),
       );
-      if (!tab || tab.kind !== "terminal") return curr;
+      if (!tab || (tab.kind !== "terminal" && tab.kind !== "agent-terminal")) return curr;
       const newTree = removeLeaf(tab.paneTree, leafId);
       if (newTree === null) {
         if (curr.length <= 1) return curr;
@@ -444,7 +489,16 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       }
       return curr.map((x) =>
         x.id === tab.id
-          ? { ...x, paneTree: newTree, activeLeafId: newActive }
+          ? {
+              ...x,
+              paneTree: newTree,
+              activeLeafId: newActive,
+              ...(x.kind === "agent-terminal" && {
+                sessionsByLeaf: Object.fromEntries(
+                  Object.entries(x.sessionsByLeaf).filter(([id]) => Number(id) !== leafId),
+                ),
+              }),
+            }
           : x,
       );
     });
@@ -454,7 +508,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     let closedTab = false;
     setTabs((curr) => {
       const t = curr.find((x) => x.id === tabId);
-      if (!t || t.kind !== "terminal") return curr;
+      if (!t || (t.kind !== "terminal" && t.kind !== "agent-terminal")) return curr;
       const target = t.activeLeafId;
       const newTree = removeLeaf(t.paneTree, target);
       if (newTree === null) {
@@ -473,7 +527,16 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         sib && remaining.includes(sib) ? sib : remaining[0];
       return curr.map((x) =>
         x.id === tabId
-          ? { ...x, paneTree: newTree, activeLeafId: newActive }
+          ? {
+              ...x,
+              paneTree: newTree,
+              activeLeafId: newActive,
+              ...(x.kind === "agent-terminal" && {
+                sessionsByLeaf: Object.fromEntries(
+                  Object.entries(x.sessionsByLeaf).filter(([id]) => Number(id) !== target),
+                ),
+              }),
+            }
           : x,
       );
     });
@@ -486,6 +549,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setActiveId,
     newTab,
     newPrivateTab,
+    newAgentTerminalTab,
     openFileTab,
     pinTab,
     newPreviewTab,

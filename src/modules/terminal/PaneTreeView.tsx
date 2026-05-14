@@ -6,13 +6,14 @@ import {
 } from "@/components/ui/resizable";
 import type { SearchAddon } from "@xterm/addon-search";
 import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
-import type { PaneNode } from "./lib/panes";
+import { leafIds, type PaneNode } from "./lib/panes";
 
 type LeafBundle = {
   setRef: (h: TerminalPaneHandle | null) => void;
   onSearch: (addon: SearchAddon) => void;
   onCwd: (cwd: string) => void;
   onExit: (code: number) => void;
+  onArtifact: (path: string) => void;
 };
 
 type Props = {
@@ -44,7 +45,7 @@ export function PaneTreeView({
           if (!focused) onFocusLeaf(node.id);
         }}
         data-pane-leaf={node.id}
-        className="relative h-full w-full"
+        className="relative h-full w-full border border-white/15 bg-[#1f2024]"
       >
         <TerminalPane
           leafId={node.id}
@@ -55,10 +56,14 @@ export function PaneTreeView({
           onSearchReady={(_id, addon) => b.onSearch(addon)}
           onCwd={(_id, cwd) => b.onCwd(cwd)}
           onExit={(_id, code) => b.onExit(code)}
+          onArtifact={(_id, path) => b.onArtifact(path)}
         />
       </div>
     );
   }
+
+  const childCount = leafIds(node).length;
+  const balancedThreePane = childCount === 3 && node.dir === "row";
 
   return (
     <ResizablePanelGroup
@@ -66,8 +71,12 @@ export function PaneTreeView({
     >
       {node.children.map((child, i) => (
         <Fragment key={child.id}>
-          {i > 0 && <ResizableHandle />}
-          <ResizablePanel id={`pane-${child.id}`} minSize="10%">
+          {i > 0 && <ResizableHandle className="bg-white/15" />}
+          <ResizablePanel
+            id={`pane-${child.id}`}
+            minSize={balancedThreePane ? "28%" : "10%"}
+            defaultSize={balancedThreePane && i === 0 ? 50 : undefined}
+          >
             <PaneTreeView
               node={child}
               tabVisible={tabVisible}

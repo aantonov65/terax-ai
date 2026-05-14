@@ -63,16 +63,26 @@ export function ThemeProvider({
   // Hydrate from the persistent store (cross-window source of truth).
   useEffect(() => {
     let alive = true;
-    void loadPreferences().then((p) => {
-      if (!alive) return;
-      setThemeState(p.theme);
-      writeFastTheme(p.theme);
-    });
+    void loadPreferences()
+      .then((p) => {
+        if (!alive) return;
+        setThemeState(p.theme);
+        writeFastTheme(p.theme);
+      })
+      .catch((error) => {
+        console.warn("theme preferences hydration failed", error);
+      });
     const unlistenP = onPreferencesChange((key, value) => {
-      if (key === "theme" && (value === "system" || value === "light" || value === "dark")) {
+      if (
+        key === "theme" &&
+        (value === "system" || value === "light" || value === "dark")
+      ) {
         setThemeState(value);
         writeFastTheme(value);
       }
+    }).catch((error) => {
+      console.warn("theme preference subscription failed", error);
+      return () => {};
     });
     return () => {
       alive = false;

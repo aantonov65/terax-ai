@@ -15,6 +15,7 @@ import {
   GitCompareIcon,
   Globe02Icon,
   IncognitoIcon,
+  AiMagicIcon,
   PencilEdit02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
@@ -27,6 +28,7 @@ type Props = {
   activeId: number;
   onSelect: (id: number) => void;
   onNew: () => void;
+  onNewAgentTerminal: () => void;
   onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
@@ -41,6 +43,7 @@ export function TabBar({
   activeId,
   onSelect,
   onNew,
+  onNewAgentTerminal,
   onNewPrivate,
   onNewPreview,
   onNewEditor,
@@ -154,6 +157,14 @@ export function TabBar({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-44">
+            <DropdownMenuItem onSelect={() => onNewAgentTerminal()}>
+              <HugeiconsIcon
+                icon={AiMagicIcon}
+                size={14}
+                strokeWidth={1.75}
+              />
+              <span className="flex-1">Agent Terminal</span>
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => onNew()}>
               <HugeiconsIcon
                 icon={ComputerTerminal02Icon}
@@ -216,6 +227,16 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "agent-terminal") {
+    return (
+      <HugeiconsIcon
+        icon={AiMagicIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0 text-primary"
+      />
+    );
+  }
   if (tab.kind === "ai-diff") {
     return (
       <HugeiconsIcon
@@ -249,6 +270,7 @@ function TabIcon({ tab }: { tab: Tab }) {
 function labelFor(t: Tab): string {
   if (t.kind === "editor") return t.title;
   if (t.kind === "preview") return t.title;
+  if (t.kind === "agent-terminal") return t.title;
   if (t.kind === "ai-diff") return t.title;
   if (!t.cwd) return t.title;
   const parts = t.cwd.split(/[\\/]/).filter(Boolean);

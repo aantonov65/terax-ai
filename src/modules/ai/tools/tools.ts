@@ -5,6 +5,8 @@ import { buildShellTools } from "./shell";
 import { buildSubagentTools } from "./subagent";
 import { buildTerminalTools } from "./terminal";
 import { buildTodoTools } from "./todo";
+import { buildWwxTools } from "./wwx";
+import { useAgentsStore } from "../store/agentsStore";
 
 export { resolvePath, type ToolContext } from "./context";
 
@@ -28,6 +30,15 @@ export { resolvePath, type ToolContext } from "./context";
  * outside that.
  */
 export function buildTools(ctx: import("./context").ToolContext) {
+  const activeAgentId = useAgentsStore.getState().activeId;
+  if (activeAgentId === "builtin:creative-strategist") {
+    // WWX strategist windows are batch-bound workflow surfaces, not general
+    // filesystem agents. Artifact access/editing must go through WWX tools so
+    // protected prompts, outlines, research cards, and product config are not
+    // exposed through raw Read/List/Write operations.
+    return buildWwxTools(ctx);
+  }
+
   return {
     ...buildFsTools(ctx),
     ...buildEditTools(ctx),
