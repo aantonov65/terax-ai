@@ -154,19 +154,34 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
 }
 
 function publicArtifacts(artifacts: NativeArtifact[]) {
-  return artifacts.slice(0, ARTIFACT_LIMIT).map((artifact) => ({
+  return artifacts.filter(isFinalLfsArtifact).slice(0, ARTIFACT_LIMIT).map((artifact) => ({
     id: artifact.id,
     path: `app://wwx/artifacts/${artifact.id}`,
     label: artifact.label || artifact.filename,
+    filename: artifact.filename,
     kind: artifact.kind,
     size: artifact.size,
   }));
 }
 
+function isFinalLfsArtifact(artifact: NativeArtifact): boolean {
+  const filename = artifact.filename.replace(/^\/+/, "");
+  return filename.startsWith("output-v41/") && filename.endsWith(".md");
+}
+
+function isResearchMissing(result: NativeJobResult): boolean {
+  const text = `${result.reason ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+  return /research folder not found|missing research|research_cards failed/i.test(text);
+}
+
 function jobResult(workflow: string, result: NativeJobResult) {
-  const artifactCount = result.artifacts.length;
+  const finalArtifacts = result.artifacts.filter(isFinalLfsArtifact);
+  const artifacts = publicArtifacts(finalArtifacts);
+  const artifactCount = finalArtifacts.length;
   const stage = result.currentStage ?? result.status;
   const reason = shortOutput(result.reason ?? "") ?? undefined;
+  const missingResearch = isResearchMissing(result);
+  const retryable = missingResearch ? false : result.retryable;
   const diagnostics = result.ok
     ? undefined
     : {
@@ -183,15 +198,23 @@ function jobResult(workflow: string, result: NativeJobResult) {
     status: result.status,
     current_stage: result.currentStage ?? undefined,
     awaiting_review: result.awaitingReview,
-    retryable: result.retryable,
+    retryable,
     reason,
     summary: result.ok
-      ? `${stage} finished; ${artifactCount} artifact${artifactCount === 1 ? "" : "s"} available.`
-      : `${stage} failed${reason ? `: ${reason}` : "."}`,
+      ? artifactCount > 0
+        ? `${stage} finished; ${artifactCount} final LFS artifact${artifactCount === 1 ? "" : "s"} available.`
+        : `${stage} finished; no final LFS output artifacts yet.`
+      : missingResearch
+        ? `${stage} blocked: product research is missing or incomplete.`
+        : `${stage} failed${reason ? `: ${reason}` : "."}`,
     next_actions: result.ok
-      ? ["Review public artifacts.", "Run advance_lfs_job to approve and continue."]
-      : ["Read the job status and public artifacts for the failed checkpoint."],
-    artifacts: publicArtifacts(result.artifacts),
+      ? artifactCount > 0
+        ? ["Review final LFS outputs.", "Run advance_lfs_job to approve and continue."]
+        : ["Run advance_lfs_job to continue toward final LFS outputs."]
+      : missingResearch
+        ? ["Add or import product research before advancing this batch."]
+        : ["Read the job status for the failed checkpoint."],
+    artifacts,
     artifact_count: artifactCount,
     artifacts_truncated: artifactCount > ARTIFACT_LIMIT,
     diagnostics,

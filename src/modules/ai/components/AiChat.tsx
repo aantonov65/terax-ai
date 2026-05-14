@@ -121,23 +121,13 @@ export function AiChatView({
             Thinking…
           </div>
         )}
-        {error && (
+        {error && !recoverableWwxError && (
           <div
-            className={
-              recoverableWwxError
-                ? "rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-                : "rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-            }
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
           >
-            <div className="font-medium">
-              {recoverableWwxError
-                ? "WWX checkpoint completed."
-                : "Something went wrong."}
-            </div>
+            <div className="font-medium">Something went wrong.</div>
             <div className="mt-0.5 leading-relaxed opacity-90">
-              {recoverableWwxError
-                ? "The follow-up assistant response failed to load, but the LFS job finished this checkpoint and saved its artifacts."
-                : error.message}
+              {error.message}
             </div>
             <button
               type="button"

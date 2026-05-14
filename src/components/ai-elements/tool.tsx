@@ -182,7 +182,8 @@ const ToolImpl = ({
   const label = meta?.label ?? toolName;
   const summary = deriveSummary(toolName, input);
   const isError = state === "output-error";
-  const open = defaultOpen ?? isError;
+  const isWwx = isWwxTool(toolName);
+  const open = defaultOpen ?? (isError || (isWwx && output !== undefined));
   const hidesInput = HEAVY_INPUT_TOOLS.has(toolName);
   const hidesOutput = HEAVY_CONTENT_TOOLS.has(toolName);
   // Some tools carry large file bodies in input; the header plus compact output
@@ -696,7 +697,7 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
                 ? ` ${artifactCount}`
                 : ""}
           </div>
-          <div className="max-h-44 overflow-auto rounded bg-muted/30 font-mono text-[11px]">
+          <div className="max-h-44 overflow-y-auto overflow-x-hidden rounded bg-muted/30 font-mono text-[11px]">
             {artifacts.map((artifact, idx) => {
               const label =
                 typeof artifact.label === "string"

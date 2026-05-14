@@ -500,23 +500,21 @@ export function WwxInspector({
                   </div>
                   <CollapsibleContent>
                     {selectedBatch.artifacts.length ? (
-                      <div className="border-t border-white/10">
-                        <ScrollArea className="max-h-60 min-w-0 [&_[data-slot=scroll-area-viewport]]:overflow-x-hidden">
-                          <div>
-                            {selectedBatch.artifacts.map((artifact) => (
-                              <ArtifactRow
-                                key={artifact.id}
-                                artifact={artifact}
-                                active={artifact.id === selectedArtifactId}
-                                onSelect={() => setSelectedArtifactId(artifact.id)}
-                              />
-                            ))}
-                          </div>
-                        </ScrollArea>
+                      <div className="max-h-[min(24rem,calc(100dvh-360px))] overflow-y-auto overflow-x-hidden border-t border-white/10">
+                        <div>
+                          {selectedBatch.artifacts.map((artifact) => (
+                            <ArtifactRow
+                              key={artifact.id}
+                              artifact={artifact}
+                              active={artifact.id === selectedArtifactId}
+                              onSelect={() => setSelectedArtifactId(artifact.id)}
+                            />
+                          ))}
+                        </div>
                       </div>
                     ) : (
                       <div className="border-t border-white/10 p-3 text-[11px] text-slate-500">
-                        No generated assets are visible yet.
+                        No final LFS output artifacts yet.
                       </div>
                     )}
                   </CollapsibleContent>

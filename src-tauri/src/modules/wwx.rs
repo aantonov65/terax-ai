@@ -832,6 +832,7 @@ fn static_link(src: &Path, dst: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(unix))]
 fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -848,6 +849,175 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn ensure_research_ready(product_dir: &Path) -> Result<(), String> {
+    let research = product_dir.join("research");
+    let missing = ["archetypes.md", "hotwords.md", "mechanisms.md"]
+        .iter()
+        .filter(|name| {
+            let path = research.join(name);
+            !path.is_file()
+                || fs::metadata(&path)
+                    .map(|meta| meta.len() == 0)
+                    .unwrap_or(true)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Product research is missing in app storage: {}. Add or import product research before advancing LFS.",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn research_filenames() -> [&'static str; 3] {
+    ["archetypes.md", "hotwords.md", "mechanisms.md"]
+}
+
+fn materialize_product_research(
+    conn: &Connection,
+    product_id: &str,
+    product_code: &str,
+    config_json: &str,
+    product_dir: &Path,
+) -> Result<(), String> {
+    let research_dir = product_dir.join("research");
+    fs::create_dir_all(&research_dir).map_err(|e| e.to_string())?;
+    copy_app_research(conn, product_id, &research_dir)?;
+    if missing_research_files(&research_dir).is_empty() {
+        return Ok(());
+    }
+
+    if let Some(source) = find_legacy_product_research(product_code, config_json) {
+        for name in research_filenames() {
+            let src = source.join("research").join(name);
+            if !src.is_file() {
+                continue;
+            }
+            let bytes = fs::read(&src).map_err(|e| e.to_string())?;
+            upsert_artifact(
+                conn,
+                product_id,
+                product_id,
+                &format!("research/{name}"),
+                name,
+                &bytes,
+                "product-research-import",
+                false,
+            )?;
+        }
+        copy_app_research(conn, product_id, &research_dir)?;
+    }
+    Ok(())
+}
+
+fn copy_app_research(conn: &Connection, product_id: &str, research_dir: &Path) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT filename, content_text, content_blob FROM artifacts WHERE product_id = ?1 AND batch_id = ?1 AND filename LIKE 'research/%' AND deleted_at IS NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![product_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (filename, text, blob) = row.map_err(|e| e.to_string())?;
+        let Some(name) = filename.strip_prefix("research/") else {
+            continue;
+        };
+        if !research_filenames().contains(&name) {
+            continue;
+        }
+        let target = research_dir.join(name);
+        if let Some(text) = text {
+            fs::write(target, text).map_err(|e| e.to_string())?;
+        } else if let Some(blob) = blob {
+            fs::write(target, blob).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn missing_research_files(research_dir: &Path) -> Vec<&'static str> {
+    research_filenames()
+        .iter()
+        .filter(|name| {
+            let path = research_dir.join(name);
+            !path.is_file()
+                || fs::metadata(&path)
+                    .map(|meta| meta.len() == 0)
+                    .unwrap_or(true)
+        })
+        .copied()
+        .collect()
+}
+
+fn find_legacy_product_research(product_code: &str, config_json: &str) -> Option<PathBuf> {
+    let products = Path::new(ENGINE_ROOT).join("products");
+    let mut best: Option<(i32, PathBuf)> = None;
+    for entry in fs::read_dir(products).ok()? {
+        let entry = entry.ok()?;
+        let dir = entry.path();
+        if !dir.is_dir() || !missing_research_files(&dir.join("research")).is_empty() {
+            continue;
+        }
+        let score = legacy_product_score(product_code, config_json, &dir);
+        if score <= 0 {
+            continue;
+        }
+        if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+            best = Some((score, dir));
+        }
+    }
+    best.map(|(_, dir)| dir)
+}
+
+fn legacy_product_score(product_code: &str, config_json: &str, dir: &Path) -> i32 {
+    let folder = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let code = product_code.to_lowercase();
+    let app = config_json.to_lowercase();
+    let legacy_config = fs::read_to_string(dir.join("config.json"))
+        .unwrap_or_default()
+        .to_lowercase();
+    let mut score = 0;
+    if folder == code {
+        score += 100;
+    } else if folder.starts_with(&code) || code.starts_with(&folder) {
+        score += 30;
+    }
+    if !code.is_empty() && legacy_config.contains(&format!("\"product_code\": \"{code}\"")) {
+        score += 70;
+    }
+    for token in ["joint", "joints", "jnt", "walk", "knee", "arthritis"] {
+        if app.contains(token) && (folder.contains(token) || legacy_config.contains(token)) {
+            score += 25;
+        }
+    }
+    for token in ["thyro", "thyroid", "hormone", "levothyroxine"] {
+        if app.contains(token) && (folder.contains(token) || legacy_config.contains(token)) {
+            score += 25;
+        }
+    }
+    for token in ["naturalrems", "sea moss", "nrjoints"] {
+        if app.contains(token) && legacy_config.contains(token) {
+            score += 10;
+        }
+    }
+    score
 }
 
 fn materialize_runner(
@@ -881,13 +1051,8 @@ fn materialize_runner(
     let product_dir = root.join("products").join(&product_code);
     let batch_dir = product_dir.join("batches").join(&batch_id);
     fs::create_dir_all(&batch_dir).map_err(|e| e.to_string())?;
-    fs::create_dir_all(product_dir.join("research")).map_err(|e| e.to_string())?;
-    fs::write(product_dir.join("config.json"), config_json).map_err(|e| e.to_string())?;
-
-    let engine_product = Path::new(ENGINE_ROOT).join("products").join(&product_code);
-    if engine_product.join("research").exists() {
-        copy_dir(&engine_product.join("research"), &product_dir.join("research"))?;
-    }
+    fs::write(product_dir.join("config.json"), &config_json).map_err(|e| e.to_string())?;
+    materialize_product_research(conn, product_id, &product_code, &config_json, &product_dir)?;
 
     let mut stmt = conn
         .prepare("SELECT filename, content_text, content_blob FROM artifacts WHERE batch_id = ?1 AND deleted_at IS NULL")
@@ -944,7 +1109,7 @@ fn ingest_runner(
         let path = batch_dir.join(name);
         if path.is_file() {
             let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-            ingested.push(upsert_artifact(conn, product_id, batch_pk, name, name, &bytes, "runner", true)?);
+            ingested.push(upsert_artifact(conn, product_id, batch_pk, name, name, &bytes, "runner", false)?);
         }
     }
     for dir in ["output-v41", "output", "images"] {
@@ -995,8 +1160,56 @@ fn run_lfs(app: AppHandle, input: LfsJobInput, workflow: &str, resume: bool) -> 
     )
     .map_err(|e| e.to_string())?;
 
-    let (root, _product_code, batch_id, batch_dir) =
+    let (root, product_code, batch_id, batch_dir) =
         materialize_runner(&app, &conn, &run_id, &input.product_id, &input.batch_id)?;
+    if resume {
+        let product_dir = root.join("products").join(&product_code);
+        if let Err(reason) = ensure_research_ready(&product_dir) {
+            let finished = now_ms();
+            let final_stage = Some("research_cards".to_string());
+            conn.execute(
+                "UPDATE runs SET status = 'blocked', current_stage = ?2, finished_at = ?3, error = ?4, updated_at = ?3 WHERE id = ?1",
+                params![run_id, final_stage, finished, reason],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE batches SET status = 'blocked', current_stage = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?1",
+                params![input.batch_id, final_stage, finished],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO run_events (id, run_id, batch_id, stage, level, message, payload_json, created_at) VALUES (?1, ?2, ?3, ?4, 'error', ?5, ?6, ?7)",
+                params![
+                    id("evt"),
+                    run_id,
+                    input.batch_id,
+                    final_stage,
+                    workflow,
+                    serde_json::json!({"stderr": reason, "stdout": ""}).to_string(),
+                    finished
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            let artifacts = list_artifacts_for_batch(&conn, &input.batch_id).unwrap_or_default();
+            let _ = fs::remove_dir_all(&root);
+            return Ok(WwxJobResult {
+                ok: false,
+                workflow: workflow.into(),
+                batch_id: input.batch_id,
+                product_id: input.product_id,
+                run_id,
+                status: "blocked".into(),
+                current_stage: final_stage,
+                awaiting_review: false,
+                retryable: false,
+                reason: Some(reason.clone()),
+                stdout: "".into(),
+                stderr: reason,
+                exit_code: None,
+                artifacts,
+            });
+        }
+    }
     let input_angles = batch_dir.join("angles.md");
     let script = Path::new(ENGINE_ROOT).join("tools").join("lfs_agent.py");
     let python = Path::new(ENGINE_ROOT).join(".venv").join("bin").join("python");

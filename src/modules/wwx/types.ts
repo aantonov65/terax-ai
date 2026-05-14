@@ -40,6 +40,7 @@ export type ArtifactSummary = {
   id: string;
   batchId: string;
   label: string;
+  filename?: string;
   path: string;
   kind: ArtifactKind;
   content?: string;

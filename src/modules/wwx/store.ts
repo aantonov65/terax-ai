@@ -224,6 +224,7 @@ function mapProduct(product: NativeProduct): ProductSummary {
 
 function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
   const decisions = decisionCounts(batch.artifacts);
+  const visibleArtifacts = batch.artifacts.filter(isFinalLfsOutputArtifact);
   return {
     id: batch.id,
     name: batch.name,
@@ -239,7 +240,7 @@ function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
     strategyPath: artifactPath(batch.artifacts, "strategy.json"),
     manifestPath: artifactPath(batch.artifacts, "lfs-v41-manifest.json"),
     reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
-    artifacts: batch.artifacts.map(mapArtifact),
+    artifacts: visibleArtifacts.map(mapArtifact),
     runs: batch.runs.map(mapRun),
     alerts: alertsFor(batch),
   };
@@ -250,12 +251,18 @@ function mapArtifact(artifact: NativeArtifact): ArtifactSummary {
     id: artifact.id,
     batchId: artifact.batchId,
     label: artifact.label || artifact.filename,
+    filename: artifact.filename,
     path: `app://wwx/artifacts/${artifact.id}`,
     kind: toArtifactKind(artifact.kind),
     size: artifact.size,
     mtime: artifact.updatedAt,
     source: "account",
   };
+}
+
+function isFinalLfsOutputArtifact(artifact: NativeArtifact): boolean {
+  const filename = artifact.filename.replace(/^\/+/, "");
+  return filename.startsWith("output-v41/") && filename.endsWith(".md");
 }
 
 function mapRun(run: NativeRun): { id: string; batchId: string; label: string; status: RunStatus; stage?: string; lastEvent?: string; updatedAt?: number } {
@@ -352,6 +359,6 @@ function nextAction(status: BatchStatus, stage?: string | null): string {
 
 function alertsFor(batch: NativeBatch): string[] {
   if (batch.status === "blocked") return ["A recorded run ended with a failure event."];
-  if (!batch.artifacts.length) return ["No generated artifacts are visible yet."];
+  if (!batch.artifacts.some(isFinalLfsOutputArtifact)) return ["No final LFS output artifacts are visible yet."];
   return [];
 }
