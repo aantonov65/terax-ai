@@ -1,9 +1,21 @@
-import { createBatchInStore, createProductInStore, type CreatedBatch } from "./store";
+import {
+  createBatchInStore,
+  createProductInStore,
+  writeWwxArtifact,
+  type CreatedBatch,
+} from "./store";
+
+export type ProductResearchDraft = {
+  archetypes: string;
+  hotwords: string;
+  mechanisms: string;
+};
 
 export type CreateProductInput = {
   workspaceRoot: string;
   productFolder?: string;
   config: Record<string, unknown>;
+  research: ProductResearchDraft;
 };
 
 export type CreateBatchInput = {
@@ -15,6 +27,7 @@ export type CreateBatchInput = {
 export async function createWwxProduct({
   productFolder,
   config,
+  research,
 }: CreateProductInput): Promise<{ productFolder: string; productPath: string; productCode: string; productId: string }> {
   const folder = safeSegment(
     productFolder ||
@@ -24,7 +37,13 @@ export async function createWwxProduct({
       "product",
   );
   const normalized = normalizeConfig(config, folder);
-  return createProductInStore({ productFolder: folder, config: normalized });
+  const created = await createProductInStore({ productFolder: folder, config: normalized });
+  await Promise.all([
+    persistResearchFile(created.productId, "archetypes", research.archetypes),
+    persistResearchFile(created.productId, "hotwords", research.hotwords),
+    persistResearchFile(created.productId, "mechanisms", research.mechanisms),
+  ]);
+  return created;
 }
 
 export async function createWwxBatch({
@@ -69,4 +88,22 @@ function stringValue(value: unknown): string | null {
 function productCodeFromFolder(folder: string): string {
   const compact = folder.toUpperCase().replace(/[^A-Z0-9-]+/g, "");
   return compact || "PRODUCT";
+}
+
+async function persistResearchFile(
+  productId: string,
+  name: keyof ProductResearchDraft,
+  contentText: string,
+): Promise<void> {
+  await writeWwxArtifact({
+    productId,
+    batchId: productId,
+    kind: "research",
+    label: `${name}.md`,
+    filename: `research/${name}.md`,
+    mimeType: "text/markdown",
+    contentText,
+    source: "product-create",
+    public: false,
+  });
 }

@@ -11,13 +11,31 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { safeSegment } from "./mutations";
+import { safeSegment, type ProductResearchDraft } from "./mutations";
 import type { ProductSummary } from "./types";
 
 export type ProductDraft = {
   productFolder: string;
   config: Record<string, unknown>;
+  research: ProductResearchDraft;
 };
+
+type ResearchFileKey = keyof ProductResearchDraft;
+
+type LoadedResearchFile = {
+  name: string;
+  text: string;
+};
+
+const RESEARCH_FILES: Array<{
+  key: ResearchFileKey;
+  filename: `${ResearchFileKey}.md`;
+  label: string;
+}> = [
+  { key: "archetypes", filename: "archetypes.md", label: "Archetypes" },
+  { key: "hotwords", filename: "hotwords.md", label: "Hotwords" },
+  { key: "mechanisms", filename: "mechanisms.md", label: "Mechanisms" },
+];
 
 type ProductDialogProps = {
   open: boolean;
@@ -39,6 +57,11 @@ export function CreateProductDialog({
   onCreate,
 }: ProductDialogProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const researchRefs = useRef<Record<ResearchFileKey, HTMLInputElement | null>>({
+    archetypes: null,
+    hotwords: null,
+    mechanisms: null,
+  });
   const [folder, setFolder] = useState("");
   const [brand, setBrand] = useState("");
   const [productName, setProductName] = useState("");
@@ -47,6 +70,9 @@ export function CreateProductDialog({
   const [url, setUrl] = useState("");
   const [target, setTarget] = useState("");
   const [rawJson, setRawJson] = useState("");
+  const [researchFiles, setResearchFiles] = useState<
+    Partial<Record<ResearchFileKey, LoadedResearchFile>>
+  >({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,7 +80,10 @@ export function CreateProductDialog({
     setError(null);
   }, [open]);
 
-  const canSubmit = Boolean(folder.trim() && productName.trim());
+  const hasRequiredResearch = RESEARCH_FILES.every(
+    ({ key }) => Boolean(researchFiles[key]?.text.trim()),
+  );
+  const canSubmit = Boolean(folder.trim() && productName.trim() && hasRequiredResearch);
 
   const configPreview = useMemo(() => {
     const base = parseRawJson(rawJson) ?? {};
@@ -79,6 +108,11 @@ export function CreateProductDialog({
       await onCreate({
         productFolder: safeSegment(folder),
         config: configPreview,
+        research: {
+          archetypes: researchFiles.archetypes?.text ?? "",
+          hotwords: researchFiles.hotwords?.text ?? "",
+          mechanisms: researchFiles.mechanisms?.text ?? "",
+        },
       });
       onOpenChange(false);
       reset();
@@ -116,7 +150,32 @@ export function CreateProductDialog({
     }
   };
 
+  const loadResearchFile = async (
+    key: ResearchFileKey,
+    file: File | undefined,
+  ) => {
+    if (!file) return;
+    setError(null);
+    try {
+      const text = await file.text();
+      if (!text.trim()) {
+        const filename = RESEARCH_FILES.find((item) => item.key === key)?.filename;
+        throw new Error(`${filename} is empty.`);
+      }
+      setResearchFiles((prev) => ({
+        ...prev,
+        [key]: { name: file.name, text },
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const reset = () => {
+    if (fileRef.current) fileRef.current.value = "";
+    for (const ref of Object.values(researchRefs.current)) {
+      if (ref) ref.value = "";
+    }
     setFolder("");
     setBrand("");
     setProductName("");
@@ -125,22 +184,23 @@ export function CreateProductDialog({
     setUrl("");
     setTarget("");
     setRawJson("");
+    setResearchFiles({});
     setError(null);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-40px)] w-[calc(100vw-32px)] max-w-none overflow-hidden rounded-lg border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl sm:max-w-none xl:w-[min(1755px,calc(100vw-64px))]">
+      <DialogContent className="flex max-h-[calc(100dvh-40px)] w-[calc(100vw-32px)] max-w-none flex-col gap-4 overflow-hidden rounded-lg border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl sm:max-w-none xl:w-[min(1755px,calc(100vw-64px))]">
         <DialogHeader>
           <DialogTitle>Create Product</DialogTitle>
           <DialogDescription>
-            Upload a product config or fill the core fields. The saved file is
-            written under the workspace products directory.
+            Upload a product config, fill the core fields, and attach the three
+            research files required by the LFS workflow.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid min-h-0 gap-5 overflow-hidden sm:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-          <div className="space-y-3">
+        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden sm:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+          <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
             <input
               ref={fileRef}
               type="file"
@@ -214,15 +274,59 @@ export function CreateProductDialog({
                 className="min-h-20 rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
               />
             </Field>
+            <div className="space-y-2 border-t border-white/10 pt-3">
+              <div>
+                <div className="text-xs font-medium text-slate-200">
+                  Required LFS research
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Add the raw research sources used to build product cards.
+                </div>
+              </div>
+              {RESEARCH_FILES.map(({ key, filename, label }) => (
+                <div key={key}>
+                  <input
+                    ref={(node) => {
+                      researchRefs.current[key] = node;
+                    }}
+                    type="file"
+                    accept="text/markdown,.md"
+                    className="hidden"
+                    onChange={(event) =>
+                      void loadResearchFile(key, event.target.files?.[0])
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex h-auto w-full items-center justify-between rounded-none border-white/15 bg-[#1b1c20] px-3 py-2 text-left text-slate-100 hover:bg-[#222328]"
+                    onClick={() => researchRefs.current[key]?.click()}
+                  >
+                    <span className="flex flex-col">
+                      <span className="text-xs">{label}</span>
+                      <span className="text-[11px] text-slate-400">
+                        {researchFiles[key]?.name ?? filename}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {researchFiles[key] ? "Replace" : "Upload"}
+                    </span>
+                  </Button>
+                </div>
+              ))}
+            </div>
           </div>
 
-          <Field label="Config Preview">
+          <div className="flex min-h-0 flex-col gap-1.5">
+            <Label className="text-[11px] font-medium text-slate-400">
+              Config Preview
+            </Label>
             <Textarea
               value={JSON.stringify(configPreview, null, 2)}
               readOnly
-              className="min-h-[490px] rounded-none border-white/15 bg-[#101114] font-mono text-[11px] text-slate-200"
+              className="min-h-0 flex-1 rounded-none border-white/15 bg-[#101114] font-mono text-[11px] text-slate-200"
             />
-          </Field>
+          </div>
         </div>
 
         {error ? <div className="text-xs text-destructive">{error}</div> : null}

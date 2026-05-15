@@ -266,6 +266,7 @@ export default function App() {
         workspaceRoot: effectiveWorkspaceRoot,
         productFolder: draft.productFolder,
         config: draft.config,
+        research: draft.research,
       });
       const product: ProductSummary = {
         id: created.productId,
