@@ -4,18 +4,20 @@ import {
   writeWwxArtifact,
   type CreatedBatch,
 } from "./store";
+import {
+  completeProductConfig,
+  completeResearchDraft,
+  validateResearchDraft,
+  type ProductResearchDraft,
+} from "./research";
 
-export type ProductResearchDraft = {
-  archetypes: string;
-  hotwords: string;
-  mechanisms: string;
-};
+export type { ProductResearchDraft } from "./research";
 
 export type CreateProductInput = {
   workspaceRoot: string;
   productFolder?: string;
   config: Record<string, unknown>;
-  research: ProductResearchDraft;
+  research?: Partial<ProductResearchDraft>;
 };
 
 export type CreateBatchInput = {
@@ -37,11 +39,16 @@ export async function createWwxProduct({
       "product",
   );
   const normalized = normalizeConfig(config, folder);
+  const completedResearch = completeResearchDraft(research, normalized, folder);
+  const validation = validateResearchDraft(completedResearch);
+  if (!validation.ok) {
+    throw new Error(`Generated product research is invalid: ${validation.missing.join("; ")}`);
+  }
   const created = await createProductInStore({ productFolder: folder, config: normalized });
   await Promise.all([
-    persistResearchFile(created.productId, "archetypes", research.archetypes),
-    persistResearchFile(created.productId, "hotwords", research.hotwords),
-    persistResearchFile(created.productId, "mechanisms", research.mechanisms),
+    persistResearchFile(created.productId, "archetypes", completedResearch.archetypes),
+    persistResearchFile(created.productId, "hotwords", completedResearch.hotwords),
+    persistResearchFile(created.productId, "mechanisms", completedResearch.mechanisms),
   ]);
   return created;
 }
@@ -69,7 +76,7 @@ function normalizeConfig(
     next.product_name =
       stringValue(next.name) || stringValue(next.brand) || productFolder;
   }
-  return next;
+  return completeProductConfig(next, productFolder);
 }
 
 export function safeSegment(value: string): string {

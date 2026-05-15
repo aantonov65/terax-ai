@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { safeSegment, type ProductResearchDraft } from "./mutations";
+import { generateStarterResearch, validateResearchDraft } from "./research";
 import type { ProductSummary } from "./types";
 
 export type ProductDraft = {
@@ -66,7 +67,7 @@ export function CreateProductDialog({
   const [brand, setBrand] = useState("");
   const [productName, setProductName] = useState("");
   const [price, setPrice] = useState("");
-  const [guarantee, setGuarantee] = useState("");
+  const [guarantee, setGuarantee] = useState("60-day");
   const [url, setUrl] = useState("");
   const [target, setTarget] = useState("");
   const [rawJson, setRawJson] = useState("");
@@ -79,11 +80,6 @@ export function CreateProductDialog({
     if (!open) return;
     setError(null);
   }, [open]);
-
-  const hasRequiredResearch = RESEARCH_FILES.every(
-    ({ key }) => Boolean(researchFiles[key]?.text.trim()),
-  );
-  const canSubmit = Boolean(folder.trim() && productName.trim() && hasRequiredResearch);
 
   const configPreview = useMemo(() => {
     const base = parseRawJson(rawJson) ?? {};
@@ -101,6 +97,28 @@ export function CreateProductDialog({
     };
   }, [brand, folder, guarantee, price, productName, rawJson, target, url]);
 
+  const generatedResearch = useMemo(
+    () => generateStarterResearch(configPreview, safeSegment(folder)),
+    [configPreview, folder],
+  );
+  const resolvedResearch = useMemo<ProductResearchDraft>(
+    () => ({
+      archetypes: researchFiles.archetypes?.text ?? generatedResearch.archetypes,
+      hotwords: researchFiles.hotwords?.text ?? generatedResearch.hotwords,
+      mechanisms: researchFiles.mechanisms?.text ?? generatedResearch.mechanisms,
+    }),
+    [generatedResearch, researchFiles],
+  );
+  const researchValidation = useMemo(
+    () => validateResearchDraft(resolvedResearch),
+    [resolvedResearch],
+  );
+  const hasPricing = Boolean(price.trim() || hasConfigPricing(configPreview));
+  const hasGuarantee = Boolean(guarantee.trim() || hasConfigOffer(configPreview));
+  const canSubmit = Boolean(
+    folder.trim() && productName.trim() && hasPricing && hasGuarantee && researchValidation.ok,
+  );
+
   const submit = async () => {
     if (!canSubmit) return;
     setError(null);
@@ -108,11 +126,7 @@ export function CreateProductDialog({
       await onCreate({
         productFolder: safeSegment(folder),
         config: configPreview,
-        research: {
-          archetypes: researchFiles.archetypes?.text ?? "",
-          hotwords: researchFiles.hotwords?.text ?? "",
-          mechanisms: researchFiles.mechanisms?.text ?? "",
-        },
+        research: resolvedResearch,
       });
       onOpenChange(false);
       reset();
@@ -180,7 +194,7 @@ export function CreateProductDialog({
     setBrand("");
     setProductName("");
     setPrice("");
-    setGuarantee("");
+    setGuarantee("60-day");
     setUrl("");
     setTarget("");
     setRawJson("");
@@ -194,8 +208,8 @@ export function CreateProductDialog({
         <DialogHeader>
           <DialogTitle>Create Product</DialogTitle>
           <DialogDescription>
-            Upload a product config, fill the core fields, and attach the three
-            research files required by the LFS workflow.
+            Fill product details or upload a config. Starter LFS research is generated
+            automatically; upload research files only when you want to replace it.
           </DialogDescription>
         </DialogHeader>
 
@@ -280,7 +294,7 @@ export function CreateProductDialog({
                   Required LFS research
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Add the raw research sources used to build product cards.
+                  Auto-generated from product details. Optional: replace any file.
                 </div>
               </div>
               {RESEARCH_FILES.map(({ key, filename, label }) => (
@@ -305,11 +319,11 @@ export function CreateProductDialog({
                     <span className="flex flex-col">
                       <span className="text-xs">{label}</span>
                       <span className="text-[11px] text-slate-400">
-                        {researchFiles[key]?.name ?? filename}
+                        {researchFiles[key]?.name ?? `Auto-generated ${filename}`}
                       </span>
                     </span>
                     <span className="text-[11px] text-slate-400">
-                      {researchFiles[key] ? "Replace" : "Upload"}
+                      {researchFiles[key] ? "Replace" : "Optional"}
                     </span>
                   </Button>
                 </div>
@@ -329,6 +343,15 @@ export function CreateProductDialog({
           </div>
         </div>
 
+        {!hasPricing ? (
+          <div className="text-xs text-amber-300">Add a price or upload a config with pricing_rules.</div>
+        ) : null}
+        {!hasGuarantee ? (
+          <div className="text-xs text-amber-300">Add a guarantee or upload a config with offer_architecture.</div>
+        ) : null}
+        {!researchValidation.ok ? (
+          <div className="text-xs text-destructive">{researchValidation.missing.join("; ")}</div>
+        ) : null}
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
         <DialogFooter>
@@ -423,6 +446,22 @@ function Field({
       {children}
     </div>
   );
+}
+
+function hasConfigPricing(config: Record<string, unknown>): boolean {
+  const pricing = config.pricing_rules;
+  if (!isRecord(pricing)) return false;
+  return pricing.single_bag_price_usd !== undefined && Array.isArray(pricing.canonical_phrasings);
+}
+
+function hasConfigOffer(config: Record<string, unknown>): boolean {
+  const offer = config.offer_architecture;
+  if (!isRecord(offer)) return false;
+  return Array.isArray(offer.what_you_get) && Array.isArray(offer.price_anchor_stack);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseRawJson(value: string): Record<string, unknown> | null {

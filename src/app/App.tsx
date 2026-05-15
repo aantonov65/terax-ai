@@ -214,10 +214,13 @@ export default function App() {
       }
 
       const product = productForBatch(batch);
+      const fallbackProductId = batch.productPath?.startsWith("app://wwx/products/")
+        ? batch.productPath.slice("app://wwx/products/".length)
+        : batch.productCode ?? "legacy";
       const sessionId = useChatStore.getState().newSession();
       const next: AgentWindow = {
         id: `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-        productId: product?.id ?? batch.productCode ?? "legacy",
+        productId: product?.id ?? fallbackProductId,
         productCode: product?.code ?? batch.productCode,
         batchId: batch.id,
         batchPath: batch.path,
@@ -259,6 +262,50 @@ export default function App() {
     },
     [ensureAgentWindowForBatch],
   );
+
+  useEffect(() => {
+    const handleCreatedBatch = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        productId: string;
+        productCode: string;
+        productName: string;
+        productPath: string;
+        batchId: string;
+        batchName?: string;
+        batchPath: string;
+        metaPath: string;
+      }>).detail;
+      if (!detail?.batchId) return;
+      const batch: BatchSummary = {
+        id: detail.batchId,
+        name: detail.batchName || detail.batchId,
+        path: detail.batchPath,
+        product: detail.productName,
+        productCode: detail.productCode,
+        productPath: detail.productPath,
+        status: "draft",
+        batchMetaPath: detail.metaPath,
+        nextAction: "Attach angle.md and start guided LFS.",
+        artifacts: [
+          {
+            id: detail.metaPath,
+            batchId: detail.batchId,
+            label: "Batch Metadata",
+            path: detail.metaPath,
+            kind: "json",
+          },
+        ],
+        runs: [],
+        alerts: [],
+      };
+      ensureAgentWindowForBatch(
+        batch,
+        `Start the guided workflow for ${detail.batchId}. Attach angle.md, then submit it as the first LFS job.`,
+      );
+    };
+    window.addEventListener("wwx:open-created-batch", handleCreatedBatch);
+    return () => window.removeEventListener("wwx:open-created-batch", handleCreatedBatch);
+  }, [ensureAgentWindowForBatch]);
 
   const handleCreateProduct = useCallback(
     async (draft: ProductDraft) => {

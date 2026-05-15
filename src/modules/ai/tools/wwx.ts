@@ -3,6 +3,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getKey } from "../lib/keyring";
 import { native } from "../lib/native";
+import { createWwxBatch, createWwxProduct } from "@/modules/wwx/mutations";
+import { generateStarterResearch, validateResearchDraft } from "@/modules/wwx/research";
 import { resolvePath, type ToolContext } from "./context";
 
 const DIAGNOSTIC_LIMIT = 2_000;
@@ -251,6 +253,86 @@ async function runNativeJob(
 
 export function buildWwxTools(ctx: ToolContext) {
   return {
+    create_lfs_product: tool({
+      description:
+        "Create a WWX product from product details and automatically generate the required starter LFS research files: archetypes.md, hotwords.md, mechanisms.md.",
+      inputSchema: z.object({
+        product_name: z.string().min(1),
+        product_code: z.string().optional().describe("Task-safe product code, for example CMHAIR or NRJNT. No underscores."),
+        brand: z.string().optional(),
+        target_customer: z.string().min(1).describe("Who this is for and what situation they are in."),
+        problem: z.string().min(1).describe("The painful problem/condition the product solves."),
+        mechanism: z.string().min(1).describe("Plain-English reason the product works differently."),
+        price: z.number().positive().describe("Canonical single-bottle/product price used for LFS offer discipline."),
+        guarantee: z.string().optional(),
+        url: z.string().optional(),
+        batch_name: z.string().optional().describe("Optional first batch to create immediately after the product."),
+        expected_cost_risk: z.string().optional(),
+      }),
+      needsApproval: true,
+      execute: async (input) => {
+        try {
+          const config = {
+            brand: input.brand || input.product_name,
+            product_code: input.product_code,
+            product_name: input.product_name,
+            price: input.price,
+            guarantee: input.guarantee || "60-day",
+            url: input.url,
+            problem: input.problem,
+            mechanism: input.mechanism,
+            target_customer: input.target_customer,
+            target_demographic: { description: input.target_customer },
+          };
+          const research = generateStarterResearch(config, input.product_code || input.product_name);
+          const validation = validateResearchDraft(research);
+          if (!validation.ok) throw new Error(validation.missing.join("; "));
+          const created = await createWwxProduct({
+            workspaceRoot: ctx.getWorkspaceRoot() || "",
+            productFolder: input.product_code || input.product_name,
+            config,
+            research,
+          });
+          const batch = input.batch_name
+            ? await createWwxBatch({
+                workspaceRoot: ctx.getWorkspaceRoot() || "",
+                productFolder: created.productId,
+                batchName: input.batch_name,
+              })
+            : null;
+          if (batch && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("wwx:open-created-batch", {
+              detail: {
+                productId: created.productId,
+                productCode: created.productCode,
+                productName: input.product_name,
+                productPath: created.productPath,
+                batchId: batch.batchId,
+                batchName: input.batch_name,
+                batchPath: batch.batchPath,
+                metaPath: batch.metaPath,
+              },
+            }));
+          }
+          return {
+            ok: true,
+            workflow: "create_lfs_product",
+            product_id: created.productId,
+            product_code: created.productCode,
+            product_path: created.productPath,
+            batch_id: batch?.batchId,
+            research_files: ["research/archetypes.md", "research/hotwords.md", "research/mechanisms.md"],
+            detected_sections: validation.sections,
+            next_actions: batch
+              ? ["The new batch agent was opened. Attach angle.md there, then run submit_lfs_job."]
+              : ["Create a batch for this product, then attach angle.md and run submit_lfs_job."],
+          };
+        } catch (error) {
+          return { ok: false, workflow: "create_lfs_product", error: String(error), retryable: false };
+        }
+      },
+    }),
+
     submit_lfs_job: tool({
       description:
         "Submit angle.md content to the bound batch, canonicalize product/task IDs deterministically, and run the first guided LFS checkpoint.",
