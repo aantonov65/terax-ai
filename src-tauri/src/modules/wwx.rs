@@ -785,6 +785,7 @@ fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, Str
         .filter(|s| !s.trim().is_empty())
     {
         let conn = open_db(&app)?;
+        reset_batch_for_new_submission(&conn, &input.batch_id)?;
         upsert_artifact(
             &conn,
             &input.product_id,
@@ -807,6 +808,21 @@ fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, Str
         )?;
     }
     run_lfs(app, input, "submit_lfs_job", false)
+}
+
+fn reset_batch_for_new_submission(conn: &Connection, batch_id: &str) -> Result<(), String> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE artifacts SET deleted_at = ?2, updated_at = ?2 WHERE batch_id = ?1 AND deleted_at IS NULL",
+        params![batch_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE batches SET status = 'draft', current_stage = NULL, updated_at = ?2, revision = revision + 1 WHERE id = ?1",
+        params![batch_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1477,5 +1493,76 @@ mod tests {
         assert!(rows.contains(&("agent-run.json".into(), 0)));
 
         let _ = fs::remove_dir_all(batch_dir);
+    }
+
+    #[test]
+    fn reset_batch_for_new_submission_clears_stale_workflow_artifacts() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let now = now_ms();
+        conn.execute(
+            "INSERT INTO products (id, product_code, name, config_json, created_at, updated_at, revision) VALUES ('prod_NR', 'NR', 'NR', '{}', ?1, ?1, 1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO batches (id, product_id, batch_id, name, status, current_stage, created_at, updated_at, revision) VALUES ('batch_NR_demo', 'prod_NR', 'demo', 'demo', 'blocked', 'lfs_outline', ?1, ?1, 1)",
+            params![now],
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "angles.md",
+            "Angles",
+            b"old",
+            "runner",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "strategy.json",
+            "Strategy",
+            b"{}",
+            "runner",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "prompts/old.md",
+            "Prompt",
+            b"prompt",
+            "runner",
+            false,
+        )
+        .unwrap();
+
+        reset_batch_for_new_submission(&conn, "batch_NR_demo").unwrap();
+
+        let active_artifacts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE batch_id = 'batch_NR_demo' AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (status, current_stage): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, current_stage FROM batches WHERE id = 'batch_NR_demo'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(active_artifacts, 0);
+        assert_eq!(status, "draft");
+        assert_eq!(current_stage, None);
     }
 }

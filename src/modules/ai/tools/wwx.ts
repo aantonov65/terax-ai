@@ -61,10 +61,8 @@ function shortOutput(value: string): string | undefined {
     : value;
 }
 
-function canonicalDateSuffix(): string {
-  const now = new Date();
-  const month = now.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  return `${month}${now.getUTCDate()}`;
+function canonicalTaskSuffix(): string {
+  return "V001";
 }
 
 function frontmatterValue(markdown: string, key: string): string | undefined {
@@ -116,7 +114,7 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
   const existingAds = parseAds(markdown);
   const ads = existingAds.length
     ? existingAds
-    : [{ title: `${product}_LFS_ARC1_A1B1_M1_${canonicalDateSuffix()}`, body: markdown.trim(), fields: {} }];
+    : [{ title: `${product}_LFS_ARC1_A1B1_M1_${canonicalTaskSuffix()}`, body: markdown.trim(), fields: {} }];
   const defaultFormat = frontmatterValue(markdown, "lfs_format_template") || "expose";
   const cta = frontmatterValue(markdown, "cta_text") || "Click \"LEARN MORE\" below to read the article.";
   const lines = [
@@ -133,7 +131,7 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
     "## Ads",
     "",
   ];
-  const suffix = canonicalDateSuffix();
+  const suffix = canonicalTaskSuffix();
   const blocks = ads.map((ad, index) => {
     const mechanism = (ad.fields.mechanism || "M1").toUpperCase();
     const format = ad.fields.format || defaultFormat;
@@ -270,10 +268,16 @@ export function buildWwxTools(ctx: ToolContext) {
           const binding = requireBinding(ctx);
           let markdown = angles_markdown?.trim() || "";
           if (!markdown && angles_path) {
-            const resolved = resolvePath(angles_path, ctx.getCwd());
-            const file = await native.readFile(resolved);
-            if (file.kind !== "text") throw new Error("The supplied angle file is not readable text.");
-            markdown = file.content;
+            if (angles_path.startsWith("app://wwx/artifacts/")) {
+              const artifactId = angles_path.slice("app://wwx/artifacts/".length);
+              const file = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId });
+              markdown = file.contentText?.trim() || "";
+            } else {
+              const resolved = resolvePath(angles_path, ctx.getCwd());
+              const file = await native.readFile(resolved);
+              if (file.kind !== "text") throw new Error("The supplied angle file is not readable text.");
+              markdown = file.content;
+            }
           }
           if (!markdown) throw new Error("Attach angle.md or provide angles_markdown.");
           const result = await runNativeJob("wwx_start_lfs_job", binding, {

@@ -9,6 +9,7 @@ import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import type { AgentTerminalTab } from "@/modules/tabs";
 import { leafIds, type PaneNode } from "@/modules/terminal";
 import { useChat, type UIMessage } from "@ai-sdk/react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Cancel01Icon,
   File01Icon,
@@ -48,6 +49,10 @@ type UploadedTextFile = {
   text: string;
   size: number;
   path?: string;
+};
+
+type StoredArtifact = {
+  id: string;
 };
 
 type MessagePart =
@@ -231,9 +236,10 @@ function AgentTerminalSession({
   const submit = () => {
     const text = value.trim();
     if ((!text && files.length === 0) || isBusy) return;
-    const fileBlocks = files.map(
-      (file) =>
-        `<file name="${escapeAttr(file.name)}" mediaType="${escapeAttr(file.mediaType)}"${file.path ? ` path="${escapeAttr(file.path)}"` : ""}>\n${file.text}\n</file>`,
+    const fileBlocks = files.map((file) =>
+      file.path
+        ? `<file name="${escapeAttr(file.name)}" mediaType="${escapeAttr(file.mediaType)}" path="${escapeAttr(file.path)}" />`
+        : `<file name="${escapeAttr(file.name)}" mediaType="${escapeAttr(file.mediaType)}">\n${file.text}\n</file>`,
     );
     const composed = [...fileBlocks, text].filter(Boolean).join("\n\n");
     const parts: MessagePart[] = composed
@@ -430,8 +436,28 @@ async function materializeUploadedFile(
   text: string,
   boundBatchPath?: string | null,
 ): Promise<string | undefined> {
-  void filename;
-  void text;
-  void boundBatchPath;
-  return undefined;
+  if (!boundBatchPath || !/\.md$/i.test(filename)) return undefined;
+  const binding = useChatStore.getState().live.getWwxBinding?.() ?? null;
+  if (!binding) return undefined;
+
+  const artifact = await invoke<StoredArtifact>("wwx_write_artifact", {
+    input: {
+      productId: binding.productId,
+      batchId: binding.batchId,
+      kind: "angles",
+      label: "Uploaded angle",
+      filename: `uploads/${safeUploadName(filename)}`,
+      mimeType: "text/markdown",
+      contentText: text,
+      source: "upload",
+      public: false,
+    },
+  });
+  return `app://wwx/artifacts/${artifact.id}`;
+}
+
+function safeUploadName(filename: string): string {
+  const leaf = filename.split(/[\\/]/).pop() || "angle.md";
+  const safe = leaf.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return safe || "angle.md";
 }
