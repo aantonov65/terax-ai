@@ -22,7 +22,9 @@ import type {
   ArtifactKind,
   ArtifactSummary,
   BatchSummary,
+  FinalScriptSummary,
   RunSummary,
+  StageSummary,
   WwxIndexState,
 } from "./types";
 
@@ -237,6 +239,95 @@ function RunLine({ run }: { run: RunSummary | null }) {
   );
 }
 
+function stageTone(status: string): string {
+  if (status === "complete" || status === "ok") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+  if (status === "blocked" || status === "failed") return "border-rose-400/30 bg-rose-400/10 text-rose-200";
+  if (status === "awaiting_review" || status === "review") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+  if (status === "running") return "border-sky-400/30 bg-sky-400/10 text-sky-200";
+  return "border-white/15 bg-white/10 text-slate-300";
+}
+
+function StageTimeline({ stages }: { stages: StageSummary[] }) {
+  if (!stages.length) {
+    return (
+      <div className="border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
+        No stage history is visible yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {stages.map((stage, index) => (
+        <div
+          key={`${stage.stage}-${index}`}
+          className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2 border border-white/15 bg-[#191a1e] px-2.5 py-2"
+        >
+          <div className="min-w-0">
+            <div className="truncate text-[11.5px] font-medium text-slate-100">
+              {stage.stage}
+            </div>
+            <div className="text-[10px] text-slate-500">
+              {stage.artifactCount} artifacts{stage.approved ? " · approved" : ""}
+            </div>
+          </div>
+          <span className={cn("border px-1.5 py-1 text-[9.5px]", stageTone(stage.status))}>
+            {stage.status.replace(/_/g, " ")}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function finalDecisionTone(decision: string): string {
+  if (decision === "ship") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+  if (decision === "review") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+  if (decision === "fail") return "border-rose-400/30 bg-rose-400/10 text-rose-200";
+  return "border-white/15 bg-white/10 text-slate-300";
+}
+
+function FinalReview({
+  scripts,
+  onOpenScript,
+}: {
+  scripts: FinalScriptSummary[];
+  onOpenScript: (script: FinalScriptSummary) => void;
+}) {
+  if (!scripts.length) {
+    return (
+      <div className="border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
+        Final manifest decisions are not available yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {scripts.map((script) => (
+        <button
+          key={script.taskId}
+          type="button"
+          onClick={() => onOpenScript(script)}
+          className="grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 border border-white/15 bg-[#191a1e] px-2.5 py-2 text-left hover:bg-[#202126]"
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-[11.5px] font-medium text-slate-100">
+              {script.taskId}
+            </span>
+            <span className="block truncate text-[10px] text-slate-500">
+              {script.semanticReason ?? basename(script.script)}
+            </span>
+          </span>
+          <span className={cn("border px-1.5 py-1 text-[9.5px]", finalDecisionTone(script.decision))}>
+            {script.decision}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ArtifactRow({
   artifact,
   active,
@@ -360,6 +451,15 @@ export function WwxInspector({
 
   const selectedArtifact =
     selectedBatch?.artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
+  const openFinalScript = (script: FinalScriptSummary) => {
+    const artifact = selectedBatch?.artifacts.find(
+      (item) => item.path === script.script || item.label === script.script || item.path.endsWith(script.script),
+    );
+    if (artifact) {
+      setSelectedArtifactId(artifact.id);
+      setDetailsView(false);
+    }
+  };
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#101114] text-slate-100">
@@ -422,6 +522,23 @@ export function WwxInspector({
                           Continue in agent
                         </Button>
                       ) : null}
+                    </section>
+
+                    <section className="min-w-0 space-y-2 overflow-hidden">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Stage Timeline
+                      </div>
+                      <StageTimeline stages={selectedBatch.stageTimeline ?? []} />
+                    </section>
+
+                    <section className="min-w-0 space-y-2 overflow-hidden">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Final Review
+                      </div>
+                      <FinalReview
+                        scripts={selectedBatch.finalScripts ?? []}
+                        onOpenScript={openFinalScript}
+                      />
                     </section>
 
                     {selectedBatch.alerts.length ? (

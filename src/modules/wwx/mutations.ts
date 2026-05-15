@@ -19,6 +19,14 @@ export type CreateProductInput = {
   productFolder?: string;
   config: Record<string, unknown>;
   research?: Partial<ProductResearchDraft>;
+  sourceBundle?: Record<string, unknown>;
+  packageArtifacts?: {
+    sourceAngle: string;
+    angles: string;
+    strategyJson: string;
+    reportJson: string;
+  };
+  approveForProduction?: boolean;
 };
 
 export type CreateBatchInput = {
@@ -31,6 +39,9 @@ export async function createWwxProduct({
   productFolder,
   config,
   research,
+  sourceBundle,
+  packageArtifacts,
+  approveForProduction = false,
 }: CreateProductInput): Promise<{ productFolder: string; productPath: string; productCode: string; productId: string }> {
   const folder = safeSegment(
     productFolder ||
@@ -45,14 +56,14 @@ export async function createWwxProduct({
   if (!validation.ok) {
     throw new Error(`Generated product research is invalid: ${validation.missing.join("; ")}`);
   }
-  const readiness = assessProductReadiness(normalized, completedResearch, false);
+  const readiness = assessProductReadiness(normalized, completedResearch, approveForProduction);
   normalized.wwx_readiness = readiness;
   const created = await createProductInStore({ productFolder: folder, config: normalized });
   await Promise.all([
     persistResearchFile(created.productId, "archetypes", completedResearch.archetypes),
     persistResearchFile(created.productId, "hotwords", completedResearch.hotwords),
     persistResearchFile(created.productId, "mechanisms", completedResearch.mechanisms),
-    persistJsonArtifact(created.productId, "source-bundle.json", {
+    persistJsonArtifact(created.productId, "source-bundle.json", sourceBundle ?? {
       schema: "wwx-source-bundle/v1",
       documents: [
         { label: "config.json", content: JSON.stringify(config, null, 2) },
@@ -66,6 +77,14 @@ export async function createWwxProduct({
       ...readiness,
     }),
   ]);
+  if (packageArtifacts) {
+    await Promise.all([
+      persistPackageFile(created.productId, "source-angle.md", "text/markdown", packageArtifacts.sourceAngle),
+      persistPackageFile(created.productId, "angles.md", "text/markdown", packageArtifacts.angles),
+      persistPackageFile(created.productId, "strategy.json", "application/json", packageArtifacts.strategyJson),
+      persistPackageFile(created.productId, "product-package-report.json", "application/json", packageArtifacts.reportJson),
+    ]);
+  }
   return created;
 }
 
@@ -145,6 +164,25 @@ async function persistJsonArtifact(
     mimeType: "application/json",
     contentText: JSON.stringify(value, null, 2),
     source: "product-create",
+    public: false,
+  });
+}
+
+async function persistPackageFile(
+  productId: string,
+  filename: string,
+  mimeType: string,
+  contentText: string,
+): Promise<void> {
+  await writeWwxArtifact({
+    productId,
+    batchId: productId,
+    kind: filename.endsWith(".md") ? "markdown" : "json",
+    label: filename,
+    filename: `package/${filename}`,
+    mimeType,
+    contentText,
+    source: "product-package",
     public: false,
   });
 }

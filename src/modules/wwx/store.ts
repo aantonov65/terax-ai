@@ -51,6 +51,8 @@ type NativeBatch = {
   artifacts: NativeArtifact[];
   runs: NativeRun[];
   decisionCounts?: { ship: number; review: number; fail: number };
+  stageTimeline?: Array<{ stage: string; status: string; approved: boolean; artifactCount: number }>;
+  finalScripts?: Array<{ taskId: string; script: string; decision: string; semanticReason?: string | null }>;
 };
 
 type NativeProduct = {
@@ -252,6 +254,11 @@ function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
     reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
     artifacts: batch.artifacts.map(mapArtifact),
     runs: batch.runs.map(mapRun),
+    stageTimeline: batch.stageTimeline ?? [],
+    finalScripts: (batch.finalScripts ?? []).map((script) => ({
+      ...script,
+      semanticReason: script.semanticReason ?? undefined,
+    })),
     alerts: alertsFor(batch),
   };
 }

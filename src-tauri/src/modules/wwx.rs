@@ -69,6 +69,24 @@ pub struct WwxQueuedJob {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WwxStageSummary {
+    stage: String,
+    status: String,
+    approved: bool,
+    artifact_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WwxFinalScript {
+    task_id: String,
+    script: String,
+    decision: String,
+    semantic_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WwxBatch {
     id: String,
     product_id: String,
@@ -83,6 +101,8 @@ pub struct WwxBatch {
     artifacts: Vec<WwxArtifact>,
     runs: Vec<WwxRun>,
     decision_counts: DecisionCounts,
+    stage_timeline: Vec<WwxStageSummary>,
+    final_scripts: Vec<WwxFinalScript>,
 }
 
 #[derive(Debug, Default, Serialize, Clone)]
@@ -152,6 +172,38 @@ pub struct CreateProductInput {
 pub struct CreateBatchInput {
     product_id: String,
     batch_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceBundleDocumentInput {
+    label: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateProductPackageInput {
+    product_code: String,
+    batch_id: Option<String>,
+    documents: Vec<SourceBundleDocumentInput>,
+    anthropic_api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedProductPackage {
+    product_code: String,
+    batch_id: String,
+    config_json: String,
+    archetypes: String,
+    hotwords: String,
+    mechanisms: String,
+    source_angle: String,
+    angles: String,
+    strategy_json: String,
+    report_json: String,
+    source_bundle_json: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -604,10 +656,16 @@ fn list_queue_jobs(conn: &Connection) -> Result<Vec<WwxQueuedJob>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
-const MAX_ACTIVE_QUEUE_JOBS: i64 = 6;
+fn max_active_queue_jobs() -> Option<i64> {
+    std::env::var("WWX_MAX_ACTIVE_QUEUE_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+}
 
 fn kick_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -633,7 +691,11 @@ fn kick_scheduler(app: AppHandle) {
                     match result {
                         Ok(job_result) => {
                             let status = if job_result.ok { "complete" } else { "blocked" };
-                            let error = if job_result.ok { None } else { job_result.reason };
+                            let error = if job_result.ok {
+                                None
+                            } else {
+                                job_result.reason
+                            };
                             let _ = conn.execute(
                                 "UPDATE job_queue SET status = ?2, finished_at = ?3, updated_at = ?3, last_error = ?4 WHERE id = ?1",
                                 params![queue_id, status, now, error],
@@ -661,7 +723,7 @@ fn claim_next_queue_job(conn: &Connection) -> Result<Option<(String, LfsJobInput
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if active >= MAX_ACTIVE_QUEUE_JOBS {
+    if max_active_queue_jobs().is_some_and(|limit| active >= limit) {
         return Ok(None);
     }
     let next: Option<(String, String)> = conn
@@ -705,10 +767,115 @@ fn manifest_decision_counts(conn: &Connection, batch_id: &str) -> Result<Decisio
     let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let counts = parsed.get("decision_counts").unwrap_or(&Value::Null);
     Ok(DecisionCounts {
-        ship: counts.get("ship").and_then(Value::as_i64).or_else(|| parsed.get("ship").and_then(Value::as_i64)).unwrap_or(0),
-        review: counts.get("review").and_then(Value::as_i64).or_else(|| parsed.get("review").and_then(Value::as_i64)).unwrap_or(0),
-        fail: counts.get("fail").and_then(Value::as_i64).or_else(|| parsed.get("fail").and_then(Value::as_i64)).unwrap_or(0),
+        ship: counts
+            .get("ship")
+            .and_then(Value::as_i64)
+            .or_else(|| parsed.get("ship").and_then(Value::as_i64))
+            .unwrap_or(0),
+        review: counts
+            .get("review")
+            .and_then(Value::as_i64)
+            .or_else(|| parsed.get("review").and_then(Value::as_i64))
+            .unwrap_or(0),
+        fail: counts
+            .get("fail")
+            .and_then(Value::as_i64)
+            .or_else(|| parsed.get("fail").and_then(Value::as_i64))
+            .unwrap_or(0),
     })
+}
+
+fn agent_stage_timeline(conn: &Connection, batch_id: &str) -> Result<Vec<WwxStageSummary>, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content_text FROM artifacts WHERE batch_id = ?1 AND filename = 'agent-run.json' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(text) = text else {
+        return Ok(vec![]);
+    };
+    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let stages = parsed.get("stages").and_then(Value::as_object);
+    let order = [
+        "compile_input",
+        "research_cards",
+        "lfs_brief",
+        "lfs_outline",
+        "preflight_v41",
+        "batch_generation",
+        "materialize_v41_candidates",
+        "objective_finish_pre_semantic",
+        "semantic_launchable",
+        "objective_finish_final",
+        "semantic_final_check",
+        "manifest_overview",
+    ];
+    Ok(order
+        .iter()
+        .filter_map(|stage| {
+            let entry = stages?.get(*stage)?;
+            Some(WwxStageSummary {
+                stage: (*stage).into(),
+                status: entry
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pending")
+                    .into(),
+                approved: entry
+                    .get("approved")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                artifact_count: entry
+                    .get("artifacts")
+                    .and_then(Value::as_array)
+                    .map(|items| items.len() as i64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+fn manifest_final_scripts(
+    conn: &Connection,
+    batch_id: &str,
+) -> Result<Vec<WwxFinalScript>, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content_text FROM artifacts WHERE batch_id = ?1 AND filename = 'lfs-v41-manifest.json' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(text) = text else {
+        return Ok(vec![]);
+    };
+    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(parsed
+        .get("scripts")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(WwxFinalScript {
+                        task_id: item.get("task_id")?.as_str()?.into(),
+                        script: item.get("script")?.as_str()?.into(),
+                        decision: item.get("decision")?.as_str()?.into(),
+                        semantic_reason: item
+                            .get("semantic_reason")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 #[tauri::command]
@@ -778,6 +945,8 @@ fn list_batches_for_product(
                 artifacts: vec![],
                 runs: vec![],
                 decision_counts: DecisionCounts::default(),
+                stage_timeline: vec![],
+                final_scripts: vec![],
             })
         })
         .map_err(|e| e.to_string())?;
@@ -788,6 +957,8 @@ fn list_batches_for_product(
         batch.artifacts = list_artifacts_for_batch(conn, &batch.id)?;
         batch.runs = list_runs_for_batch(conn, &batch.id)?;
         batch.decision_counts = manifest_decision_counts(conn, &batch.id)?;
+        batch.stage_timeline = agent_stage_timeline(conn, &batch.id)?;
+        batch.final_scripts = manifest_final_scripts(conn, &batch.id)?;
     }
     Ok(batches)
 }
@@ -908,6 +1079,8 @@ pub fn wwx_create_batch(app: AppHandle, input: CreateBatchInput) -> Result<WwxBa
         artifacts: vec![],
         runs: vec![],
         decision_counts: DecisionCounts::default(),
+        stage_timeline: vec![],
+        final_scripts: vec![],
     })
 }
 
@@ -962,6 +1135,114 @@ pub fn wwx_write_artifact(
         Some(input.kind.as_str()),
         input.mime_type.as_deref(),
     )
+}
+
+#[tauri::command]
+pub async fn wwx_generate_product_package(
+    app: AppHandle,
+    input: GenerateProductPackageInput,
+) -> Result<GeneratedProductPackage, String> {
+    tauri::async_runtime::spawn_blocking(move || generate_product_package(app, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn generate_product_package(
+    app: AppHandle,
+    input: GenerateProductPackageInput,
+) -> Result<GeneratedProductPackage, String> {
+    if input.documents.is_empty() {
+        return Err("Add at least one raw source document before generating a package.".into());
+    }
+    let product_code = safe_segment(&input.product_code).to_uppercase();
+    if product_code.is_empty() {
+        return Err("product_code is required".into());
+    }
+    let batch_id = input
+        .batch_id
+        .as_deref()
+        .map(safe_segment)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("{product_code}_LFS_BOOTSTRAP"));
+    let root = runner_root(&runner_cache_root(&app)?, &id("package"))?;
+    let bundle_path = root.join("source-bundle.json");
+    let bundle = serde_json::json!({
+        "schema": "wwx-source-bundle/v1",
+        "documents": input.documents.iter().map(|doc| serde_json::json!({
+            "label": doc.label,
+            "content": doc.content,
+        })).collect::<Vec<_>>(),
+    });
+    fs::write(
+        &bundle_path,
+        serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let script = Path::new(ENGINE_ROOT)
+        .join("tools")
+        .join("product_package.py");
+    let python = Path::new(ENGINE_ROOT)
+        .join(".venv")
+        .join("bin")
+        .join("python");
+    let python_bin = if python.exists() {
+        python
+    } else {
+        PathBuf::from("python3")
+    };
+    let mut cmd = Command::new(python_bin);
+    cmd.current_dir(ENGINE_ROOT)
+        .arg(script)
+        .arg(&bundle_path)
+        .arg("--product")
+        .arg(&product_code)
+        .arg("--batch-id")
+        .arg(&batch_id)
+        .arg("--base-path")
+        .arg(&root);
+    if let Some(key) = input
+        .anthropic_api_key
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        cmd.env("ANTHROPIC_API_KEY", key);
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let _ = fs::remove_dir_all(&root);
+        return Err(format!(
+            "product package generation failed: {}{}",
+            stderr.trim(),
+            if stdout.trim().is_empty() {
+                "".into()
+            } else {
+                format!("\n{}", stdout.trim())
+            }
+        ));
+    }
+    let product_root = root.join("products").join(&product_code);
+    let batch_root = product_root.join("batches").join(&batch_id);
+    let result = GeneratedProductPackage {
+        product_code,
+        batch_id,
+        config_json: read_required_text(&product_root.join("config.json"))?,
+        archetypes: read_required_text(&product_root.join("research").join("archetypes.md"))?,
+        hotwords: read_required_text(&product_root.join("research").join("hotwords.md"))?,
+        mechanisms: read_required_text(&product_root.join("research").join("mechanisms.md"))?,
+        source_angle: read_required_text(&batch_root.join("source-angle.md"))?,
+        angles: read_required_text(&batch_root.join("angles.md"))?,
+        strategy_json: read_required_text(&batch_root.join("strategy.json"))?,
+        report_json: read_required_text(&batch_root.join("product-package-report.json"))?,
+        source_bundle_json: read_required_text(&batch_root.join("source-bundle.json"))?,
+    };
+    let _ = fs::remove_dir_all(&root);
+    Ok(result)
+}
+
+fn read_required_text(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))
 }
 
 #[tauri::command]
@@ -1048,7 +1329,10 @@ pub async fn wwx_resume_lfs_job(
 }
 
 #[tauri::command]
-pub async fn wwx_enqueue_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxQueuedJob, String> {
+pub async fn wwx_enqueue_lfs_job(
+    app: AppHandle,
+    input: LfsJobInput,
+) -> Result<WwxQueuedJob, String> {
     let queued = {
         let conn = open_db(&app)?;
         let now = now_ms();
@@ -1183,7 +1467,8 @@ fn ensure_research_ready(product_dir: &Path) -> Result<(), String> {
             ));
         }
         for name in research_filenames() {
-            let text = fs::read_to_string(product_dir.join("research").join(name)).unwrap_or_default();
+            let text =
+                fs::read_to_string(product_dir.join("research").join(name)).unwrap_or_default();
             if text.contains("Starter ") || text.contains("Auto-generated from product details") {
                 return Err(format!(
                     "Product package is not production-ready: research/{name} is still starter-only"
@@ -1624,7 +1909,11 @@ fn run_lfs_with_context(
     if let Some(workers) = input.generation_workers {
         cmd.arg("--generation-workers").arg(workers.to_string());
     }
-    if let Some(stage) = input.from_stage.as_deref().filter(|stage| !stage.is_empty()) {
+    if let Some(stage) = input
+        .from_stage
+        .as_deref()
+        .filter(|stage| !stage.is_empty())
+    {
         cmd.arg("--from").arg(stage);
     }
     cmd.arg("--base-path").arg(&root);
@@ -2075,7 +2364,11 @@ mod tests {
         assert_eq!(queue_id, "queue-1");
         assert_eq!(claimed.batch_id, "batch_PAN_demo");
         let status: String = conn
-            .query_row("SELECT status FROM job_queue WHERE id = 'queue-1'", [], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM job_queue WHERE id = 'queue-1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(status, "running");
     }

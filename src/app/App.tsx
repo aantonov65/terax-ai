@@ -270,6 +270,9 @@ export default function App() {
         productFolder: draft.productFolder,
         config: draft.config,
         research: draft.research,
+        sourceBundle: draft.sourceBundle,
+        packageArtifacts: draft.packageArtifacts,
+        approveForProduction: draft.approveForProduction,
       });
       const product: ProductSummary = {
         id: created.productId,

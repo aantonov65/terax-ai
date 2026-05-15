@@ -64,6 +64,20 @@ export type RunSummary = {
   updatedAt?: number;
 };
 
+export type StageSummary = {
+  stage: string;
+  status: string;
+  approved: boolean;
+  artifactCount: number;
+};
+
+export type FinalScriptSummary = {
+  taskId: string;
+  script: string;
+  decision: "ship" | "review" | "fail" | string;
+  semanticReason?: string;
+};
+
 export type ProductConfigSummary = {
   brand?: string;
   productName?: string;
@@ -109,6 +123,8 @@ export type BatchSummary = {
   reportPath?: string;
   artifacts: ArtifactSummary[];
   runs: RunSummary[];
+  stageTimeline?: StageSummary[];
+  finalScripts?: FinalScriptSummary[];
   alerts: string[];
 };
 

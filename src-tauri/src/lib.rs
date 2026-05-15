@@ -162,6 +162,7 @@ pub fn run() {
             wwx::wwx_list_artifacts,
             wwx::wwx_read_artifact,
             wwx::wwx_write_artifact,
+            wwx::wwx_generate_product_package,
             wwx::wwx_start_lfs_job,
             wwx::wwx_advance_lfs_job,
             wwx::wwx_resume_lfs_job,
