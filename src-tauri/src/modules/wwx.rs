@@ -390,7 +390,7 @@ fn upsert_artifact_with_metadata(
     let size = content.len() as i64;
     let existing: Option<String> = conn
         .query_row(
-            "SELECT id FROM artifacts WHERE batch_id = ?1 AND filename = ?2 AND deleted_at IS NULL",
+            "SELECT id FROM artifacts WHERE batch_id = ?1 AND filename = ?2",
             params![batch_id, filename],
             |row| row.get(0),
         )
@@ -779,15 +779,24 @@ pub async fn wwx_start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<Wwx
 }
 
 fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
+    let conn = open_db(&app)?;
+    let cache_root = runner_cache_root(&app)?;
+    start_lfs_job_with_context(&conn, &cache_root, input)
+}
+
+fn start_lfs_job_with_context(
+    conn: &Connection,
+    cache_root: &Path,
+    input: LfsJobInput,
+) -> Result<WwxJobResult, String> {
     if let Some(markdown) = input
         .angles_markdown
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
-        let conn = open_db(&app)?;
-        reset_batch_for_new_submission(&conn, &input.batch_id)?;
+        reset_batch_for_new_submission(conn, &input.batch_id)?;
         upsert_artifact(
-            &conn,
+            conn,
             &input.product_id,
             &input.batch_id,
             "source-angle.md",
@@ -797,7 +806,7 @@ fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, Str
             true,
         )?;
         upsert_artifact(
-            &conn,
+            conn,
             &input.product_id,
             &input.batch_id,
             "angles.md",
@@ -807,7 +816,7 @@ fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, Str
             true,
         )?;
     }
-    run_lfs(app, input, "submit_lfs_job", false)
+    run_lfs_with_context(conn, cache_root, input, "submit_lfs_job", false)
 }
 
 fn reset_batch_for_new_submission(conn: &Connection, batch_id: &str) -> Result<(), String> {
@@ -870,13 +879,15 @@ pub fn wwx_cancel_lfs_job(
         .ok_or_else(|| "run not found after cancel".into())
 }
 
-fn runner_root(app: &AppHandle, run_id: &str) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
+fn runner_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("wwx-runner")
-        .join(run_id);
+        .map_err(|e| e.to_string())
+        .map(|dir| dir.join("wwx-runner"))
+}
+
+fn runner_root(cache_root: &Path, run_id: &str) -> Result<PathBuf, String> {
+    let dir = cache_root.join(run_id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -1088,13 +1099,13 @@ fn legacy_product_score(product_code: &str, config_json: &str, dir: &Path) -> i3
 }
 
 fn materialize_runner(
-    app: &AppHandle,
+    cache_root: &Path,
     conn: &Connection,
     run_id: &str,
     product_id: &str,
     batch_pk: &str,
 ) -> Result<(PathBuf, String, String, PathBuf), String> {
-    let root = runner_root(app, run_id)?;
+    let root = runner_root(cache_root, run_id)?;
     let (product_code, config_json): (String, String) = conn
         .query_row(
             "SELECT product_code, config_json FROM products WHERE id = ?1 AND deleted_at IS NULL",
@@ -1258,6 +1269,17 @@ fn run_lfs(
     resume: bool,
 ) -> Result<WwxJobResult, String> {
     let conn = open_db(&app)?;
+    let cache_root = runner_cache_root(&app)?;
+    run_lfs_with_context(&conn, &cache_root, input, workflow, resume)
+}
+
+fn run_lfs_with_context(
+    conn: &Connection,
+    cache_root: &Path,
+    input: LfsJobInput,
+    workflow: &str,
+    resume: bool,
+) -> Result<WwxJobResult, String> {
     let run_id = id("run");
     let now = now_ms();
     conn.execute(
@@ -1271,8 +1293,13 @@ fn run_lfs(
     )
     .map_err(|e| e.to_string())?;
 
-    let (root, product_code, batch_id, batch_dir) =
-        materialize_runner(&app, &conn, &run_id, &input.product_id, &input.batch_id)?;
+    let (root, product_code, batch_id, batch_dir) = materialize_runner(
+        cache_root,
+        conn,
+        &run_id,
+        &input.product_id,
+        &input.batch_id,
+    )?;
     if resume {
         let product_dir = root.join("products").join(&product_code);
         if let Err(reason) = ensure_research_ready(&product_dir) {
@@ -1301,7 +1328,7 @@ fn run_lfs(
                 ],
             )
             .map_err(|e| e.to_string())?;
-            let artifacts = list_artifacts_for_batch(&conn, &input.batch_id).unwrap_or_default();
+            let artifacts = list_artifacts_for_batch(conn, &input.batch_id).unwrap_or_default();
             let _ = fs::remove_dir_all(&root);
             return Ok(WwxJobResult {
                 ok: false,
@@ -1360,7 +1387,7 @@ fn run_lfs(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let exit_code = output.status.code();
     let artifacts =
-        ingest_runner(&conn, &input.product_id, &input.batch_id, &batch_dir).unwrap_or_default();
+        ingest_runner(conn, &input.product_id, &input.batch_id, &batch_dir).unwrap_or_default();
     let final_stage = parse_current_stage(&stdout).or_else(|| parse_agent_stage(&batch_dir));
     let status = if output.status.success() {
         parse_status(&stdout).unwrap_or_else(|| "awaiting_review".into())
@@ -1496,6 +1523,51 @@ mod tests {
     }
 
     #[test]
+    fn upsert_artifact_revives_soft_deleted_rows_with_the_original_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let first = upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "spec.json",
+            "Spec",
+            br#"{"old":true}"#,
+            "runner",
+            true,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1",
+            params![first.id, now_ms()],
+        )
+        .unwrap();
+
+        let revived = upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "spec.json",
+            "Spec",
+            br#"{"old":false}"#,
+            "runner",
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(revived.id, first.id);
+        let active_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE batch_id = 'batch_NR_demo' AND filename = 'spec.json' AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_rows, 1);
+    }
+
+    #[test]
     fn reset_batch_for_new_submission_clears_stale_workflow_artifacts() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -1564,5 +1636,167 @@ mod tests {
         assert_eq!(active_artifacts, 0);
         assert_eq!(status, "draft");
         assert_eq!(current_stage, None);
+    }
+
+    #[test]
+    #[ignore = "requires the local ww-2 engine checkout and exercises a real LFS workflow"]
+    fn smoke_uploaded_angle_submission_generates_lfs_artifacts() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let engine_root = Path::new(ENGINE_ROOT);
+        let config_json = fs::read_to_string(engine_root.join("products/org-bloat/config.json"))
+            .expect("org-bloat config should exist in the local engine checkout");
+        let angle_markdown = fs::read_to_string(
+            engine_root.join("products/org-bloat/rips/angles/S06-hair-loss-urgency.md"),
+        )
+        .expect("real angle markdown should exist in the local engine checkout");
+        let now = now_ms();
+        let product_id = "prod_ORG-BLOAT";
+        let batch_pk = "batch_ORG-BLOAT_desktop-smoke";
+
+        conn.execute(
+            "INSERT INTO products (id, product_code, name, config_json, created_at, updated_at, revision) VALUES (?1, 'ORG-BLOAT', 'Organica Lymphatic Drainage Drops', ?2, ?3, ?3, 1)",
+            params![product_id, config_json, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO batches (id, product_id, batch_id, name, status, current_stage, created_at, updated_at, revision) VALUES (?1, ?2, 'desktop-smoke', 'desktop smoke', 'blocked', 'lfs_outline', ?3, ?3, 1)",
+            params![batch_pk, product_id, now],
+        )
+        .unwrap();
+
+        upsert_artifact(
+            &conn,
+            product_id,
+            batch_pk,
+            "spec.json",
+            "Old spec",
+            br#"{"task_ids":["ORG-BLOAT_LFS_ARC1_A1B1_M1_May14"]}"#,
+            "runner",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            product_id,
+            batch_pk,
+            "prompts/ORG-BLOAT_LFS_ARC1_A1B1_M1_May14.md",
+            "Old prompt",
+            b"stale prompt",
+            "runner",
+            false,
+        )
+        .unwrap();
+        upsert_artifact_with_metadata(
+            &conn,
+            product_id,
+            batch_pk,
+            "uploads/S06-hair-loss-urgency.md",
+            "Uploaded angle",
+            angle_markdown.as_bytes(),
+            "upload",
+            false,
+            Some("angles"),
+            Some("text/markdown"),
+        )
+        .unwrap();
+
+        let cache_root = test_batch_dir();
+        let empty_anthropic = cache_root.join("no-anthropic");
+        fs::create_dir_all(&empty_anthropic).unwrap();
+        let previous_anthropic_config = std::env::var_os("ANTHROPIC_CONFIG_DIR");
+        std::env::set_var("ANTHROPIC_CONFIG_DIR", &empty_anthropic);
+
+        let result = start_lfs_job_with_context(
+            &conn,
+            &cache_root,
+            LfsJobInput {
+                product_id: product_id.into(),
+                batch_id: batch_pk.into(),
+                angles_markdown: Some(angle_markdown),
+                run_mode: Some("full".into()),
+                workers: Some(1),
+                generation_workers: Some(1),
+                anthropic_api_key: None,
+            },
+        )
+        .unwrap();
+
+        if let Some(previous) = previous_anthropic_config {
+            std::env::set_var("ANTHROPIC_CONFIG_DIR", previous);
+        } else {
+            std::env::remove_var("ANTHROPIC_CONFIG_DIR");
+        }
+
+        assert!(
+            result.ok,
+            "smoke workflow should complete successfully: {}",
+            result.stderr
+        );
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT filename, public FROM artifacts WHERE batch_id = ?1 AND deleted_at IS NULL ORDER BY filename",
+            )
+            .unwrap();
+        let artifacts = stmt
+            .query_map(params![batch_pk], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let filenames = artifacts
+            .iter()
+            .map(|(filename, _)| filename.as_str())
+            .collect::<Vec<_>>();
+
+        for required in [
+            "source-angle.md",
+            "angles.md",
+            "strategy.json",
+            "lfs-brief-report.json",
+            "lfs-outline-report.json",
+            "lfs-v41-report.json",
+            "lfs-v41-manifest.json",
+        ] {
+            assert!(
+                filenames.contains(&required),
+                "missing expected artifact {required}; got {filenames:?}"
+            );
+        }
+        assert!(
+            filenames
+                .iter()
+                .any(|name| name.starts_with("prompts/") && name.ends_with("_V001.md")),
+            "expected a stable V001 prompt artifact; got {filenames:?}"
+        );
+        assert!(
+            filenames
+                .iter()
+                .any(|name| name.starts_with("outlines/") && name.ends_with("_V001.md")),
+            "expected a stable V001 outline artifact; got {filenames:?}"
+        );
+        assert!(
+            filenames
+                .iter()
+                .any(|name| name.starts_with("output-v41/") && name.ends_with("_V001.md")),
+            "expected a final output artifact; got {filenames:?}"
+        );
+        assert!(
+            !filenames
+                .iter()
+                .any(|name| name.contains("May14") || name.contains("May15")),
+            "fresh submission should not retain stale dated artifacts: {filenames:?}"
+        );
+        assert!(
+            artifacts
+                .iter()
+                .any(|(name, public)| name == "lfs-v41-manifest.json" && *public == 1),
+            "final manifest should be public: {artifacts:?}"
+        );
+
+        let _ = fs::remove_dir_all(cache_root);
     }
 }

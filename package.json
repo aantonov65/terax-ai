@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "fixtures:wwx": "node scripts/create-wwx-demo-fixtures.mjs"
+    "fixtures:wwx": "node scripts/create-wwx-demo-fixtures.mjs",
+    "smoke:wwx:lfs-upload": "cargo test --manifest-path src-tauri/Cargo.toml smoke_uploaded_angle_submission_generates_lfs_artifacts -- --ignored --nocapture"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",

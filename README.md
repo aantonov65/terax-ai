@@ -63,6 +63,17 @@ Type-check:
 pnpm exec tsc --noEmit
 ```
 
+Run the real LFS upload smoke harness:
+
+```bash
+pnpm smoke:wwx:lfs-upload
+```
+
+That ignored Rust smoke test exercises the desktop-native submission path against
+the local WW-2 engine checkout: it seeds stale batch state, submits a real angle
+markdown, then verifies the fresh prompt, outline, final output, and public
+manifest artifacts are rebuilt without dated leftovers.
+
 ## Terax Attribution
 
 This app is adapted from Terax, licensed under Apache-2.0. Keep upstream attribution and license notices intact.
