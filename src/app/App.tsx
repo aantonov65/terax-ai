@@ -356,11 +356,15 @@ export default function App() {
           : null,
       getActiveFile: () => null,
       openPreview: (path) => {
+        const artifactBatch = wwxIndex.batches.find((batch) =>
+          batch.artifacts.some((artifact) => artifact.path === path || artifact.id === path),
+        );
+        if (artifactBatch) setSelectedBatchId(artifactBatch.id);
         setSelectedArtifactPath(path);
         return true;
       },
     });
-  }, [activeWindow, effectiveWorkspaceRoot, setLive]);
+  }, [activeWindow, effectiveWorkspaceRoot, setLive, wwxIndex.batches]);
 
   const shell = (
     <ThemeProvider>

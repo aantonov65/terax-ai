@@ -514,7 +514,7 @@ export function WwxInspector({
                       </div>
                     ) : (
                       <div className="border-t border-white/10 p-3 text-[11px] text-slate-500">
-                        No final LFS output artifacts yet.
+                        No public LFS artifacts yet.
                       </div>
                     )}
                   </CollapsibleContent>

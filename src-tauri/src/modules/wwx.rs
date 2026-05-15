@@ -186,7 +186,11 @@ fn safe_segment(value: &str) -> String {
         }
     }
     let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() { "untitled".into() } else { trimmed }
+    if trimmed.is_empty() {
+        "untitled".into()
+    } else {
+        trimmed
+    }
 }
 
 fn product_code_from_config(config: &Value, fallback: &str) -> String {
@@ -220,7 +224,8 @@ fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let conn = Connection::open(db_path(app)?).map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| e.to_string())?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -369,7 +374,11 @@ fn upsert_artifact_with_metadata(
 ) -> Result<WwxArtifact, String> {
     let now = now_ms();
     let text = std::str::from_utf8(content).ok().map(|s| s.to_string());
-    let blob: Option<Vec<u8>> = if text.is_some() { None } else { Some(content.to_vec()) };
+    let blob: Option<Vec<u8>> = if text.is_some() {
+        None
+    } else {
+        Some(content.to_vec())
+    };
     let kind = kind_override
         .map(str::to_string)
         .filter(|s| !s.trim().is_empty())
@@ -484,7 +493,8 @@ fn list_artifacts_for_batch(conn: &Connection, batch_id: &str) -> Result<Vec<Wwx
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 fn list_runs_for_batch(conn: &Connection, batch_id: &str) -> Result<Vec<WwxRun>, String> {
@@ -507,7 +517,8 @@ fn list_runs_for_batch(conn: &Connection, batch_id: &str) -> Result<Vec<WwxRun>,
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -579,7 +590,9 @@ fn list_batches_for_product(
             })
         })
         .map_err(|e| e.to_string())?;
-    let mut batches = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut batches = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     for batch in &mut batches {
         batch.artifacts = list_artifacts_for_batch(conn, &batch.id)?;
         batch.runs = list_runs_for_batch(conn, &batch.id)?;
@@ -640,7 +653,11 @@ pub fn wwx_create_product(app: AppHandle, input: CreateProductInput) -> Result<W
 }
 
 #[tauri::command]
-pub fn wwx_update_product(app: AppHandle, product_id: String, config: Value) -> Result<WwxProduct, String> {
+pub fn wwx_update_product(
+    app: AppHandle,
+    product_id: String,
+    config: Value,
+) -> Result<WwxProduct, String> {
     let conn = open_db(&app)?;
     let product_code = product_code_from_config(&config, &product_id);
     let name = product_name_from_config(&config, &product_code);
@@ -708,7 +725,10 @@ pub fn wwx_list_artifacts(app: AppHandle, batch_id: String) -> Result<Vec<WwxArt
 }
 
 #[tauri::command]
-pub fn wwx_read_artifact(app: AppHandle, artifact_id: String) -> Result<WwxArtifactContent, String> {
+pub fn wwx_read_artifact(
+    app: AppHandle,
+    artifact_id: String,
+) -> Result<WwxArtifactContent, String> {
     let conn = open_db(&app)?;
     let artifact = load_artifact(&conn, &artifact_id)?;
     let (text, blob): (Option<String>, Option<Vec<u8>>) = conn
@@ -726,7 +746,10 @@ pub fn wwx_read_artifact(app: AppHandle, artifact_id: String) -> Result<WwxArtif
 }
 
 #[tauri::command]
-pub fn wwx_write_artifact(app: AppHandle, input: WriteArtifactInput) -> Result<WwxArtifact, String> {
+pub fn wwx_write_artifact(
+    app: AppHandle,
+    input: WriteArtifactInput,
+) -> Result<WwxArtifact, String> {
     let conn = open_db(&app)?;
     let content = input
         .content_text
@@ -749,8 +772,18 @@ pub fn wwx_write_artifact(app: AppHandle, input: WriteArtifactInput) -> Result<W
 }
 
 #[tauri::command]
-pub fn wwx_start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
-    if let Some(markdown) = input.angles_markdown.as_deref().filter(|s| !s.trim().is_empty()) {
+pub async fn wwx_start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_lfs_job(app, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
+    if let Some(markdown) = input
+        .angles_markdown
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         let conn = open_db(&app)?;
         upsert_artifact(
             &conn,
@@ -777,17 +810,31 @@ pub fn wwx_start_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobRes
 }
 
 #[tauri::command]
-pub fn wwx_advance_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
-    run_lfs(app, input, "advance_lfs_job", true)
+pub async fn wwx_advance_lfs_job(
+    app: AppHandle,
+    input: LfsJobInput,
+) -> Result<WwxJobResult, String> {
+    tauri::async_runtime::spawn_blocking(move || run_lfs(app, input, "advance_lfs_job", true))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn wwx_resume_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxJobResult, String> {
-    run_lfs(app, input, "resume_lfs_job", true)
+pub async fn wwx_resume_lfs_job(
+    app: AppHandle,
+    input: LfsJobInput,
+) -> Result<WwxJobResult, String> {
+    tauri::async_runtime::spawn_blocking(move || run_lfs(app, input, "resume_lfs_job", true))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn wwx_cancel_lfs_job(app: AppHandle, batch_id: String, reason: Option<String>) -> Result<WwxRun, String> {
+pub fn wwx_cancel_lfs_job(
+    app: AppHandle,
+    batch_id: String,
+    reason: Option<String>,
+) -> Result<WwxRun, String> {
     let conn = open_db(&app)?;
     let now = now_ms();
     let run_id = id("run");
@@ -915,7 +962,11 @@ fn materialize_product_research(
     Ok(())
 }
 
-fn copy_app_research(conn: &Connection, product_id: &str, research_dir: &Path) -> Result<(), String> {
+fn copy_app_research(
+    conn: &Connection,
+    product_id: &str,
+    research_dir: &Path,
+) -> Result<(), String> {
     let mut stmt = conn
         .prepare(
             "SELECT filename, content_text, content_blob FROM artifacts WHERE product_id = ?1 AND batch_id = ?1 AND filename LIKE 'research/%' AND deleted_at IS NULL",
@@ -1043,10 +1094,7 @@ fn materialize_runner(
         )
         .map_err(|e| e.to_string())?;
     for name in ["components", "formats"] {
-        static_link(
-            &Path::new(ENGINE_ROOT).join(name),
-            &root.join(name),
-        )?;
+        static_link(&Path::new(ENGINE_ROOT).join(name), &root.join(name))?;
     }
     let product_dir = root.join("products").join(&product_code);
     let batch_dir = product_dir.join("batches").join(&batch_id);
@@ -1109,17 +1157,56 @@ fn ingest_runner(
         let path = batch_dir.join(name);
         if path.is_file() {
             let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-            ingested.push(upsert_artifact(conn, product_id, batch_pk, name, name, &bytes, "runner", false)?);
+            ingested.push(upsert_artifact(
+                conn,
+                product_id,
+                batch_pk,
+                name,
+                name,
+                &bytes,
+                "runner",
+                is_public_root_artifact(name),
+            )?);
         }
     }
-    for dir in ["output-v41", "output", "images"] {
+    for (dir, public) in [
+        ("prompts", false),
+        ("outlines", false),
+        ("output-v41", true),
+        ("output", true),
+        ("images", true),
+    ] {
         let out = batch_dir.join(dir);
         if !out.exists() {
             continue;
         }
-        ingest_dir(conn, product_id, batch_pk, batch_dir, &out, &mut ingested)?;
+        ingest_dir(
+            conn,
+            product_id,
+            batch_pk,
+            batch_dir,
+            &out,
+            public,
+            &mut ingested,
+        )?;
     }
     Ok(ingested)
+}
+
+fn is_public_root_artifact(name: &str) -> bool {
+    matches!(
+        name,
+        "source-angle.md"
+            | "angles.md"
+            | "strategy.json"
+            | "lfs-brief-report.json"
+            | "lfs-outline-report.json"
+            | "lfs-v41-report.json"
+            | "lfs-v41-manifest.json"
+            | "lfs-v41-finish-report.json"
+            | "lfs-semantic-report.json"
+            | "report.json"
+    )
 }
 
 fn ingest_dir(
@@ -1128,24 +1215,32 @@ fn ingest_dir(
     batch_pk: &str,
     batch_dir: &Path,
     dir: &Path,
+    public: bool,
     out: &mut Vec<WwxArtifact>,
 ) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if path.is_dir() {
-            ingest_dir(conn, product_id, batch_pk, batch_dir, &path, out)?;
+            ingest_dir(conn, product_id, batch_pk, batch_dir, &path, public, out)?;
             continue;
         }
         let rel = path.strip_prefix(batch_dir).map_err(|e| e.to_string())?;
         let filename = rel.to_string_lossy().replace('\\', "/");
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-        out.push(upsert_artifact(conn, product_id, batch_pk, &filename, &filename, &bytes, "runner", true)?);
+        out.push(upsert_artifact(
+            conn, product_id, batch_pk, &filename, &filename, &bytes, "runner", public,
+        )?);
     }
     Ok(())
 }
 
-fn run_lfs(app: AppHandle, input: LfsJobInput, workflow: &str, resume: bool) -> Result<WwxJobResult, String> {
+fn run_lfs(
+    app: AppHandle,
+    input: LfsJobInput,
+    workflow: &str,
+    resume: bool,
+) -> Result<WwxJobResult, String> {
     let conn = open_db(&app)?;
     let run_id = id("run");
     let now = now_ms();
@@ -1212,8 +1307,15 @@ fn run_lfs(app: AppHandle, input: LfsJobInput, workflow: &str, resume: bool) -> 
     }
     let input_angles = batch_dir.join("angles.md");
     let script = Path::new(ENGINE_ROOT).join("tools").join("lfs_agent.py");
-    let python = Path::new(ENGINE_ROOT).join(".venv").join("bin").join("python");
-    let python_bin = if python.exists() { python } else { PathBuf::from("python3") };
+    let python = Path::new(ENGINE_ROOT)
+        .join(".venv")
+        .join("bin")
+        .join("python");
+    let python_bin = if python.exists() {
+        python
+    } else {
+        PathBuf::from("python3")
+    };
     let mut cmd = Command::new(python_bin);
     cmd.current_dir(ENGINE_ROOT);
     cmd.arg(script);
@@ -1241,7 +1343,8 @@ fn run_lfs(app: AppHandle, input: LfsJobInput, workflow: &str, resume: bool) -> 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let exit_code = output.status.code();
-    let artifacts = ingest_runner(&conn, &input.product_id, &input.batch_id, &batch_dir).unwrap_or_default();
+    let artifacts =
+        ingest_runner(&conn, &input.product_id, &input.batch_id, &batch_dir).unwrap_or_default();
     let final_stage = parse_current_stage(&stdout).or_else(|| parse_agent_stage(&batch_dir));
     let status = if output.status.success() {
         parse_status(&stdout).unwrap_or_else(|| "awaiting_review".into())
@@ -1275,7 +1378,11 @@ fn run_lfs(app: AppHandle, input: LfsJobInput, workflow: &str, resume: bool) -> 
         current_stage: final_stage,
         awaiting_review: status == "awaiting_review" || status == "held",
         retryable: !output.status.success() || status == "blocked",
-        reason: if output.status.success() { None } else { Some(stderr.clone()) },
+        reason: if output.status.success() {
+            None
+        } else {
+            Some(stderr.clone())
+        },
         stdout,
         stderr,
         exit_code,
@@ -1324,4 +1431,51 @@ fn parse_agent_stage(batch_dir: &Path) -> Option<String> {
         .and_then(Value::as_str)
         .or_else(|| value.get("stage").and_then(Value::as_str))
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_batch_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(id("wwx-ingest-test"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ingest_runner_persists_private_dependencies_and_public_review_artifacts() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let batch_dir = test_batch_dir();
+        fs::write(batch_dir.join("source-angle.md"), "source").unwrap();
+        fs::write(batch_dir.join("agent-run.json"), "{}").unwrap();
+        fs::create_dir_all(batch_dir.join("prompts")).unwrap();
+        fs::write(batch_dir.join("prompts/task.md"), "prompt").unwrap();
+        fs::create_dir_all(batch_dir.join("outlines")).unwrap();
+        fs::write(batch_dir.join("outlines/task.md"), "outline").unwrap();
+        fs::create_dir_all(batch_dir.join("output-v41")).unwrap();
+        fs::write(batch_dir.join("output-v41/task.md"), "final").unwrap();
+
+        ingest_runner(&conn, "prod_PAN", "batch_PAN_demo", &batch_dir).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT filename, public FROM artifacts ORDER BY filename")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(rows.contains(&("source-angle.md".into(), 1)));
+        assert!(rows.contains(&("output-v41/task.md".into(), 1)));
+        assert!(rows.contains(&("prompts/task.md".into(), 0)));
+        assert!(rows.contains(&("outlines/task.md".into(), 0)));
+        assert!(rows.contains(&("agent-run.json".into(), 0)));
+
+        let _ = fs::remove_dir_all(batch_dir);
+    }
 }

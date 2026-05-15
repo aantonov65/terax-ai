@@ -224,7 +224,6 @@ function mapProduct(product: NativeProduct): ProductSummary {
 
 function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
   const decisions = decisionCounts(batch.artifacts);
-  const visibleArtifacts = batch.artifacts.filter(isFinalLfsOutputArtifact);
   return {
     id: batch.id,
     name: batch.name,
@@ -240,7 +239,7 @@ function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
     strategyPath: artifactPath(batch.artifacts, "strategy.json"),
     manifestPath: artifactPath(batch.artifacts, "lfs-v41-manifest.json"),
     reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
-    artifacts: visibleArtifacts.map(mapArtifact),
+    artifacts: batch.artifacts.map(mapArtifact),
     runs: batch.runs.map(mapRun),
     alerts: alertsFor(batch),
   };
@@ -359,6 +358,7 @@ function nextAction(status: BatchStatus, stage?: string | null): string {
 
 function alertsFor(batch: NativeBatch): string[] {
   if (batch.status === "blocked") return ["A recorded run ended with a failure event."];
+  if (batch.artifacts.length === 0) return ["No public LFS artifacts are visible yet."];
   if (!batch.artifacts.some(isFinalLfsOutputArtifact)) return ["No final LFS output artifacts are visible yet."];
   return [];
 }

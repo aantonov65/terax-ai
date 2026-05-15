@@ -154,14 +154,17 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
 }
 
 function publicArtifacts(artifacts: NativeArtifact[]) {
-  return artifacts.filter(isFinalLfsArtifact).slice(0, ARTIFACT_LIMIT).map((artifact) => ({
-    id: artifact.id,
-    path: `app://wwx/artifacts/${artifact.id}`,
-    label: artifact.label || artifact.filename,
-    filename: artifact.filename,
-    kind: artifact.kind,
-    size: artifact.size,
-  }));
+  return artifacts
+    .filter((artifact) => artifact.public)
+    .slice(0, ARTIFACT_LIMIT)
+    .map((artifact) => ({
+      id: artifact.id,
+      path: `app://wwx/artifacts/${artifact.id}`,
+      label: artifact.label || artifact.filename,
+      filename: artifact.filename,
+      kind: artifact.kind,
+      size: artifact.size,
+    }));
 }
 
 function isFinalLfsArtifact(artifact: NativeArtifact): boolean {
@@ -175,9 +178,11 @@ function isResearchMissing(result: NativeJobResult): boolean {
 }
 
 function jobResult(workflow: string, result: NativeJobResult) {
-  const finalArtifacts = result.artifacts.filter(isFinalLfsArtifact);
-  const artifacts = publicArtifacts(finalArtifacts);
-  const artifactCount = finalArtifacts.length;
+  const visibleArtifacts = result.artifacts.filter((artifact) => artifact.public);
+  const finalArtifacts = visibleArtifacts.filter(isFinalLfsArtifact);
+  const artifacts = publicArtifacts(result.artifacts);
+  const artifactCount = visibleArtifacts.length;
+  const finalArtifactCount = finalArtifacts.length;
   const stage = result.currentStage ?? result.status;
   const reason = shortOutput(result.reason ?? "") ?? undefined;
   const missingResearch = isResearchMissing(result);
@@ -201,16 +206,16 @@ function jobResult(workflow: string, result: NativeJobResult) {
     retryable,
     reason,
     summary: result.ok
-      ? artifactCount > 0
-        ? `${stage} finished; ${artifactCount} final LFS artifact${artifactCount === 1 ? "" : "s"} available.`
-        : `${stage} finished; no final LFS output artifacts yet.`
+      ? finalArtifactCount > 0
+        ? `${stage} finished; ${finalArtifactCount} final LFS artifact${finalArtifactCount === 1 ? "" : "s"} available.`
+        : `${stage} finished; ${artifactCount} public artifact${artifactCount === 1 ? "" : "s"} available while final LFS output is still pending.`
       : missingResearch
         ? `${stage} blocked: product research is missing or incomplete.`
         : `${stage} failed${reason ? `: ${reason}` : "."}`,
     next_actions: result.ok
-      ? artifactCount > 0
+      ? finalArtifactCount > 0
         ? ["Review final LFS outputs.", "Run advance_lfs_job to approve and continue."]
-        : ["Run advance_lfs_job to continue toward final LFS outputs."]
+        : ["Review the available checkpoint artifacts.", "Run advance_lfs_job to continue toward final LFS outputs."]
       : missingResearch
         ? ["Add or import product research before advancing this batch."]
         : ["Read the job status for the failed checkpoint."],

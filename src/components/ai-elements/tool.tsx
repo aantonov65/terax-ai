@@ -638,6 +638,7 @@ function isWwxTool(toolName: string): boolean {
 }
 
 function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
+  const openPreview = useChatStore((s) => s.live.openPreview);
   const ok = data.ok !== false;
   const summary = typeof data.summary === "string" ? data.summary : null;
   const status = typeof data.status === "string" ? data.status : null;
@@ -707,6 +708,8 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
                     : `artifact ${idx + 1}`;
               const kind =
                 typeof artifact.kind === "string" ? artifact.kind : null;
+              const path =
+                typeof artifact.path === "string" ? artifact.path : null;
               const size =
                 typeof artifact.size === "number"
                   ? formatBytes(artifact.size)
@@ -716,9 +719,20 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
                   key={`${label}-${idx}`}
                   className="flex gap-2 border-b border-border/30 px-2 py-1 last:border-b-0"
                 >
-                  <span className="min-w-0 flex-1 truncate text-foreground">
-                    {label}
-                  </span>
+                  {path ? (
+                    <button
+                      type="button"
+                      onClick={() => openPreview(path)}
+                      className="min-w-0 flex-1 truncate text-left text-foreground underline decoration-border underline-offset-2 hover:text-primary"
+                      title={`Open ${label}`}
+                    >
+                      {label}
+                    </button>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate text-foreground">
+                      {label}
+                    </span>
+                  )}
                   {kind ? (
                     <span className="shrink-0 text-muted-foreground">
                       {kind}
