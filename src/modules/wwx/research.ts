@@ -15,6 +15,15 @@ export type ResearchValidation = {
   };
 };
 
+export type ProductReadinessStatus = "draft" | "starter_only" | "needs_evidence" | "production_ready";
+
+export type ProductReadiness = {
+  status: ProductReadinessStatus;
+  approved: boolean;
+  gaps: string[];
+  starterResearch: boolean;
+};
+
 const DEFAULT_PRICE = 49;
 const DEFAULT_GUARANTEE = "60-day";
 
@@ -122,6 +131,38 @@ export function validateResearchDraft(research: ProductResearchDraft): ResearchV
   if (!sections.hotwordB.length) missing.push("hotwords.md needs at least one B# section");
   if (!sections.mechanisms.length) missing.push("mechanisms.md needs at least one M# section");
   return { ok: missing.length === 0, missing, sections };
+}
+
+export function hasStarterResearch(research: ProductResearchDraft): boolean {
+  return [research.archetypes, research.hotwords, research.mechanisms].some((text) =>
+    /Starter (Archetypes|Hotwords|Mechanisms)|Auto-generated from product details/i.test(text),
+  );
+}
+
+export function assessProductReadiness(
+  config: Record<string, unknown>,
+  research: ProductResearchDraft,
+  approved = false,
+): ProductReadiness {
+  const gaps: string[] = [];
+  const validation = validateResearchDraft(research);
+  gaps.push(...validation.missing);
+  if (!stringValue(config.product_name)) gaps.push("product_name is required");
+  if (!hasPricingRules(config)) gaps.push("pricing_rules.single_bag_price_usd is required");
+  if (!hasOfferArchitecture(config)) gaps.push("offer_architecture.guarantee_framing is required");
+  if (!hasTargetDemographic(config)) gaps.push("target_demographic is required");
+  if (!hasMechanism(config)) gaps.push("at least one mechanisms.M# entry is required");
+
+  const starterResearch = hasStarterResearch(research);
+  if (starterResearch) gaps.push("starter research must be replaced or explicitly approved");
+  const status: ProductReadinessStatus = starterResearch
+    ? "starter_only"
+    : gaps.length
+      ? "needs_evidence"
+      : approved
+        ? "production_ready"
+        : "needs_evidence";
+  return { status, approved: status === "production_ready", gaps, starterResearch };
 }
 
 function starterArchetypes(input: {
@@ -249,4 +290,23 @@ function nonEmpty(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasPricingRules(config: Record<string, unknown>): boolean {
+  const pricing = config.pricing_rules;
+  return isRecord(pricing) && numericValue(pricing.single_bag_price_usd) !== null;
+}
+
+function hasOfferArchitecture(config: Record<string, unknown>): boolean {
+  const offer = config.offer_architecture;
+  return isRecord(offer) && Boolean(stringValue(offer.guarantee_framing));
+}
+
+function hasTargetDemographic(config: Record<string, unknown>): boolean {
+  return isRecord(config.target_demographic);
+}
+
+function hasMechanism(config: Record<string, unknown>): boolean {
+  const mechanisms = config.mechanisms;
+  return isRecord(mechanisms) && Object.keys(mechanisms).some((key) => /^M\d+$/i.test(key));
 }

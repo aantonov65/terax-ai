@@ -209,7 +209,7 @@ export function CreateProductDialog({
           <DialogTitle>Create Product</DialogTitle>
           <DialogDescription>
             Fill product details or upload a config. Starter LFS research is generated
-            automatically; upload research files only when you want to replace it.
+            for drafts only; production runs stay blocked until it is replaced or approved.
           </DialogDescription>
         </DialogHeader>
 
@@ -294,7 +294,7 @@ export function CreateProductDialog({
                   Required LFS research
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Auto-generated from product details. Optional: replace any file.
+                  Auto-generated draft files do not satisfy production readiness.
                 </div>
               </div>
               {RESEARCH_FILES.map(({ key, filename, label }) => (

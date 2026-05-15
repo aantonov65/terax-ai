@@ -54,6 +54,21 @@ pub struct WwxRun {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WwxQueuedJob {
+    id: String,
+    product_id: String,
+    batch_id: String,
+    status: String,
+    attempts: i64,
+    requested_at: i64,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    updated_at: i64,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WwxBatch {
     id: String,
     product_id: String,
@@ -67,6 +82,15 @@ pub struct WwxBatch {
     revision: i64,
     artifacts: Vec<WwxArtifact>,
     runs: Vec<WwxRun>,
+    decision_counts: DecisionCounts,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionCounts {
+    ship: i64,
+    review: i64,
+    fail: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -145,7 +169,7 @@ pub struct WriteArtifactInput {
     public: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LfsJobInput {
     product_id: String,
@@ -154,6 +178,7 @@ pub struct LfsJobInput {
     run_mode: Option<String>,
     workers: Option<i64>,
     generation_workers: Option<i64>,
+    from_stage: Option<String>,
     anthropic_api_key: Option<String>,
 }
 
@@ -296,9 +321,23 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           payload_json TEXT,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS job_queue (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          batch_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          requested_at INTEGER NOT NULL,
+          started_at INTEGER,
+          finished_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          last_error TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(product_id, deleted_at);
         CREATE INDEX IF NOT EXISTS idx_artifacts_batch ON artifacts(batch_id, public, deleted_at);
         CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, requested_at);
         "#,
     )
     .map_err(|e| e.to_string())
@@ -521,6 +560,157 @@ fn list_runs_for_batch(conn: &Connection, batch_id: &str) -> Result<Vec<WwxRun>,
         .map_err(|e| e.to_string())
 }
 
+fn load_queue_job(conn: &Connection, queue_id: &str) -> Result<WwxQueuedJob, String> {
+    conn.query_row(
+        "SELECT id, product_id, batch_id, status, attempts, requested_at, started_at, finished_at, updated_at, last_error FROM job_queue WHERE id = ?1",
+        params![queue_id],
+        |row| {
+            Ok(WwxQueuedJob {
+                id: row.get(0)?,
+                product_id: row.get(1)?,
+                batch_id: row.get(2)?,
+                status: row.get(3)?,
+                attempts: row.get(4)?,
+                requested_at: row.get(5)?,
+                started_at: row.get(6)?,
+                finished_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_error: row.get(9)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn list_queue_jobs(conn: &Connection) -> Result<Vec<WwxQueuedJob>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, product_id, batch_id, status, attempts, requested_at, started_at, finished_at, updated_at, last_error FROM job_queue ORDER BY requested_at DESC LIMIT 200",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(WwxQueuedJob {
+                id: row.get(0)?,
+                product_id: row.get(1)?,
+                batch_id: row.get(2)?,
+                status: row.get(3)?,
+                attempts: row.get(4)?,
+                requested_at: row.get(5)?,
+                started_at: row.get(6)?,
+                finished_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_error: row.get(9)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+const MAX_ACTIVE_QUEUE_JOBS: i64 = 6;
+
+fn kick_scheduler(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let claim = {
+                let conn = match open_db(&app) {
+                    Ok(conn) => conn,
+                    Err(_) => return,
+                };
+                match claim_next_queue_job(&conn) {
+                    Ok(job) => job,
+                    Err(_) => return,
+                }
+            };
+            let Some((queue_id, input)) = claim else {
+                return;
+            };
+            let app_for_job = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = start_lfs_job(app_for_job.clone(), input);
+                if let Ok(conn) = open_db(&app_for_job) {
+                    let now = now_ms();
+                    match result {
+                        Ok(job_result) => {
+                            let status = if job_result.ok { "complete" } else { "blocked" };
+                            let error = if job_result.ok { None } else { job_result.reason };
+                            let _ = conn.execute(
+                                "UPDATE job_queue SET status = ?2, finished_at = ?3, updated_at = ?3, last_error = ?4 WHERE id = ?1",
+                                params![queue_id, status, now, error],
+                            );
+                        }
+                        Err(error) => {
+                            let _ = conn.execute(
+                                "UPDATE job_queue SET status = 'blocked', finished_at = ?2, updated_at = ?2, last_error = ?3 WHERE id = ?1",
+                                params![queue_id, now, error],
+                            );
+                        }
+                    }
+                }
+                kick_scheduler(app_for_job);
+            });
+        }
+    });
+}
+
+fn claim_next_queue_job(conn: &Connection) -> Result<Option<(String, LfsJobInput)>, String> {
+    let active: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM job_queue WHERE status = 'running'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if active >= MAX_ACTIVE_QUEUE_JOBS {
+        return Ok(None);
+    }
+    let next: Option<(String, String)> = conn
+        .query_row(
+            "SELECT id, payload_json FROM job_queue WHERE status = 'queued' ORDER BY requested_at ASC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((queue_id, payload)) = next else {
+        return Ok(None);
+    };
+    let input = serde_json::from_str::<LfsJobInput>(&payload).map_err(|e| e.to_string())?;
+    let now = now_ms();
+    let changed = conn
+        .execute(
+            "UPDATE job_queue SET status = 'running', attempts = attempts + 1, started_at = COALESCE(started_at, ?2), updated_at = ?2 WHERE id = ?1 AND status = 'queued'",
+            params![queue_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    Ok(Some((queue_id, input)))
+}
+
+fn manifest_decision_counts(conn: &Connection, batch_id: &str) -> Result<DecisionCounts, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content_text FROM artifacts WHERE batch_id = ?1 AND filename = 'lfs-v41-manifest.json' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(text) = text else {
+        return Ok(DecisionCounts::default());
+    };
+    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let counts = parsed.get("decision_counts").unwrap_or(&Value::Null);
+    Ok(DecisionCounts {
+        ship: counts.get("ship").and_then(Value::as_i64).or_else(|| parsed.get("ship").and_then(Value::as_i64)).unwrap_or(0),
+        review: counts.get("review").and_then(Value::as_i64).or_else(|| parsed.get("review").and_then(Value::as_i64)).unwrap_or(0),
+        fail: counts.get("fail").and_then(Value::as_i64).or_else(|| parsed.get("fail").and_then(Value::as_i64)).unwrap_or(0),
+    })
+}
+
 #[tauri::command]
 pub fn wwx_list_products(app: AppHandle) -> Result<WwxIndex, String> {
     let conn = open_db(&app)?;
@@ -587,6 +777,7 @@ fn list_batches_for_product(
                 revision: row.get(8)?,
                 artifacts: vec![],
                 runs: vec![],
+                decision_counts: DecisionCounts::default(),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -596,6 +787,7 @@ fn list_batches_for_product(
     for batch in &mut batches {
         batch.artifacts = list_artifacts_for_batch(conn, &batch.id)?;
         batch.runs = list_runs_for_batch(conn, &batch.id)?;
+        batch.decision_counts = manifest_decision_counts(conn, &batch.id)?;
     }
     Ok(batches)
 }
@@ -715,6 +907,7 @@ pub fn wwx_create_batch(app: AppHandle, input: CreateBatchInput) -> Result<WwxBa
         revision: 1,
         artifacts: vec![],
         runs: vec![],
+        decision_counts: DecisionCounts::default(),
     })
 }
 
@@ -855,6 +1048,30 @@ pub async fn wwx_resume_lfs_job(
 }
 
 #[tauri::command]
+pub async fn wwx_enqueue_lfs_job(app: AppHandle, input: LfsJobInput) -> Result<WwxQueuedJob, String> {
+    let queued = {
+        let conn = open_db(&app)?;
+        let now = now_ms();
+        let queue_id = id("queue");
+        let payload = serde_json::to_string(&input).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO job_queue (id, product_id, batch_id, payload_json, status, requested_at, updated_at) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?5)",
+            params![queue_id, input.product_id, input.batch_id, payload, now],
+        )
+        .map_err(|e| e.to_string())?;
+        load_queue_job(&conn, &queue_id)?
+    };
+    kick_scheduler(app);
+    Ok(queued)
+}
+
+#[tauri::command]
+pub fn wwx_list_lfs_queue(app: AppHandle) -> Result<Vec<WwxQueuedJob>, String> {
+    let conn = open_db(&app)?;
+    list_queue_jobs(&conn)
+}
+
+#[tauri::command]
 pub fn wwx_cancel_lfs_job(
     app: AppHandle,
     batch_id: String,
@@ -938,13 +1155,42 @@ fn ensure_research_ready(product_dir: &Path) -> Result<(), String> {
         })
         .copied()
         .collect::<Vec<_>>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
+    if !missing.is_empty() {
         Err(format!(
             "Product research is missing in app storage: {}. Add or import product research before advancing LFS.",
             missing.join(", ")
         ))
+    } else {
+        let config = fs::read_to_string(product_dir.join("config.json")).unwrap_or_default();
+        let parsed: Value = serde_json::from_str(&config).unwrap_or(Value::Null);
+        let readiness = parsed.get("wwx_readiness").unwrap_or(&Value::Null);
+        let status = readiness.get("status").and_then(Value::as_str);
+        if let Some(status) = status.filter(|status| *status != "production_ready") {
+            let gaps = readiness
+                .get("gaps")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "product package has not been approved for production".into());
+            return Err(format!(
+                "Product package is not production-ready ({status}): {gaps}"
+            ));
+        }
+        for name in research_filenames() {
+            let text = fs::read_to_string(product_dir.join("research").join(name)).unwrap_or_default();
+            if text.contains("Starter ") || text.contains("Auto-generated from product details") {
+                return Err(format!(
+                    "Product package is not production-ready: research/{name} is still starter-only"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1300,7 +1546,7 @@ fn run_lfs_with_context(
         &input.product_id,
         &input.batch_id,
     )?;
-    if resume {
+    {
         let product_dir = root.join("products").join(&product_code);
         if let Err(reason) = ensure_research_ready(&product_dir) {
             let finished = now_ms();
@@ -1377,6 +1623,9 @@ fn run_lfs_with_context(
     }
     if let Some(workers) = input.generation_workers {
         cmd.arg("--generation-workers").arg(workers.to_string());
+    }
+    if let Some(stage) = input.from_stage.as_deref().filter(|stage| !stage.is_empty()) {
+        cmd.arg("--from").arg(stage);
     }
     cmd.arg("--base-path").arg(&root);
     if let Some(key) = input.anthropic_api_key.as_deref().filter(|s| !s.is_empty()) {
@@ -1718,6 +1967,7 @@ mod tests {
                 run_mode: Some("full".into()),
                 workers: Some(1),
                 generation_workers: Some(1),
+                from_stage: None,
                 anthropic_api_key: None,
             },
         )
@@ -1798,5 +2048,35 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn queue_claim_reads_payload_and_marks_job_running() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let now = now_ms();
+        let input = LfsJobInput {
+            product_id: "prod_PAN".into(),
+            batch_id: "batch_PAN_demo".into(),
+            angles_markdown: Some("angle".into()),
+            run_mode: Some("full".into()),
+            workers: Some(1),
+            generation_workers: Some(1),
+            from_stage: None,
+            anthropic_api_key: None,
+        };
+        conn.execute(
+            "INSERT INTO job_queue (id, product_id, batch_id, payload_json, status, requested_at, updated_at) VALUES ('queue-1', 'prod_PAN', 'batch_PAN_demo', ?1, 'queued', ?2, ?2)",
+            params![serde_json::to_string(&input).unwrap(), now],
+        )
+        .unwrap();
+
+        let (queue_id, claimed) = claim_next_queue_job(&conn).unwrap().unwrap();
+        assert_eq!(queue_id, "queue-1");
+        assert_eq!(claimed.batch_id, "batch_PAN_demo");
+        let status: String = conn
+            .query_row("SELECT status FROM job_queue WHERE id = 'queue-1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "running");
     }
 }

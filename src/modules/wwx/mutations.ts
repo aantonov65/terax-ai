@@ -5,6 +5,7 @@ import {
   type CreatedBatch,
 } from "./store";
 import {
+  assessProductReadiness,
   completeProductConfig,
   completeResearchDraft,
   validateResearchDraft,
@@ -44,11 +45,26 @@ export async function createWwxProduct({
   if (!validation.ok) {
     throw new Error(`Generated product research is invalid: ${validation.missing.join("; ")}`);
   }
+  const readiness = assessProductReadiness(normalized, completedResearch, false);
+  normalized.wwx_readiness = readiness;
   const created = await createProductInStore({ productFolder: folder, config: normalized });
   await Promise.all([
     persistResearchFile(created.productId, "archetypes", completedResearch.archetypes),
     persistResearchFile(created.productId, "hotwords", completedResearch.hotwords),
     persistResearchFile(created.productId, "mechanisms", completedResearch.mechanisms),
+    persistJsonArtifact(created.productId, "source-bundle.json", {
+      schema: "wwx-source-bundle/v1",
+      documents: [
+        { label: "config.json", content: JSON.stringify(config, null, 2) },
+        { label: "research/archetypes.md", content: completedResearch.archetypes },
+        { label: "research/hotwords.md", content: completedResearch.hotwords },
+        { label: "research/mechanisms.md", content: completedResearch.mechanisms },
+      ],
+    }),
+    persistJsonArtifact(created.productId, "product-readiness.json", {
+      schema: "wwx-product-readiness/v1",
+      ...readiness,
+    }),
   ]);
   return created;
 }
@@ -110,6 +126,24 @@ async function persistResearchFile(
     filename: `research/${name}.md`,
     mimeType: "text/markdown",
     contentText,
+    source: "product-create",
+    public: false,
+  });
+}
+
+async function persistJsonArtifact(
+  productId: string,
+  filename: string,
+  value: Record<string, unknown>,
+): Promise<void> {
+  await writeWwxArtifact({
+    productId,
+    batchId: productId,
+    kind: "json",
+    label: filename,
+    filename,
+    mimeType: "application/json",
+    contentText: JSON.stringify(value, null, 2),
     source: "product-create",
     public: false,
   });

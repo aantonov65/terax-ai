@@ -165,6 +165,8 @@ pub fn run() {
             wwx::wwx_start_lfs_job,
             wwx::wwx_advance_lfs_job,
             wwx::wwx_resume_lfs_job,
+            wwx::wwx_enqueue_lfs_job,
+            wwx::wwx_list_lfs_queue,
             wwx::wwx_cancel_lfs_job,
         ])
         .run(tauri::generate_context!())

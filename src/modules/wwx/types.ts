@@ -71,6 +71,11 @@ export type ProductConfigSummary = {
   guarantee?: string;
   url?: string;
   targetDemographic?: unknown;
+  readiness?: {
+    status?: "draft" | "starter_only" | "needs_evidence" | "production_ready";
+    approved?: boolean;
+    gaps?: string[];
+  };
 };
 
 export type DraftBatchMetadata = {

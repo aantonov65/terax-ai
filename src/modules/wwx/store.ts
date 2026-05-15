@@ -50,6 +50,7 @@ type NativeBatch = {
   revision: number;
   artifacts: NativeArtifact[];
   runs: NativeRun[];
+  decisionCounts?: { ship: number; review: number; fail: number };
 };
 
 type NativeProduct = {
@@ -200,6 +201,7 @@ export async function writeWwxArtifact(input: {
 
 function mapProduct(product: NativeProduct): ProductSummary {
   const config = safeJson(product.configJson);
+  const readiness = isRecord(config.wwx_readiness) ? config.wwx_readiness : null;
   const batches = product.batches.map((batch) => mapBatch(batch, product));
   return {
     id: product.id,
@@ -214,6 +216,15 @@ function mapProduct(product: NativeProduct): ProductSummary {
       guarantee: stringValue(config.guarantee),
       url: stringValue(config.url),
       targetDemographic: config.target_demographic,
+      readiness: readiness
+        ? {
+            status: stringValue(readiness.status) as "draft" | "starter_only" | "needs_evidence" | "production_ready" | undefined,
+            approved: Boolean(readiness.approved),
+            gaps: Array.isArray(readiness.gaps)
+              ? readiness.gaps.map((gap: unknown) => String(gap))
+              : [],
+          }
+        : undefined,
     },
     batchCount: batches.length,
     statusCounts: statusCounts(batches),
@@ -223,7 +234,7 @@ function mapProduct(product: NativeProduct): ProductSummary {
 }
 
 function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
-  const decisions = decisionCounts(batch.artifacts);
+  const decisions = batch.decisionCounts ?? decisionCounts(batch.artifacts);
   return {
     id: batch.id,
     name: batch.name,
@@ -286,6 +297,10 @@ function safeJson(text: string): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function toBatchStatus(status: string): BatchStatus {

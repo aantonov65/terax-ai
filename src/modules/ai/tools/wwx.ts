@@ -29,6 +29,28 @@ type NativeArtifactContent = {
   contentBlob?: number[] | null;
 };
 
+type NativeProductRecord = {
+  id: string;
+  configJson: string;
+};
+
+type NativeQueuedJob = {
+  id: string;
+  productId: string;
+  batchId: string;
+  status: string;
+  attempts: number;
+  requestedAt: number;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  updatedAt: number;
+  lastError?: string | null;
+};
+
+type NativeIndexRecord = {
+  products: NativeProductRecord[];
+};
+
 type NativeJobResult = {
   ok: boolean;
   workflow: string;
@@ -44,6 +66,11 @@ type NativeJobResult = {
   stderr: string;
   exitCode?: number | null;
   artifacts: NativeArtifact[];
+};
+
+type Manifest = {
+  scripts?: Array<{ task_id?: string; decision?: "ship" | "review" | "fail" }>;
+  task_decisions?: Record<string, "ship" | "review" | "fail">;
 };
 
 function requireBinding(ctx: ToolContext): WwxBinding {
@@ -151,6 +178,19 @@ function canonicalizeAngles(markdown: string, binding: WwxBinding): string {
   return `${lines.join("\n")}${blocks.join("\n")}`.trimEnd() + "\n";
 }
 
+async function hydrateArtifactReferences(markdown: string): Promise<string> {
+  const refs = [...markdown.matchAll(/app:\/\/wwx\/artifacts\/([A-Za-z0-9_-]+)/g)];
+  if (!refs.length) return markdown;
+  let hydrated = markdown;
+  for (const match of refs) {
+    const full = match[0];
+    const artifactId = match[1];
+    const artifact = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId });
+    hydrated = hydrated.split(full).join(artifact.contentText?.trim() || "");
+  }
+  return hydrated;
+}
+
 function publicArtifacts(artifacts: NativeArtifact[]) {
   return artifacts
     .filter((artifact) => artifact.public)
@@ -212,7 +252,9 @@ function jobResult(workflow: string, result: NativeJobResult) {
         : `${stage} failed${reason ? `: ${reason}` : "."}`,
     next_actions: result.ok
       ? finalArtifactCount > 0
-        ? ["Review final LFS outputs.", "Run advance_lfs_job to approve and continue."]
+        ? result.status === "complete"
+          ? ["Review the final manifest and shipped scripts.", "Use export_lfs with ship_only for handoff."]
+          : ["Review final LFS outputs.", "Run advance_lfs_job only for an explicitly guided run."]
         : ["Review the available checkpoint artifacts.", "Run advance_lfs_job to continue toward final LFS outputs."]
       : missingResearch
         ? ["Add or import product research before advancing this batch."]
@@ -233,6 +275,7 @@ async function runNativeJob(
     runMode?: "review" | "full";
     workers?: number;
     generationWorkers?: number;
+    fromStage?: string;
   } = {},
 ): Promise<NativeJobResult> {
   const anthropicApiKey = await getKey("anthropic");
@@ -244,6 +287,7 @@ async function runNativeJob(
       runMode: input.runMode,
       workers: input.workers,
       generationWorkers: input.generationWorkers,
+      fromStage: input.fromStage,
       anthropicApiKey,
     },
   });
@@ -280,9 +324,10 @@ export function buildWwxTools(ctx: ToolContext) {
             }
           }
           if (!markdown) throw new Error("Attach angle.md or provide angles_markdown.");
+          const hydrated = await hydrateArtifactReferences(markdown);
           const result = await runNativeJob("wwx_start_lfs_job", binding, {
-            anglesMarkdown: canonicalizeAngles(markdown, binding),
-            runMode: run_mode,
+            anglesMarkdown: canonicalizeAngles(hydrated, binding),
+            runMode: run_mode ?? "full",
             workers,
             generationWorkers: generation_workers,
           });
@@ -294,7 +339,7 @@ export function buildWwxTools(ctx: ToolContext) {
     }),
 
     advance_lfs_job: tool({
-      description: "Approve the current held checkpoint for the bound batch and run exactly one next LFS stage.",
+      description: "Advance an explicitly guided checkpoint for the bound batch.",
       inputSchema: z.object({
         batch_id: z.string().optional(),
         workers: z.number().int().min(1).max(20).optional(),
@@ -437,9 +482,14 @@ export function buildWwxTools(ctx: ToolContext) {
         expected_cost_risk: z.string().optional(),
       }),
       needsApproval: true,
-      execute: async () => {
+      execute: async ({ mode }) => {
         try {
-          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx));
+          const fromStage = mode === "objective"
+            ? "objective_finish_pre_semantic"
+            : mode === "semantic"
+              ? "semantic_launchable"
+              : "objective_finish_final";
+          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx), { fromStage, runMode: "full" });
           return jobResult("rerun_lfs_checks", result);
         } catch (error) {
           return { ok: false, workflow: "rerun_lfs_checks", error: String(error), retryable: true };
@@ -455,9 +505,12 @@ export function buildWwxTools(ctx: ToolContext) {
         expected_cost_risk: z.string().optional(),
       }),
       needsApproval: true,
-      execute: async () => {
+      execute: async ({ stage }) => {
         try {
-          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx));
+          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx), {
+            fromStage: stage,
+            runMode: "full",
+          });
           return jobResult("retry_lfs_failures", result);
         } catch (error) {
           return { ok: false, workflow: "retry_lfs_failures", error: String(error), retryable: true };
@@ -468,16 +521,26 @@ export function buildWwxTools(ctx: ToolContext) {
     export_lfs: tool({
       description: "Return public final scripts for handoff.",
       inputSchema: z.object({ filter: z.enum(["ship_only", "all"]).optional(), batch_id: z.string().optional() }),
-      execute: async () => {
+      execute: async ({ filter = "ship_only" }) => {
         try {
           const binding = requireBinding(ctx);
           const artifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
+          const manifestArtifact = artifacts.find((artifact) => artifact.filename === "lfs-v41-manifest.json");
+          let manifest: Manifest | null = null;
+          if (manifestArtifact) {
+            const content = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: manifestArtifact.id });
+            manifest = safeJson(content.contentText ?? "") as Manifest;
+          }
+          const decisions = manifestDecisions(manifest);
           const scripts = [];
           for (const artifact of artifacts.filter((item) => item.filename.startsWith("output-v41/") && item.filename.endsWith(".md"))) {
+            const taskId = artifact.filename.split("/").pop()?.replace(/\.md$/, "") ?? "";
+            const decision = decisions[taskId];
+            if (filter === "ship_only" && decision !== "ship") continue;
             const content = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: artifact.id });
-            scripts.push({ name: artifact.filename, content: shortOutput(content.contentText ?? "") ?? "" });
+            scripts.push({ name: artifact.filename, task_id: taskId, decision, content: shortOutput(content.contentText ?? "") ?? "" });
           }
-          return { ok: true, workflow: "export_lfs", batch_id: binding.batchId, filter: "ship_only", scripts };
+          return { ok: true, workflow: "export_lfs", batch_id: binding.batchId, filter, scripts };
         } catch (error) {
           return { ok: false, workflow: "export_lfs", error: String(error) };
         }
@@ -498,5 +561,141 @@ export function buildWwxTools(ctx: ToolContext) {
         }
       },
     }),
+
+    get_product_readiness: tool({
+      description: "Read the current production-readiness record for the bound product.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const binding = requireBinding(ctx);
+          const index = await invoke<NativeIndexRecord>("wwx_list_products");
+          const product = index.products.find((item) => item.id === binding.productId);
+          const config = safeJson(product?.configJson ?? "");
+          return {
+            ok: true,
+            workflow: "get_product_readiness",
+            product: binding.productId,
+            readiness: config.wwx_readiness ?? null,
+          };
+        } catch (error) {
+          return { ok: false, workflow: "get_product_readiness", error: String(error) };
+        }
+      },
+    }),
+
+    approve_product_package: tool({
+      description: "Explicitly approve the current bound product package for production LFS use after human review.",
+      inputSchema: z.object({
+        approval_note: z.string().min(1),
+      }),
+      needsApproval: true,
+      execute: async ({ approval_note }) => {
+        try {
+          const binding = requireBinding(ctx);
+          const index = await invoke<NativeIndexRecord>("wwx_list_products");
+          const product = index.products.find((item) => item.id === binding.productId);
+          if (!product) throw new Error("Bound product was not found.");
+          const config = safeJson(product.configJson);
+          const current = isRecord(config.wwx_readiness) ? config.wwx_readiness : {};
+          config.wwx_readiness = {
+            ...current,
+            status: "production_ready",
+            approved: true,
+            gaps: [],
+            approval_note,
+            approved_at: new Date().toISOString(),
+          };
+          await invoke("wwx_update_product", { productId: binding.productId, config });
+          return {
+            ok: true,
+            workflow: "approve_product_package",
+            product: binding.productId,
+            readiness: config.wwx_readiness,
+          };
+        } catch (error) {
+          return { ok: false, workflow: "approve_product_package", error: String(error) };
+        }
+      },
+    }),
+
+    enqueue_lfs_job: tool({
+      description: "Queue a production LFS run for the bound batch so the desktop scheduler can execute multiple batches concurrently.",
+      inputSchema: z.object({
+        angles_markdown: z.string().optional(),
+        angles_path: z.string().optional(),
+        workers: z.number().int().min(1).max(20).optional(),
+        generation_workers: z.number().int().min(1).max(50).optional(),
+      }),
+      needsApproval: true,
+      execute: async ({ angles_markdown, angles_path, workers, generation_workers }) => {
+        try {
+          const binding = requireBinding(ctx);
+          let markdown = angles_markdown?.trim() || "";
+          if (!markdown && angles_path) {
+            if (angles_path.startsWith("app://wwx/artifacts/")) {
+              const artifactId = angles_path.slice("app://wwx/artifacts/".length);
+              const file = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId });
+              markdown = file.contentText?.trim() || "";
+            } else {
+              const resolved = resolvePath(angles_path, ctx.getCwd());
+              const file = await native.readFile(resolved);
+              if (file.kind !== "text") throw new Error("The supplied angle file is not readable text.");
+              markdown = file.content;
+            }
+          }
+          if (!markdown) throw new Error("Attach angle.md or provide angles_markdown.");
+          const anthropicApiKey = await getKey("anthropic");
+          const queued = await invoke<NativeQueuedJob>("wwx_enqueue_lfs_job", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              anglesMarkdown: canonicalizeAngles(await hydrateArtifactReferences(markdown), binding),
+              runMode: "full",
+              workers,
+              generationWorkers: generation_workers,
+              anthropicApiKey,
+            },
+          });
+          return { ok: true, workflow: "enqueue_lfs_job", queued };
+        } catch (error) {
+          return { ok: false, workflow: "enqueue_lfs_job", error: String(error) };
+        }
+      },
+    }),
+
+    list_lfs_queue: tool({
+      description: "List queued, running, blocked, and completed desktop LFS jobs.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const jobs = await invoke<NativeQueuedJob[]>("wwx_list_lfs_queue");
+          return { ok: true, workflow: "list_lfs_queue", jobs };
+        } catch (error) {
+          return { ok: false, workflow: "list_lfs_queue", error: String(error) };
+        }
+      },
+    }),
   } as const;
+}
+
+function safeJson(text: string): Record<string, unknown> {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function manifestDecisions(manifest: Manifest | null): Record<string, "ship" | "review" | "fail"> {
+  if (!manifest) return {};
+  if (manifest.task_decisions) return manifest.task_decisions;
+  const result: Record<string, "ship" | "review" | "fail"> = {};
+  for (const entry of manifest.scripts ?? []) {
+    if (entry.task_id && entry.decision) result[entry.task_id] = entry.decision;
+  }
+  return result;
 }
