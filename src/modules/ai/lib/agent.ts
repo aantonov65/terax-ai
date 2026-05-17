@@ -40,6 +40,7 @@ const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> = 
   suggest_command: (i) =>
     `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
   create_product_from_intake: () => "Creating WWX product from intake",
+  create_batch_plan_from_product: () => "Creating WWX batch plan",
   submit_lfs_job: () => "Submitting LFS job",
   get_lfs_plan: () => "Reading LFS plan",
   approve_concept_matrix: () => "Approving concept matrix",

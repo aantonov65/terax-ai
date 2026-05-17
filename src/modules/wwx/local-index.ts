@@ -586,6 +586,9 @@ function collectAlerts({
   if (!strategyPath && !anglesPath) alerts.push("No strategy.json or angles.md found in this batch.");
   if (!manifest && !reportPath) alerts.push("No manifest or report has been written yet.");
   if (runs.some((run) => run.status === "blocked")) alerts.push("A recorded run ended with a failure event.");
+  if (entries.some((entry) => entry.name === "repair-history.json")) {
+    alerts.push("Repair history is available for this batch.");
+  }
 
   const decisions = normalizeDecisions(manifest);
   if (decisions.review > 0 || decisions.fail > 0) {

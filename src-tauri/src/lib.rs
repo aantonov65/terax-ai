@@ -158,6 +158,7 @@ pub fn run() {
             wwx::wwx_create_product,
             wwx::wwx_update_product,
             wwx::wwx_list_batches,
+            wwx::wwx_read_product_package,
             wwx::wwx_create_batch,
             wwx::wwx_list_artifacts,
             wwx::wwx_read_artifact,

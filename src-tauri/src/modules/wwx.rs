@@ -143,6 +143,16 @@ pub struct WwxArtifactContent {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WwxProductPackage {
+    product_id: String,
+    product_code: String,
+    name: String,
+    config_json: String,
+    artifacts: Vec<WwxArtifactContent>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WwxJobResult {
     ok: bool,
     workflow: String,
@@ -978,6 +988,70 @@ pub fn wwx_list_batches(app: AppHandle, product_id: String) -> Result<Vec<WwxBat
         )
         .map_err(|e| e.to_string())?;
     list_batches_for_product(&conn, &product_id, &product_code)
+}
+
+#[tauri::command]
+pub fn wwx_read_product_package(
+    app: AppHandle,
+    product_id: String,
+) -> Result<WwxProductPackage, String> {
+    let conn = open_db(&app)?;
+    let (product_code, name, config_json): (String, String, String) = conn
+        .query_row(
+            "SELECT product_code, name, config_json FROM products WHERE id = ?1 AND deleted_at IS NULL",
+            params![product_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, batch_id, product_id, kind, label, filename, mime_type, size, source, public, created_at, updated_at, revision, content_text, content_blob
+            FROM artifacts
+            WHERE batch_id = ?1
+              AND deleted_at IS NULL
+              AND (
+                filename IN ('source-bundle.json', 'product-readiness.json')
+                OR filename LIKE 'research/%'
+                OR filename LIKE 'package/%'
+              )
+            ORDER BY filename ASC
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![product_id], |row| {
+            Ok(WwxArtifactContent {
+                artifact: WwxArtifact {
+                    id: row.get(0)?,
+                    batch_id: row.get(1)?,
+                    product_id: row.get(2)?,
+                    kind: row.get(3)?,
+                    label: row.get(4)?,
+                    filename: row.get(5)?,
+                    mime_type: row.get(6)?,
+                    size: row.get(7)?,
+                    source: row.get(8)?,
+                    public: row.get::<_, i64>(9)? != 0,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    revision: row.get(12)?,
+                },
+                content_text: row.get(13)?,
+                content_blob: row.get(14)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let artifacts = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(WwxProductPackage {
+        product_id,
+        product_code,
+        name,
+        config_json,
+        artifacts,
+    })
 }
 
 #[tauri::command]

@@ -36,7 +36,17 @@ type NativeArtifactContent = {
 
 type NativeProductRecord = {
   id: string;
+  productCode?: string;
+  name?: string;
   configJson: string;
+};
+
+type NativeProductPackage = {
+  productId: string;
+  productCode: string;
+  name: string;
+  configJson: string;
+  artifacts: NativeArtifactContent[];
 };
 
 type NativeQueuedJob = {
@@ -276,6 +286,36 @@ function packageCanProceed(readiness: Record<string, unknown>): boolean {
   return String(readiness.status ?? "").toLowerCase() !== "red";
 }
 
+function productPackageDocument(pkg: NativeProductPackage, filename: string): string | null {
+  const direct = pkg.artifacts.find((item) => item.artifact.filename === filename);
+  if (direct?.contentText?.trim()) return direct.contentText;
+  const packaged = pkg.artifacts.find((item) => item.artifact.filename === `package/${filename}`);
+  return packaged?.contentText?.trim() || null;
+}
+
+function documentsFromProductPackage(pkg: NativeProductPackage, batchRequest: Record<string, unknown>) {
+  const docs = [
+    { label: "config.json", content: pkg.configJson },
+  ];
+  for (const filename of [
+    "research/archetypes.md",
+    "research/hotwords.md",
+    "research/mechanisms.md",
+    "source-bundle.json",
+    "product-readiness.json",
+    "package/operator-input.json",
+    "package/concept-matrix.json",
+  ]) {
+    const text = productPackageDocument(pkg, filename);
+    if (text) docs.push({ label: filename, content: text });
+  }
+  docs.push({
+    label: "new-batch-request.json",
+    content: JSON.stringify({ schema: "existing-product-batch-request/v1", ...batchRequest }, null, 2),
+  });
+  return docs;
+}
+
 function artifactByFilename(artifacts: NativeArtifact[], filename: string): NativeArtifact | undefined {
   return artifacts.find((artifact) => artifact.filename === filename);
 }
@@ -379,6 +419,105 @@ function jobResult(workflow: string, result: NativeJobResult) {
     diagnostics,
     exit_code: result.exitCode,
   };
+}
+
+type RepairAttemptInput = {
+  resumedFrom?: string;
+  operatorGuidance?: string;
+};
+
+async function readRepairHistory(binding: WwxBinding): Promise<Record<string, unknown>> {
+  const artifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
+  const existing = artifactByFilename(artifacts, "repair-history.json");
+  if (!existing) {
+    return {
+      schema: "lfs-repair-history/v1",
+      failures: [],
+      repair_attempts: [],
+    };
+  }
+  const content = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: existing.id });
+  return {
+    schema: "lfs-repair-history/v1",
+    failures: [],
+    repair_attempts: [],
+    ...safeJson(content.contentText ?? ""),
+  };
+}
+
+async function recordRunHistory(
+  binding: WwxBinding,
+  workflow: string,
+  result: NativeJobResult,
+  attempt?: RepairAttemptInput,
+): Promise<NativeArtifact | null> {
+  if (result.ok && !attempt) return null;
+  const history = await readRepairHistory(binding);
+  const failures = Array.isArray(history.failures) ? [...history.failures] : [];
+  const repairAttempts = Array.isArray(history.repair_attempts) ? [...history.repair_attempts] : [];
+  const failure = classifyFailure(result);
+  const now = new Date().toISOString();
+  if (attempt) {
+    repairAttempts.push({
+      id: `repair_${Date.now().toString(36)}`,
+      workflow,
+      run_id: result.runId,
+      resumed_from: attempt.resumedFrom ?? result.currentStage ?? null,
+      operator_guidance: attempt.operatorGuidance ?? null,
+      result_ok: result.ok,
+      result_status: result.status,
+      result_stage: result.currentStage ?? null,
+      failure_kind: failure?.kind ?? null,
+      recorded_at: now,
+    });
+  }
+  if (failure) {
+    failures.push({
+      id: `failure_${Date.now().toString(36)}`,
+      workflow,
+      run_id: result.runId,
+      stage: result.currentStage ?? result.status,
+      kind: failure.kind,
+      operator_needed: failure.operatorNeeded,
+      earliest_resume_from: failure.resumeFrom ?? result.currentStage ?? null,
+      reason: shortOutput(result.reason ?? result.stderr ?? "") ?? "",
+      exit_code: result.exitCode ?? null,
+      recorded_at: now,
+    });
+  }
+  const payload = {
+    ...history,
+    schema: "lfs-repair-history/v1",
+    updated_at: now,
+    failures,
+    repair_attempts: repairAttempts,
+  };
+  return invoke<NativeArtifact>("wwx_write_artifact", {
+    input: {
+      productId: binding.productId,
+      batchId: binding.batchId,
+      kind: "json",
+      label: "repair-history.json",
+      filename: "repair-history.json",
+      mimeType: "application/json",
+      contentText: JSON.stringify(payload, null, 2),
+      source: "repair-history",
+      public: true,
+    },
+  });
+}
+
+async function recordedJobResult(
+  binding: WwxBinding,
+  workflow: string,
+  result: NativeJobResult,
+  attempt?: RepairAttemptInput,
+) {
+  const artifact = await recordRunHistory(binding, workflow, result, attempt);
+  if (artifact && !result.artifacts.some((item) => item.id === artifact.id)) {
+    result.artifacts = [artifact, ...result.artifacts];
+  }
+  return jobResult(workflow, result);
 }
 
 async function runNativeJob(
@@ -528,6 +667,114 @@ export function buildWwxTools(ctx: ToolContext) {
       },
     }),
 
+    create_batch_plan_from_product: tool({
+      description:
+        "Create a new LFS batch plan for an existing product by reusing stored product truth/research, feasibility-checking the requested count, and seeding a fresh concept matrix for approval.",
+      inputSchema: z.object({
+        product_id: z.string().optional().describe("Existing app product id. Defaults to the currently bound product when present."),
+        product_code: z.string().optional().describe("Existing product code if product_id is unknown."),
+        batch_name: z.string().optional().describe("Human-readable batch name/id. Defaults to PRODUCT_LFS_BATCH."),
+        batch_goal: z.string().optional().describe("What this new ad batch should accomplish."),
+        target_ad_count: z.number().int().min(1).max(100).optional().describe("Requested number of ads."),
+        preferred_formats: z.array(z.string()).optional().describe("Optional LFS formats, e.g. confession, expose, listicle, warning."),
+      }),
+      needsApproval: true,
+      execute: async ({ product_id, product_code, batch_name, batch_goal, target_ad_count, preferred_formats }) => {
+        try {
+          const binding = ctx.getWwxBinding?.() ?? null;
+          let productId = product_id?.trim() || binding?.productId || "";
+          if (!productId && product_code?.trim()) {
+            const index = await invoke<NativeIndexRecord>("wwx_list_products");
+            const code = product_code.trim().toUpperCase();
+            const match = index.products.find((product) =>
+              product.productCode?.toUpperCase() === code ||
+              String(safeJson(product.configJson).product_code ?? "").toUpperCase() === code,
+            );
+            productId = match?.id ?? "";
+          }
+          if (!productId) throw new Error("No existing product resolved. Provide product_id/product_code or open a bound product batch.");
+
+          const pkg = await invoke<NativeProductPackage>("wwx_read_product_package", { productId });
+          const batchRequest = {
+            goal: batch_goal?.trim() ?? "",
+            target_ad_count: target_ad_count ?? 10,
+            preferred_formats: preferred_formats ?? [],
+          };
+          const generated = await invoke<GeneratedProductPackage>("wwx_generate_product_package", {
+            input: {
+              productCode: pkg.productCode,
+              batchId: batch_name?.trim() || `${pkg.productCode}_LFS_BATCH`,
+              documents: documentsFromProductPackage(pkg, batchRequest),
+              batchRequest,
+              anthropicApiKey: await getKey("anthropic"),
+            },
+          });
+          const readiness = safeJson(generated.readinessAssessmentJson);
+          const conceptMatrix = safeJson(generated.conceptMatrixJson);
+          const operatorInput = safeJson(generated.operatorInputJson);
+          if (!packageCanProceed(readiness)) {
+            return {
+              ok: true,
+              workflow: "create_batch_plan_from_product",
+              created: false,
+              blocked: true,
+              product: productId,
+              product_code: pkg.productCode,
+              batch_id: generated.batchId,
+              readiness,
+              concept_matrix: conceptMatrix,
+              operator_input: operatorInput,
+              next_actions: [
+                "Reduce target_ad_count or provide the missing/weak research named in readiness.",
+                "Run create_batch_plan_from_product again after adding evidence.",
+              ],
+            };
+          }
+
+          const artifacts = packageArtifacts(generated);
+          const createdBatch = await createWwxBatch({
+            workspaceRoot: ctx.getWorkspaceRoot() ?? "",
+            productFolder: productId,
+            batchName: generated.batchId,
+          });
+          await seedWwxBatchFromPackage({
+            productId,
+            batchId: createdBatch.batchId,
+            packageArtifacts: artifacts,
+          });
+          ctx.onWwxBatchCreated?.({
+            productId,
+            productCode: pkg.productCode,
+            batchId: createdBatch.batchId,
+            batchPath: createdBatch.batchPath,
+            seedPrompt: [
+              "A new batch plan was created from existing product research.",
+              "Read the readiness and concept matrix, then explain the proposed strategy in plain language.",
+              "Do not start generation until the operator approves the concept matrix.",
+            ].join(" "),
+          });
+          return {
+            ok: true,
+            workflow: "create_batch_plan_from_product",
+            created: true,
+            product: productId,
+            product_code: pkg.productCode,
+            batch_id: createdBatch.batchId,
+            batch_path: createdBatch.batchPath,
+            readiness,
+            concept_matrix: conceptMatrix,
+            operator_input: operatorInput,
+            next_actions: [
+              "Present the concept matrix for approval.",
+              "After approval, call approve_concept_matrix, then submit_lfs_job with run_mode full.",
+            ],
+          };
+        } catch (error) {
+          return { ok: false, workflow: "create_batch_plan_from_product", error: String(error), retryable: false };
+        }
+      },
+    }),
+
     submit_lfs_job: tool({
       description:
         "Submit angle.md content to the bound batch, canonicalize product/task IDs deterministically, and run the first guided LFS checkpoint.",
@@ -578,7 +825,7 @@ export function buildWwxTools(ctx: ToolContext) {
             workers,
             generationWorkers: generation_workers,
           });
-          return jobResult("submit_lfs_job", result);
+          return recordedJobResult(binding, "submit_lfs_job", result);
         } catch (error) {
           return { ok: false, workflow: "submit_lfs_job", error: String(error), retryable: false };
         }
@@ -596,11 +843,12 @@ export function buildWwxTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async ({ workers, generation_workers }) => {
         try {
-          const result = await runNativeJob("wwx_advance_lfs_job", requireBinding(ctx), {
+          const binding = requireBinding(ctx);
+          const result = await runNativeJob("wwx_advance_lfs_job", binding, {
             workers,
             generationWorkers: generation_workers,
           });
-          return jobResult("advance_lfs_job", result);
+          return recordedJobResult(binding, "advance_lfs_job", result);
         } catch (error) {
           return { ok: false, workflow: "advance_lfs_job", error: String(error), retryable: true };
         }
@@ -616,8 +864,9 @@ export function buildWwxTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async () => {
         try {
-          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx));
-          return jobResult("resume_lfs_job", result);
+          const binding = requireBinding(ctx);
+          const result = await runNativeJob("wwx_resume_lfs_job", binding);
+          return recordedJobResult(binding, "resume_lfs_job", result);
         } catch (error) {
           return { ok: false, workflow: "resume_lfs_job", error: String(error), retryable: true };
         }
@@ -763,15 +1012,19 @@ export function buildWwxTools(ctx: ToolContext) {
         expected_cost_risk: z.string().optional(),
       }),
       needsApproval: true,
-      execute: async ({ mode }) => {
+      execute: async ({ mode, focus_note }) => {
         try {
           const fromStage = mode === "objective"
             ? "objective_finish_pre_semantic"
             : mode === "semantic"
               ? "semantic_launchable"
               : "objective_finish_final";
-          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx), { fromStage, runMode: "full" });
-          return jobResult("rerun_lfs_checks", result);
+          const binding = requireBinding(ctx);
+          const result = await runNativeJob("wwx_resume_lfs_job", binding, { fromStage, runMode: "full" });
+          return recordedJobResult(binding, "rerun_lfs_checks", result, {
+            resumedFrom: fromStage,
+            operatorGuidance: focus_note,
+          });
         } catch (error) {
           return { ok: false, workflow: "rerun_lfs_checks", error: String(error), retryable: true };
         }
@@ -788,11 +1041,12 @@ export function buildWwxTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async ({ stage }) => {
         try {
-          const result = await runNativeJob("wwx_resume_lfs_job", requireBinding(ctx), {
+          const binding = requireBinding(ctx);
+          const result = await runNativeJob("wwx_resume_lfs_job", binding, {
             fromStage: stage,
             runMode: "full",
           });
-          return jobResult("retry_lfs_failures", result);
+          return recordedJobResult(binding, "retry_lfs_failures", result, { resumedFrom: stage });
         } catch (error) {
           return { ok: false, workflow: "retry_lfs_failures", error: String(error), retryable: true };
         }

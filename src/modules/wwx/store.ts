@@ -397,8 +397,12 @@ function nextAction(
 }
 
 function alertsFor(batch: NativeBatch): string[] {
-  if (batch.status === "blocked") return ["A recorded run ended with a failure event."];
-  if (batch.artifacts.length === 0) return ["No public LFS artifacts are visible yet."];
-  if (!batch.artifacts.some(isFinalLfsOutputArtifact)) return ["No final LFS output artifacts are visible yet."];
-  return [];
+  const alerts: string[] = [];
+  if (batch.status === "blocked") alerts.push("A recorded run ended with a failure event.");
+  if (batch.artifacts.some((artifact) => artifact.filename === "repair-history.json")) {
+    alerts.push("Repair history is available for this batch.");
+  }
+  if (batch.artifacts.length === 0) alerts.push("No public LFS artifacts are visible yet.");
+  else if (!batch.artifacts.some(isFinalLfsOutputArtifact)) alerts.push("No final LFS output artifacts are visible yet.");
+  return alerts;
 }

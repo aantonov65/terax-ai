@@ -33,6 +33,7 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     create_product_from_intake: { label: "Create product from intake", icon: AiMagicIcon },
+    create_batch_plan_from_product: { label: "Create batch plan", icon: AiMagicIcon },
     approve_concept_matrix: { label: "Approve concept matrix", icon: WorkflowSquare06Icon },
     submit_lfs_job: { label: "Submit LFS job", icon: WorkflowSquare06Icon },
     advance_lfs_job: { label: "Advance LFS job", icon: WorkflowSquare06Icon },
@@ -256,6 +257,7 @@ function isWwxWorkflowTool(toolName: string): boolean {
   return [
     "submit_lfs_job",
     "create_product_from_intake",
+    "create_batch_plan_from_product",
     "get_lfs_plan",
     "approve_concept_matrix",
     "advance_lfs_job",
@@ -284,6 +286,7 @@ function stringInput(value: unknown): string | null {
 
 function workflowIntent(toolName: string): string {
   if (toolName === "create_product_from_intake") return "Generate a product package from chat evidence and create the first batch only if readiness passes.";
+  if (toolName === "create_batch_plan_from_product") return "Reuse existing product truth/research to create a new batch concept matrix.";
   if (toolName === "get_lfs_plan") return "Read the prepared readiness and concept matrix.";
   if (toolName === "approve_concept_matrix") return "Record explicit strategy approval for this batch.";
   if (toolName === "submit_lfs_job") return "Canonicalize angle input and start a bound LFS job.";
@@ -308,6 +311,7 @@ function workflowIntent(toolName: string): string {
 
 function defaultWorkflowRisk(toolName: string): string {
   if (toolName === "create_product_from_intake") return "May call model providers and writes a new Product, Batch, and public planning artifacts if readiness passes.";
+  if (toolName === "create_batch_plan_from_product") return "May call model providers and writes a new Batch plus public planning artifacts if readiness passes.";
   if (toolName === "get_lfs_plan") return "Read-only.";
   if (toolName === "approve_concept_matrix") return "Writes the strategy approval record for this batch.";
   if (toolName === "submit_lfs_job") return "Writes canonical input and may call model providers.";
