@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 
 const WWX_WORKFLOWS = new Set([
+  "create_product_from_intake",
   "submit_lfs_job",
   "get_lfs_plan",
   "approve_concept_matrix",

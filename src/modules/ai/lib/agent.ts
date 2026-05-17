@@ -39,6 +39,7 @@ const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> = 
   bash_kill: () => `Stopping background process`,
   suggest_command: (i) =>
     `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
+  create_product_from_intake: () => "Creating WWX product from intake",
   submit_lfs_job: () => "Submitting LFS job",
   get_lfs_plan: () => "Reading LFS plan",
   approve_concept_matrix: () => "Approving concept matrix",

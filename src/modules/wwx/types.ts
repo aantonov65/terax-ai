@@ -143,10 +143,10 @@ export type ProductSummary = {
 
 export type AgentWindow = {
   id: string;
-  productId: string;
+  productId?: string;
   productCode?: string;
-  batchId: string;
-  batchPath: string;
+  batchId?: string;
+  batchPath?: string;
   sessionId: string;
   active: boolean;
   createdAt: number;

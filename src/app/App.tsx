@@ -39,6 +39,7 @@ import {
   type ProductSummary,
 } from "@/modules/wwx";
 import {
+  AiMagicIcon,
   Cancel01Icon,
   Copy01Icon,
   LayoutLeftIcon,
@@ -194,10 +195,41 @@ export default function App() {
     );
     const window = agentWindows.find((item) => item.id === windowId);
     if (window) {
-      setSelectedBatchId(window.batchId);
+      if (window.batchId) setSelectedBatchId(window.batchId);
       useChatStore.getState().switchSession(window.sessionId);
       useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
     }
+  }, [agentWindows]);
+
+  const ensureIntakeAgentWindow = useCallback(() => {
+    const existing = agentWindows.find((window) => !window.batchId);
+    if (existing) {
+      setAgentWindows((current) =>
+        current.map((window) => ({ ...window, active: window.id === existing.id })),
+      );
+      useChatStore.getState().switchSession(existing.sessionId);
+      useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
+      return existing.id;
+    }
+
+    const sessionId = useChatStore.getState().newSession();
+    const next: AgentWindow = {
+      id: `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      sessionId,
+      active: true,
+      createdAt: Date.now(),
+      seedPrompt: [
+        "Start a new WWX LFS intake.",
+        "Ask me to paste product facts, audience research, mechanism truth, offer details, swipes, and target ad count.",
+        "When I provide enough evidence, use create_product_from_intake to readiness-check it and create the first batch only if it can proceed.",
+      ].join(" "),
+    };
+    setAgentWindows((current) => [
+      ...current.map((window) => ({ ...window, active: false })),
+      next,
+    ]);
+    useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
+    return next.id;
   }, [agentWindows]);
 
   const ensureAgentWindowForBatch = useCallback(
@@ -251,11 +283,40 @@ export default function App() {
         return filtered;
       }
       const last = filtered[filtered.length - 1];
-      setSelectedBatchId(last.batchId);
+      if (last.batchId) setSelectedBatchId(last.batchId);
       useChatStore.getState().switchSession(last.sessionId);
       return filtered.map((window) => ({ ...window, active: window.id === last.id }));
     });
   }, []);
+
+  const handleWwxBatchCreated = useCallback(
+    (batch: {
+      productId: string;
+      productCode?: string;
+      batchId: string;
+      batchPath?: string;
+      seedPrompt?: string;
+    }) => {
+      setAgentWindows((current) => {
+        const active = current.find((window) => window.active);
+        if (!active) return current;
+        return current.map((window) =>
+          window.id === active.id
+            ? {
+                ...window,
+                productId: batch.productId,
+                productCode: batch.productCode,
+                batchId: batch.batchId,
+                batchPath: batch.batchPath,
+                seedPrompt: batch.seedPrompt ?? window.seedPrompt,
+              }
+            : window,
+        );
+      });
+      setSelectedBatchId(batch.batchId);
+    },
+    [],
+  );
 
   const continueBatchInAgent = useCallback(
     (batch: BatchSummary) => {
@@ -395,7 +456,7 @@ export default function App() {
       injectIntoActivePty: () => false,
       getWorkspaceRoot: () => effectiveWorkspaceRoot,
       getWwxBinding: () =>
-        activeWindow
+        activeWindow?.productId && activeWindow.batchId
           ? {
               productId: activeWindow.productId,
               productCode: activeWindow.productCode,
@@ -403,6 +464,7 @@ export default function App() {
               batchPath: activeWindow.batchPath,
             }
           : null,
+      onWwxBatchCreated: handleWwxBatchCreated,
       getActiveFile: () => null,
       openPreview: (path) => {
         const artifactBatch = wwxIndex.batches.find((batch) =>
@@ -413,7 +475,7 @@ export default function App() {
         return true;
       },
     });
-  }, [activeWindow, effectiveWorkspaceRoot, setLive, wwxIndex.batches]);
+  }, [activeWindow, effectiveWorkspaceRoot, handleWwxBatchCreated, setLive, wwxIndex.batches]);
 
   const shell = (
     <ThemeProvider>
@@ -424,6 +486,7 @@ export default function App() {
             activeWindows={agentWindows.length}
             onToggleSidebar={() => togglePanel(sidebarRef)}
             onToggleInspector={() => togglePanel(inspectorRef)}
+            onOpenIntake={ensureIntakeAgentWindow}
             onOpenSettings={() => void openSettingsWindow()}
           />
 
@@ -462,6 +525,7 @@ export default function App() {
                   windows={agentWindows}
                   batches={wwxIndex.batches}
                   hasComposer={hasComposer}
+                  onOpenIntake={ensureIntakeAgentWindow}
                   onFocus={focusAgentWindow}
                   onClose={closeAgentWindow}
                   onAddApiKey={() => void openSettingsWindow("models")}
@@ -519,12 +583,14 @@ function WwxHeader({
   activeWindows,
   onToggleSidebar,
   onToggleInspector,
+  onOpenIntake,
   onOpenSettings,
 }: {
   selectedBatch: BatchSummary | null;
   activeWindows: number;
   onToggleSidebar: () => void;
   onToggleInspector: () => void;
+  onOpenIntake: () => void;
   onOpenSettings: () => void;
 }) {
   return (
@@ -551,6 +617,16 @@ function WwxHeader({
           {activeWindows} agent{activeWindows === 1 ? "" : "s"}
         </span>
       </div>
+      <Button
+        variant="ghost"
+        size="xs"
+        className="rounded-none text-slate-300 hover:bg-white/10 hover:text-slate-100"
+        onClick={onOpenIntake}
+        title="Start chat-first LFS intake"
+      >
+        <HugeiconsIcon icon={AiMagicIcon} size={13} strokeWidth={1.8} />
+        New intake
+      </Button>
       <Button
         variant="ghost"
         size="icon-sm"
@@ -582,6 +658,7 @@ function AgentCanvas({
   windows,
   batches,
   hasComposer,
+  onOpenIntake,
   onFocus,
   onClose,
   onAddApiKey,
@@ -589,6 +666,7 @@ function AgentCanvas({
   windows: AgentWindow[];
   batches: BatchSummary[];
   hasComposer: boolean;
+  onOpenIntake: () => void;
   onFocus: (windowId: string) => void;
   onClose: (windowId: string) => void;
   onAddApiKey: () => void;
@@ -608,11 +686,20 @@ function AgentCanvas({
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-8">
         <div className="max-w-md border border-dashed border-white/20 bg-[#202126] p-6 text-center">
-          <div className="text-sm font-medium">No batch agent is open</div>
+          <div className="text-sm font-medium">No LFS agent is open</div>
           <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            Create a product, create a batch, or right-click an existing batch
-            and open it in an agent.
+            Start a chat-first intake, or open an existing batch from the
+            product sidebar.
           </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-4 rounded-none"
+            onClick={onOpenIntake}
+          >
+            <HugeiconsIcon icon={AiMagicIcon} size={14} strokeWidth={1.8} />
+            New intake
+          </Button>
         </div>
       </div>
     );
@@ -632,7 +719,9 @@ function AgentCanvas({
       )}
     >
       {visibleWindows.map((window, index) => {
-        const batch = batches.find((item) => item.path === window.batchPath);
+        const batch = window.batchPath
+          ? batches.find((item) => item.path === window.batchPath)
+          : null;
         return (
           <section
             key={window.id}
@@ -651,7 +740,7 @@ function AgentCanvas({
             <div className="relative flex h-8 shrink-0 items-center justify-end gap-1 border-b border-white/15 bg-[#111216] px-2">
               <div className="pointer-events-none absolute inset-x-12 text-center text-[11px] text-slate-400">
                 <span className="block truncate leading-none">
-                  {batch?.name ?? window.batchId}
+                  {batch?.name ?? window.batchId ?? "New product intake"}
                 </span>
               </div>
               <Button

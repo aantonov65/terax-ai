@@ -41,6 +41,7 @@ type Live = {
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
   getWwxBinding?: ToolContext["getWwxBinding"];
+  onWwxBatchCreated?: ToolContext["onWwxBatchCreated"];
   openPreview: (url: string) => boolean;
 };
 
@@ -152,6 +153,7 @@ const NOOP_LIVE: Live = {
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
   getWwxBinding: () => null,
+  onWwxBatchCreated: () => {},
   openPreview: () => false,
 };
 
@@ -214,6 +216,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       useChatStore.getState().live.injectIntoActivePty(text),
     openPreview: (url) => useChatStore.getState().live.openPreview(url),
     getWwxBinding: () => useChatStore.getState().live.getWwxBinding?.() ?? null,
+    onWwxBatchCreated: (batch) => useChatStore.getState().live.onWwxBatchCreated?.(batch),
     readCache,
     getSessionId: () => sessionId,
   };

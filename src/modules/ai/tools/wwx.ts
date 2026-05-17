@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
+import {
+  createWwxBatch,
+  createWwxProduct,
+  seedWwxBatchFromPackage,
+} from "@/modules/wwx/mutations";
 import { getKey } from "../lib/keyring";
 import { native } from "../lib/native";
 import { resolvePath, type ToolContext } from "./context";
@@ -49,6 +54,23 @@ type NativeQueuedJob = {
 
 type NativeIndexRecord = {
   products: NativeProductRecord[];
+};
+
+type GeneratedProductPackage = {
+  productCode: string;
+  batchId: string;
+  configJson: string;
+  archetypes: string;
+  hotwords: string;
+  mechanisms: string;
+  sourceAngle: string;
+  angles: string;
+  strategyJson: string;
+  operatorInputJson: string;
+  readinessAssessmentJson: string;
+  conceptMatrixJson: string;
+  reportJson: string;
+  sourceBundleJson: string;
 };
 
 type NativeJobResult = {
@@ -211,6 +233,49 @@ function publicArtifacts(artifacts: NativeArtifact[]) {
     }));
 }
 
+function safeSegment(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "PRODUCT"
+  );
+}
+
+function inferProductCode(input: {
+  productCode?: string;
+  documents: Array<{ label: string; content: string }>;
+  batchGoal?: string;
+}): string {
+  if (input.productCode?.trim()) return input.productCode;
+  const text = [
+    input.batchGoal ?? "",
+    ...input.documents.flatMap((doc) => [doc.label, doc.content.slice(0, 240)]),
+  ].join("\n");
+  const match =
+    text.match(/\b(?:product|brand|name)\s*[:=-]\s*([A-Za-z][A-Za-z0-9 -]{1,40})/i) ??
+    text.match(/\b([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,2})\b/);
+  return match?.[1] ?? "PRODUCT";
+}
+
+function packageArtifacts(generated: GeneratedProductPackage) {
+  return {
+    batchId: generated.batchId,
+    sourceAngle: generated.sourceAngle,
+    angles: generated.angles,
+    strategyJson: generated.strategyJson,
+    operatorInputJson: generated.operatorInputJson,
+    readinessAssessmentJson: generated.readinessAssessmentJson,
+    conceptMatrixJson: generated.conceptMatrixJson,
+    reportJson: generated.reportJson,
+  };
+}
+
+function packageCanProceed(readiness: Record<string, unknown>): boolean {
+  if (readiness.can_proceed === false) return false;
+  return String(readiness.status ?? "").toLowerCase() !== "red";
+}
+
 function artifactByFilename(artifacts: NativeArtifact[], filename: string): NativeArtifact | undefined {
   return artifacts.find((artifact) => artifact.filename === filename);
 }
@@ -344,6 +409,125 @@ async function runNativeJob(
 
 export function buildWwxTools(ctx: ToolContext) {
   return {
+    create_product_from_intake: tool({
+      description:
+        "Chat-first WWX intake: generate a production package from messy product evidence, readiness-check it, create the Product and first Batch only if it can proceed, then seed strategy artifacts for approval.",
+      inputSchema: z.object({
+        product_code: z.string().optional().describe("Short uppercase-safe product code, if the operator supplied one."),
+        documents: z.array(z.object({
+          label: z.string().min(1),
+          content: z.string().min(1),
+        })).min(1).describe("Raw product evidence, research notes, swipes, URLs copied as text, offer facts, or operator notes."),
+        batch_goal: z.string().optional().describe("What this ad batch should accomplish."),
+        target_ad_count: z.number().int().min(1).max(100).optional().describe("Requested number of ads."),
+        preferred_formats: z.array(z.string()).optional().describe("Optional LFS formats, e.g. confession, expose, listicle, warning."),
+        approval_note: z.string().optional().describe("Human approval note for creating the product/batch if the package is ready."),
+      }),
+      needsApproval: true,
+      execute: async ({ product_code, documents, batch_goal, target_ad_count, preferred_formats, approval_note }) => {
+        try {
+          if (ctx.getWwxBinding?.()) {
+            throw new Error("This intake tool creates a new Product and Batch. Open a New intake agent first.");
+          }
+          const anthropicApiKey = await getKey("anthropic");
+          const productCode = safeSegment(inferProductCode({
+            productCode: product_code,
+            documents,
+            batchGoal: batch_goal,
+          })).toUpperCase();
+          const generated = await invoke<GeneratedProductPackage>("wwx_generate_product_package", {
+            input: {
+              productCode,
+              documents,
+              batchRequest: {
+                goal: batch_goal?.trim() ?? "",
+                target_ad_count: target_ad_count ?? 10,
+                preferred_formats: preferred_formats ?? [],
+              },
+              anthropicApiKey,
+            },
+          });
+          const readiness = safeJson(generated.readinessAssessmentJson);
+          const conceptMatrix = safeJson(generated.conceptMatrixJson);
+          const operatorInput = safeJson(generated.operatorInputJson);
+          if (!packageCanProceed(readiness)) {
+            return {
+              ok: true,
+              workflow: "create_product_from_intake",
+              created: false,
+              blocked: true,
+              product_code: generated.productCode,
+              batch_id: generated.batchId,
+              readiness,
+              concept_matrix: conceptMatrix,
+              operator_input: operatorInput,
+              next_actions: [
+                "Ask the operator for the missing truth or stronger research named in readiness.missing_truth and readiness.weak_research.",
+                "Run create_product_from_intake again with the added evidence.",
+              ],
+            };
+          }
+
+          const config = safeJson(generated.configJson);
+          const sourceBundle = safeJson(generated.sourceBundleJson);
+          const artifacts = packageArtifacts(generated);
+          const createdProduct = await createWwxProduct({
+            workspaceRoot: ctx.getWorkspaceRoot() ?? "",
+            productFolder: generated.productCode,
+            config,
+            research: {
+              archetypes: generated.archetypes,
+              hotwords: generated.hotwords,
+              mechanisms: generated.mechanisms,
+            },
+            sourceBundle,
+            packageArtifacts: artifacts,
+            approveForProduction: true,
+          });
+          const createdBatch = await createWwxBatch({
+            workspaceRoot: ctx.getWorkspaceRoot() ?? "",
+            productFolder: createdProduct.productId,
+            batchName: generated.batchId,
+          });
+          await seedWwxBatchFromPackage({
+            productId: createdProduct.productId,
+            batchId: createdBatch.batchId,
+            packageArtifacts: artifacts,
+          });
+          ctx.onWwxBatchCreated?.({
+            productId: createdProduct.productId,
+            productCode: createdProduct.productCode,
+            batchId: createdBatch.batchId,
+            batchPath: createdBatch.batchPath,
+            seedPrompt: [
+              "A new product and batch were created from chat intake.",
+              "Read the readiness and concept matrix, then explain the proposed strategy in plain language.",
+              "Do not start generation until the operator approves the concept matrix.",
+            ].join(" "),
+          });
+          return {
+            ok: true,
+            workflow: "create_product_from_intake",
+            created: true,
+            product: createdProduct.productId,
+            product_code: createdProduct.productCode,
+            batch_id: createdBatch.batchId,
+            batch_path: createdBatch.batchPath,
+            readiness,
+            concept_matrix: conceptMatrix,
+            operator_input: operatorInput,
+            approval_note: approval_note ?? null,
+            next_actions: [
+              "Present the concept matrix for approval.",
+              "After approval, call approve_concept_matrix, then submit_lfs_job with run_mode full.",
+            ],
+          };
+        } catch (error) {
+          return { ok: false, workflow: "create_product_from_intake", error: String(error), retryable: false };
+        }
+      },
+    }),
+
     submit_lfs_job: tool({
       description:
         "Submit angle.md content to the bound batch, canonicalize product/task IDs deterministically, and run the first guided LFS checkpoint.",

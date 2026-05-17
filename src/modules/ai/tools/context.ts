@@ -23,6 +23,14 @@ export type ToolContext = {
     batchId: string;
     batchPath?: string;
   } | null;
+  /** Called by WWX intake tools after they create and seed a new batch. */
+  onWwxBatchCreated?: (batch: {
+    productId: string;
+    productCode?: string;
+    batchId: string;
+    batchPath?: string;
+    seedPrompt?: string;
+  }) => void;
 };
 
 export function resolvePath(rawPath: string, cwd: string | null): string {

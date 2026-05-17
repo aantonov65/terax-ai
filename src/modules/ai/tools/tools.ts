@@ -32,7 +32,7 @@ export { resolvePath, type ToolContext } from "./context";
 export function buildTools(ctx: import("./context").ToolContext) {
   const activeAgentId = useAgentsStore.getState().activeId;
   if (activeAgentId === "builtin:creative-strategist") {
-    // WWX strategist windows are batch-bound workflow surfaces, not general
+    // WWX strategist windows are intake/batch workflow surfaces, not general
     // filesystem agents. Artifact access/editing must go through WWX tools so
     // protected prompts, outlines, research cards, and product config are not
     // exposed through raw Read/List/Write operations.
