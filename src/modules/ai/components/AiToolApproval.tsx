@@ -32,6 +32,7 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
+    approve_concept_matrix: { label: "Approve concept matrix", icon: WorkflowSquare06Icon },
     submit_lfs_job: { label: "Submit LFS job", icon: WorkflowSquare06Icon },
     advance_lfs_job: { label: "Advance LFS job", icon: WorkflowSquare06Icon },
     resume_lfs_job: { label: "Resume LFS job", icon: WorkflowSquare06Icon },
@@ -253,6 +254,8 @@ function PreviewBlock({
 function isWwxWorkflowTool(toolName: string): boolean {
   return [
     "submit_lfs_job",
+    "get_lfs_plan",
+    "approve_concept_matrix",
     "advance_lfs_job",
     "resume_lfs_job",
     "rerun_lfs_checks",
@@ -278,6 +281,8 @@ function stringInput(value: unknown): string | null {
 }
 
 function workflowIntent(toolName: string): string {
+  if (toolName === "get_lfs_plan") return "Read the prepared readiness and concept matrix.";
+  if (toolName === "approve_concept_matrix") return "Record explicit strategy approval for this batch.";
   if (toolName === "submit_lfs_job") return "Canonicalize angle input and start a bound LFS job.";
   if (toolName === "advance_lfs_job") return "Approve the current checkpoint and run one next stage.";
   if (toolName === "resume_lfs_job") return "Resume the bound LFS job from saved state.";
@@ -299,6 +304,8 @@ function workflowIntent(toolName: string): string {
 }
 
 function defaultWorkflowRisk(toolName: string): string {
+  if (toolName === "get_lfs_plan") return "Read-only.";
+  if (toolName === "approve_concept_matrix") return "Writes the strategy approval record for this batch.";
   if (toolName === "submit_lfs_job") return "Writes canonical input and may call model providers.";
   if (toolName === "advance_lfs_job" || toolName === "resume_lfs_job") return "May call model providers and write batch artifacts.";
   if (toolName === "rerun_lfs_checks" || toolName === "retry_lfs_failures") return "May call model providers for QA/repair stages.";

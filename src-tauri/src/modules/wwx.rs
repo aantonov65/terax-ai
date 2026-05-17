@@ -187,6 +187,7 @@ pub struct GenerateProductPackageInput {
     product_code: String,
     batch_id: Option<String>,
     documents: Vec<SourceBundleDocumentInput>,
+    batch_request: Option<Value>,
     anthropic_api_key: Option<String>,
 }
 
@@ -202,6 +203,9 @@ pub struct GeneratedProductPackage {
     source_angle: String,
     angles: String,
     strategy_json: String,
+    operator_input_json: String,
+    readiness_assessment_json: String,
+    concept_matrix_json: String,
     report_json: String,
     source_bundle_json: String,
 }
@@ -1172,6 +1176,7 @@ fn generate_product_package(
             "label": doc.label,
             "content": doc.content,
         })).collect::<Vec<_>>(),
+        "batch_request": input.batch_request.unwrap_or_else(|| serde_json::json!({})),
     });
     fs::write(
         &bundle_path,
@@ -1234,6 +1239,11 @@ fn generate_product_package(
         source_angle: read_required_text(&batch_root.join("source-angle.md"))?,
         angles: read_required_text(&batch_root.join("angles.md"))?,
         strategy_json: read_required_text(&batch_root.join("strategy.json"))?,
+        operator_input_json: read_required_text(&batch_root.join("operator-input.json"))?,
+        readiness_assessment_json: read_required_text(
+            &batch_root.join("readiness-assessment.json"),
+        )?,
+        concept_matrix_json: read_required_text(&batch_root.join("concept-matrix.json"))?,
         report_json: read_required_text(&batch_root.join("product-package-report.json"))?,
         source_bundle_json: read_required_text(&batch_root.join("source-bundle.json"))?,
     };
@@ -1296,7 +1306,20 @@ fn start_lfs_job_with_context(
 fn reset_batch_for_new_submission(conn: &Connection, batch_id: &str) -> Result<(), String> {
     let now = now_ms();
     conn.execute(
-        "UPDATE artifacts SET deleted_at = ?2, updated_at = ?2 WHERE batch_id = ?1 AND deleted_at IS NULL",
+        "UPDATE artifacts
+         SET deleted_at = ?2, updated_at = ?2
+         WHERE batch_id = ?1
+           AND deleted_at IS NULL
+           AND filename NOT IN (
+             'source-angle.md',
+             'angles.md',
+             'strategy.json',
+             'operator-input.json',
+             'readiness-assessment.json',
+             'concept-matrix.json',
+             'concept-matrix-approval.json',
+             'product-package-report.json'
+           )",
         params![batch_id, now],
     )
     .map_err(|e| e.to_string())?;
@@ -1699,6 +1722,10 @@ fn ingest_runner(
         "source-angle.md",
         "angles.md",
         "strategy.json",
+        "operator-input.json",
+        "readiness-assessment.json",
+        "concept-matrix.json",
+        "concept-matrix-approval.json",
         "spec.json",
         "agent-run.json",
         "agent-events.jsonl",
@@ -1757,6 +1784,10 @@ fn is_public_root_artifact(name: &str) -> bool {
         "source-angle.md"
             | "angles.md"
             | "strategy.json"
+            | "operator-input.json"
+            | "readiness-assessment.json"
+            | "concept-matrix.json"
+            | "concept-matrix-approval.json"
             | "lfs-brief-report.json"
             | "lfs-outline-report.json"
             | "lfs-v41-report.json"
@@ -2106,7 +2137,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_batch_for_new_submission_clears_stale_workflow_artifacts() {
+    fn reset_batch_for_new_submission_preserves_planning_and_clears_stale_workflow_artifacts() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let now = now_ms();
@@ -2146,6 +2177,17 @@ mod tests {
             &conn,
             "prod_NR",
             "batch_NR_demo",
+            "concept-matrix.json",
+            "Concept Matrix",
+            b"{}",
+            "runner",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
             "prompts/old.md",
             "Prompt",
             b"prompt",
@@ -2171,7 +2213,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(active_artifacts, 0);
+        assert_eq!(active_artifacts, 3);
         assert_eq!(status, "draft");
         assert_eq!(current_stage, None);
     }

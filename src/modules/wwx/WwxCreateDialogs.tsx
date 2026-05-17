@@ -23,9 +23,13 @@ export type ProductDraft = {
   research: ProductResearchDraft;
   sourceBundle?: Record<string, unknown>;
   packageArtifacts?: {
+    batchId: string;
     sourceAngle: string;
     angles: string;
     strategyJson: string;
+    operatorInputJson: string;
+    readinessAssessmentJson: string;
+    conceptMatrixJson: string;
     reportJson: string;
   };
   approveForProduction?: boolean;
@@ -53,6 +57,9 @@ type GeneratedProductPackage = {
   sourceAngle: string;
   angles: string;
   strategyJson: string;
+  operatorInputJson: string;
+  readinessAssessmentJson: string;
+  conceptMatrixJson: string;
   reportJson: string;
   sourceBundleJson: string;
 };
@@ -65,6 +72,9 @@ type PackagePreviewKey =
   | "sourceAngle"
   | "angles"
   | "strategy"
+  | "operatorInput"
+  | "readiness"
+  | "matrix"
   | "report";
 
 const RESEARCH_FILES: Array<{
@@ -116,6 +126,9 @@ export function CreateProductDialog({
   >({});
   const [sourceDocs, setSourceDocs] = useState<LoadedSourceDocument[]>([]);
   const [sourceNotes, setSourceNotes] = useState("");
+  const [batchGoal, setBatchGoal] = useState("");
+  const [targetAdCount, setTargetAdCount] = useState("10");
+  const [preferredFormats, setPreferredFormats] = useState("");
   const [generatedPackage, setGeneratedPackage] =
     useState<GeneratedProductPackage | null>(null);
   const [packageApproved, setPackageApproved] = useState(false);
@@ -193,10 +206,22 @@ export function CreateProductDialog({
         return generatedPackage.angles;
       case "strategy":
         return generatedPackage.strategyJson;
+      case "operatorInput":
+        return generatedPackage.operatorInputJson;
+      case "readiness":
+        return generatedPackage.readinessAssessmentJson;
+      case "matrix":
+        return generatedPackage.conceptMatrixJson;
       case "report":
         return generatedPackage.reportJson;
     }
   }, [generatedPackage, packagePreview]);
+  const generatedReadiness = useMemo(
+    () => parseRawJson(generatedPackage?.readinessAssessmentJson ?? ""),
+    [generatedPackage?.readinessAssessmentJson],
+  );
+  const readinessStatus = stringValue(generatedReadiness?.status);
+  const readinessCanProceed = generatedReadiness?.can_proceed !== false;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -213,9 +238,13 @@ export function CreateProductDialog({
         sourceBundle,
         packageArtifacts: usablePackage
           ? {
+              batchId: usablePackage.batchId,
               sourceAngle: usablePackage.sourceAngle,
               angles: usablePackage.angles,
               strategyJson: usablePackage.strategyJson,
+              operatorInputJson: usablePackage.operatorInputJson,
+              readinessAssessmentJson: usablePackage.readinessAssessmentJson,
+              conceptMatrixJson: usablePackage.conceptMatrixJson,
               reportJson: usablePackage.reportJson,
             }
           : undefined,
@@ -310,6 +339,11 @@ export function CreateProductDialog({
         input: {
           productCode: safeSegment(folder || brand || productName || "PRODUCT").toUpperCase(),
           documents: sourceDocuments,
+          batchRequest: {
+            goal: batchGoal.trim(),
+            target_ad_count: positiveInteger(targetAdCount, 10),
+            preferred_formats: splitList(preferredFormats),
+          },
           anthropicApiKey,
         },
       });
@@ -370,6 +404,9 @@ export function CreateProductDialog({
     setResearchFiles({});
     setSourceDocs([]);
     setSourceNotes("");
+    setBatchGoal("");
+    setTargetAdCount("10");
+    setPreferredFormats("");
     setGeneratedPackage(null);
     setPackageApproved(false);
     setPackageDirty(false);
@@ -447,6 +484,41 @@ export function CreateProductDialog({
                 placeholder="Paste strategist notes, landing page copy, evidence, product facts..."
                 className="min-h-20 rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
               />
+              <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2">
+                <Field label="Batch Goal">
+                  <Input
+                    value={batchGoal}
+                    onChange={(event) => {
+                      setBatchGoal(event.target.value);
+                      markPackageDirty();
+                    }}
+                    placeholder="Scale podcast-style hair-loss ads"
+                    className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+                  />
+                </Field>
+                <Field label="Ad Count">
+                  <Input
+                    value={targetAdCount}
+                    onChange={(event) => {
+                      setTargetAdCount(event.target.value.replace(/[^\d]/g, ""));
+                      markPackageDirty();
+                    }}
+                    placeholder="10"
+                    className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+                  />
+                </Field>
+              </div>
+              <Field label="Preferred Formats">
+                <Input
+                  value={preferredFormats}
+                  onChange={(event) => {
+                    setPreferredFormats(event.target.value);
+                    markPackageDirty();
+                  }}
+                  placeholder="confession, expose, warning"
+                  className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+                />
+              </Field>
               {generatedPackage ? (
                 <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2">
                   <div className="text-[11px] text-slate-400">
@@ -454,16 +526,24 @@ export function CreateProductDialog({
                       ? "Source or package fields changed; regenerate before approval"
                       : packageApproved
                         ? "Approved for production"
-                        : "Generated, awaiting approval"}
+                        : readinessStatus
+                          ? `Readiness ${readinessStatus}; awaiting approval`
+                          : "Generated, awaiting approval"}
                   </div>
                   <Button
                     type="button"
                     variant={packageApproved ? "outline" : "default"}
                     className="h-7 rounded-none px-2 text-[11px]"
-                    disabled={packageDirty}
+                    disabled={packageDirty || !readinessCanProceed}
                     onClick={() => setPackageApproved((current) => !current)}
                   >
-                    {packageDirty ? "Needs regenerate" : packageApproved ? "Approved" : "Approve package"}
+                    {packageDirty
+                      ? "Needs regenerate"
+                      : !readinessCanProceed
+                        ? "Blocked"
+                        : packageApproved
+                          ? "Approved"
+                          : "Approve package"}
                   </Button>
                 </div>
               ) : null}
@@ -653,6 +733,11 @@ export function CreateProductDialog({
         {!researchValidation.ok ? (
           <div className="text-xs text-destructive">{researchValidation.missing.join("; ")}</div>
         ) : null}
+        {generatedPackage && !readinessCanProceed ? (
+          <div className="text-xs text-amber-300">
+            Readiness is blocked. Review the readiness artifact and add the missing truth or research before approval.
+          </div>
+        ) : null}
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
         <DialogFooter>
@@ -804,5 +889,20 @@ const PACKAGE_PREVIEWS: Array<{ key: PackagePreviewKey; label: string }> = [
   { key: "sourceAngle", label: "Source" },
   { key: "angles", label: "Angles" },
   { key: "strategy", label: "Strategy" },
+  { key: "operatorInput", label: "Input" },
+  { key: "readiness", label: "Readiness" },
+  { key: "matrix", label: "Matrix" },
   { key: "report", label: "Report" },
 ];
+
+function positiveInteger(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}

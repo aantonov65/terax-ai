@@ -25,7 +25,11 @@ import {
   CreateProductDialog,
   type ProductDraft,
 } from "@/modules/wwx/WwxCreateDialogs";
-import { createWwxBatch, createWwxProduct } from "@/modules/wwx/mutations";
+import {
+  createWwxBatch,
+  createWwxProduct,
+  seedWwxBatchFromPackage,
+} from "@/modules/wwx/mutations";
 import {
   useWwxIndex,
   WwxInspector,
@@ -292,11 +296,49 @@ export default function App() {
         },
         batches: [],
       };
+      if (draft.packageArtifacts && draft.approveForProduction) {
+        const createdBatch = await createWwxBatch({
+          workspaceRoot: effectiveWorkspaceRoot,
+          productFolder: created.productId,
+          batchName: draft.packageArtifacts.batchId,
+        });
+        await seedWwxBatchFromPackage({
+          productId: created.productId,
+          batchId: createdBatch.batchId,
+          packageArtifacts: draft.packageArtifacts,
+        });
+        const batch: BatchSummary = {
+          id: createdBatch.batchId,
+          name: draft.packageArtifacts.batchId,
+          path: createdBatch.batchPath,
+          product: product.name,
+          productCode: product.code,
+          productPath: product.path,
+          status: "draft",
+          batchMetaPath: createdBatch.metaPath,
+          nextAction: "Review the concept matrix, then approve generation.",
+          artifacts: [],
+          runs: [],
+          alerts: [],
+        };
+        setSelectedBatchId(createdBatch.batchId);
+        ensureAgentWindowForBatch(
+          batch,
+          [
+            "A new product package was created from raw evidence.",
+            "First, read the concept matrix and readiness artifacts, then present the strategy for approval in plain language.",
+            "Do not start generation until I approve the concept matrix.",
+            "Once approved, run the full LFS workflow hands-off and return the ads first.",
+          ].join(" "),
+        );
+        firstBatchProductRef.current = null;
+        return;
+      }
       firstBatchProductRef.current = product;
       setBatchDialogProduct(product);
       setBatchDialogTitle("Create Your First Batch");
     },
-    [effectiveWorkspaceRoot],
+    [effectiveWorkspaceRoot, ensureAgentWindowForBatch],
   );
 
   const handleCreateBatch = useCallback(

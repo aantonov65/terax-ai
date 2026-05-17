@@ -40,6 +40,8 @@ const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> = 
   suggest_command: (i) =>
     `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
   submit_lfs_job: () => "Submitting LFS job",
+  get_lfs_plan: () => "Reading LFS plan",
+  approve_concept_matrix: () => "Approving concept matrix",
   advance_lfs_job: (i) => `Advancing ${String(i.batch_id ?? "bound LFS job")}`,
   resume_lfs_job: (i) => `Resuming ${String(i.batch_id ?? "bound LFS job")}`,
   get_lfs_job: (i) => `Inspecting ${String(i.batch_id ?? "bound LFS job")}`,

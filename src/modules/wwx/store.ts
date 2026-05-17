@@ -237,6 +237,8 @@ function mapProduct(product: NativeProduct): ProductSummary {
 
 function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
   const decisions = batch.decisionCounts ?? decisionCounts(batch.artifacts);
+  const hasConceptMatrix = batch.artifacts.some((artifact) => artifact.filename === "concept-matrix.json");
+  const hasConceptApproval = batch.artifacts.some((artifact) => artifact.filename === "concept-matrix-approval.json");
   return {
     id: batch.id,
     name: batch.name,
@@ -248,7 +250,12 @@ function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
     status: toBatchStatus(batch.status),
     updatedAt: batch.updatedAt,
     decisionCounts: decisions,
-    nextAction: nextAction(toBatchStatus(batch.status), batch.currentStage),
+    nextAction: nextAction(
+      toBatchStatus(batch.status),
+      batch.currentStage,
+      hasConceptMatrix,
+      hasConceptApproval,
+    ),
     strategyPath: artifactPath(batch.artifacts, "strategy.json"),
     manifestPath: artifactPath(batch.artifacts, "lfs-v41-manifest.json"),
     reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
@@ -369,8 +376,19 @@ function decisionCounts(artifacts: NativeArtifact[]) {
   return { ship: 0, review: 0, fail: 0 };
 }
 
-function nextAction(status: BatchStatus, stage?: string | null): string {
-  if (status === "draft") return "Start the guided workflow.";
+function nextAction(
+  status: BatchStatus,
+  stage?: string | null,
+  hasConceptMatrix = false,
+  hasConceptApproval = false,
+): string {
+  if (status === "draft") {
+    return hasConceptMatrix
+      ? hasConceptApproval
+        ? "Concept matrix approved. Start the batch when ready."
+        : "Review the concept matrix, then approve generation."
+      : "Start the guided workflow.";
+  }
   if (status === "review") return `Review checkpoint${stage ? ` at ${stage}` : ""}.`;
   if (status === "running") return "Run is currently active.";
   if (status === "blocked") return "Open the agent to inspect the failure.";

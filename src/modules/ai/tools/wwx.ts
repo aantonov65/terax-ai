@@ -73,6 +73,12 @@ type Manifest = {
   task_decisions?: Record<string, "ship" | "review" | "fail">;
 };
 
+type BatchPlan = {
+  readiness?: Record<string, unknown> | null;
+  conceptMatrix?: Record<string, unknown> | null;
+  approval?: Record<string, unknown> | null;
+};
+
 function requireBinding(ctx: ToolContext): WwxBinding {
   const binding = ctx.getWwxBinding?.() ?? null;
   if (!binding) {
@@ -205,6 +211,10 @@ function publicArtifacts(artifacts: NativeArtifact[]) {
     }));
 }
 
+function artifactByFilename(artifacts: NativeArtifact[], filename: string): NativeArtifact | undefined {
+  return artifacts.find((artifact) => artifact.filename === filename);
+}
+
 function isFinalLfsArtifact(artifact: NativeArtifact): boolean {
   const filename = artifact.filename.replace(/^\/+/, "");
   return filename.startsWith("output-v41/") && filename.endsWith(".md");
@@ -213,6 +223,41 @@ function isFinalLfsArtifact(artifact: NativeArtifact): boolean {
 function isResearchMissing(result: NativeJobResult): boolean {
   const text = `${result.reason ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`;
   return /research folder not found|missing research|research_cards failed/i.test(text);
+}
+
+function classifyFailure(result: NativeJobResult): {
+  kind:
+    | "missing_truth"
+    | "malformed_artifact"
+    | "weak_creative_artifact"
+    | "deterministic_compliance_issue"
+    | "transient_runtime_issue"
+    | "infrastructure_config_issue"
+    | "unknown";
+  operatorNeeded: boolean;
+  resumeFrom?: string;
+} | null {
+  if (result.ok) return null;
+  const text = `${result.reason ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`.toLowerCase();
+  if (/not production-ready|missing research|pricing_rules|guarantee|product_name|target_demographic|mechanism/.test(text)) {
+    return { kind: "missing_truth", operatorNeeded: true, resumeFrom: "research_cards" };
+  }
+  if (/invalid json|expected exactly|prompt source|outline contract|manifest/.test(text)) {
+    return { kind: "malformed_artifact", operatorNeeded: false, resumeFrom: "lfs_brief" };
+  }
+  if (/semantic/.test(text)) {
+    return { kind: "weak_creative_artifact", operatorNeeded: false, resumeFrom: "semantic_launchable" };
+  }
+  if (/preflight|forbidden|cta|native lfs|format contract|objective/.test(text)) {
+    return { kind: "deterministic_compliance_issue", operatorNeeded: false, resumeFrom: "preflight_v41" };
+  }
+  if (/timeout|rate limit|temporar|network|connection reset|fetch failed/.test(text)) {
+    return { kind: "transient_runtime_issue", operatorNeeded: false };
+  }
+  if (/credential|api key|anthropic|permission denied|no such file|not found/.test(text)) {
+    return { kind: "infrastructure_config_issue", operatorNeeded: true };
+  }
+  return { kind: "unknown", operatorNeeded: true };
 }
 
 function jobResult(workflow: string, result: NativeJobResult) {
@@ -225,6 +270,7 @@ function jobResult(workflow: string, result: NativeJobResult) {
   const reason = shortOutput(result.reason ?? "") ?? undefined;
   const missingResearch = isResearchMissing(result);
   const retryable = missingResearch ? false : result.retryable;
+  const failure = classifyFailure(result);
   const diagnostics = result.ok
     ? undefined
     : {
@@ -242,6 +288,9 @@ function jobResult(workflow: string, result: NativeJobResult) {
     current_stage: result.currentStage ?? undefined,
     awaiting_review: result.awaitingReview,
     retryable,
+    failure_kind: failure?.kind,
+    operator_needed: failure?.operatorNeeded,
+    suggested_resume_from: failure?.resumeFrom,
     reason,
     summary: result.ok
       ? finalArtifactCount > 0
@@ -310,6 +359,13 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async ({ angles_markdown, angles_path, run_mode, workers, generation_workers }) => {
         try {
           const binding = requireBinding(ctx);
+          const batchArtifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
+          if (
+            artifactByFilename(batchArtifacts, "concept-matrix.json") &&
+            !artifactByFilename(batchArtifacts, "concept-matrix-approval.json")
+          ) {
+            throw new Error("Concept matrix approval is required before generation.");
+          }
           let markdown = angles_markdown?.trim() || "";
           if (!markdown && angles_path) {
             if (angles_path.startsWith("app://wwx/artifacts/")) {
@@ -321,6 +377,13 @@ export function buildWwxTools(ctx: ToolContext) {
               const file = await native.readFile(resolved);
               if (file.kind !== "text") throw new Error("The supplied angle file is not readable text.");
               markdown = file.content;
+            }
+          }
+          if (!markdown && !angles_path) {
+            const angles = artifactByFilename(batchArtifacts, "angles.md");
+            if (angles) {
+              const file = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: angles.id });
+              markdown = file.contentText?.trim() || "";
             }
           }
           if (!markdown) throw new Error("Attach angle.md or provide angles_markdown.");
@@ -393,6 +456,40 @@ export function buildWwxTools(ctx: ToolContext) {
           };
         } catch (error) {
           return { ok: false, workflow: "get_lfs_job", error: String(error) };
+        }
+      },
+    }),
+
+    get_lfs_plan: tool({
+      description: "Read the public readiness, concept-matrix, and approval state for the bound batch.",
+      inputSchema: z.object({ batch_id: z.string().optional() }),
+      execute: async () => {
+        try {
+          const binding = requireBinding(ctx);
+          const artifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
+          const result: BatchPlan = {};
+          for (const [filename, key] of [
+            ["readiness-assessment.json", "readiness"],
+            ["concept-matrix.json", "conceptMatrix"],
+            ["concept-matrix-approval.json", "approval"],
+          ] as const) {
+            const artifact = artifactByFilename(artifacts, filename);
+            if (!artifact) {
+              result[key] = null;
+              continue;
+            }
+            const content = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: artifact.id });
+            result[key] = safeJson(content.contentText ?? "");
+          }
+          return {
+            ok: true,
+            workflow: "get_lfs_plan",
+            batch_id: binding.batchId,
+            product: binding.productId,
+            ...result,
+          };
+        } catch (error) {
+          return { ok: false, workflow: "get_lfs_plan", error: String(error) };
         }
       },
     }),
@@ -614,6 +711,47 @@ export function buildWwxTools(ctx: ToolContext) {
           };
         } catch (error) {
           return { ok: false, workflow: "approve_product_package", error: String(error) };
+        }
+      },
+    }),
+
+    approve_concept_matrix: tool({
+      description: "Record explicit human approval for the bound batch concept matrix before generation.",
+      inputSchema: z.object({
+        approval_note: z.string().min(1),
+      }),
+      needsApproval: true,
+      execute: async ({ approval_note }) => {
+        try {
+          const binding = requireBinding(ctx);
+          const payload = {
+            schema: "concept-matrix-approval/v1",
+            approved: true,
+            approval_note,
+            approved_at: new Date().toISOString(),
+          };
+          const artifact = await invoke<NativeArtifact>("wwx_write_artifact", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              kind: "json",
+              label: "concept-matrix-approval.json",
+              filename: "concept-matrix-approval.json",
+              mimeType: "application/json",
+              contentText: JSON.stringify(payload, null, 2),
+              source: "concept-matrix-approval",
+              public: true,
+            },
+          });
+          return {
+            ok: true,
+            workflow: "approve_concept_matrix",
+            batch_id: binding.batchId,
+            artifact_path: `app://wwx/artifacts/${artifact.id}`,
+            approval: payload,
+          };
+        } catch (error) {
+          return { ok: false, workflow: "approve_concept_matrix", error: String(error) };
         }
       },
     }),

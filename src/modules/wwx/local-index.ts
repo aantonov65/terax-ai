@@ -140,6 +140,10 @@ const ROOT_ARTIFACT_FILES: Array<{
   kind: ArtifactKind;
 }> = [
   { name: "angles.md", label: "Angles", kind: "angles" },
+  { name: "operator-input.json", label: "Operator Input", kind: "json" },
+  { name: "readiness-assessment.json", label: "Readiness Assessment", kind: "report" },
+  { name: "concept-matrix.json", label: "Concept Matrix", kind: "strategy" },
+  { name: "concept-matrix-approval.json", label: "Concept Matrix Approval", kind: "json" },
   { name: "wwx-artifacts.json", label: "Artifact Manifest", kind: "manifest" },
   { name: "lfs-v41-manifest.json", label: "LFS Manifest", kind: "manifest" },
   { name: "lfs-v41-report.json", label: "LFS V4.1 Report", kind: "report" },

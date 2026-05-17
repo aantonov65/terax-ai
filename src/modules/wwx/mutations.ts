@@ -21,9 +21,13 @@ export type CreateProductInput = {
   research?: Partial<ProductResearchDraft>;
   sourceBundle?: Record<string, unknown>;
   packageArtifacts?: {
+    batchId: string;
     sourceAngle: string;
     angles: string;
     strategyJson: string;
+    operatorInputJson: string;
+    readinessAssessmentJson: string;
+    conceptMatrixJson: string;
     reportJson: string;
   };
   approveForProduction?: boolean;
@@ -82,6 +86,9 @@ export async function createWwxProduct({
       persistPackageFile(created.productId, "source-angle.md", "text/markdown", packageArtifacts.sourceAngle),
       persistPackageFile(created.productId, "angles.md", "text/markdown", packageArtifacts.angles),
       persistPackageFile(created.productId, "strategy.json", "application/json", packageArtifacts.strategyJson),
+      persistPackageFile(created.productId, "operator-input.json", "application/json", packageArtifacts.operatorInputJson),
+      persistPackageFile(created.productId, "readiness-assessment.json", "application/json", packageArtifacts.readinessAssessmentJson),
+      persistPackageFile(created.productId, "concept-matrix.json", "application/json", packageArtifacts.conceptMatrixJson),
       persistPackageFile(created.productId, "product-package-report.json", "application/json", packageArtifacts.reportJson),
     ]);
   }
@@ -93,6 +100,23 @@ export async function createWwxBatch({
   batchName,
 }: CreateBatchInput): Promise<CreatedBatch> {
   return createBatchInStore({ productId: productFolder, batchName });
+}
+
+export async function seedWwxBatchFromPackage(input: {
+  productId: string;
+  batchId: string;
+  packageArtifacts: NonNullable<CreateProductInput["packageArtifacts"]>;
+}): Promise<void> {
+  const { productId, batchId, packageArtifacts } = input;
+  await Promise.all([
+    persistBatchFile(productId, batchId, "source-angle.md", "text/markdown", packageArtifacts.sourceAngle),
+    persistBatchFile(productId, batchId, "angles.md", "text/markdown", packageArtifacts.angles),
+    persistBatchFile(productId, batchId, "strategy.json", "application/json", packageArtifacts.strategyJson),
+    persistBatchFile(productId, batchId, "operator-input.json", "application/json", packageArtifacts.operatorInputJson),
+    persistBatchFile(productId, batchId, "readiness-assessment.json", "application/json", packageArtifacts.readinessAssessmentJson),
+    persistBatchFile(productId, batchId, "concept-matrix.json", "application/json", packageArtifacts.conceptMatrixJson),
+    persistBatchFile(productId, batchId, "product-package-report.json", "application/json", packageArtifacts.reportJson),
+  ]);
 }
 
 function normalizeConfig(
@@ -184,5 +208,25 @@ async function persistPackageFile(
     contentText,
     source: "product-package",
     public: false,
+  });
+}
+
+async function persistBatchFile(
+  productId: string,
+  batchId: string,
+  filename: string,
+  mimeType: string,
+  contentText: string,
+): Promise<void> {
+  await writeWwxArtifact({
+    productId,
+    batchId,
+    kind: filename.endsWith(".md") ? "markdown" : "json",
+    label: filename,
+    filename,
+    mimeType,
+    contentText,
+    source: "product-package",
+    public: true,
   });
 }

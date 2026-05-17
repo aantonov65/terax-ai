@@ -428,6 +428,7 @@ export function WwxInspector({
     () => latestRun(selectedBatch?.runs ?? []),
     [selectedBatch?.runs],
   );
+  const finalScripts = selectedBatch?.finalScripts ?? [];
 
   useEffect(() => {
     if (!selectedBatch) {
@@ -448,6 +449,20 @@ export function WwxInspector({
     if (current) return;
     setSelectedArtifactId(selectedBatch.artifacts[0]?.id ?? null);
   }, [selectedBatch, selectedArtifactId, selectedArtifactPath]);
+
+  useEffect(() => {
+    if (!selectedBatch || !finalScripts.length) return;
+    setArtifactsOpen(false);
+    const firstFinal = selectedBatch.artifacts.find((artifact) =>
+      finalScripts.some(
+        (script) =>
+          artifact.path === script.script ||
+          artifact.label === script.script ||
+          artifact.path.endsWith(script.script),
+      ),
+    );
+    if (firstFinal) setSelectedArtifactId(firstFinal.id);
+  }, [finalScripts.length, selectedBatch?.id]);
 
   const selectedArtifact =
     selectedBatch?.artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
@@ -589,6 +604,15 @@ export function WwxInspector({
                     </Button>
                   </div>
                 </section>
+
+                {finalScripts.length ? (
+                  <section className="min-w-0 space-y-2 overflow-hidden">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                      Final Ads
+                    </div>
+                    <FinalReview scripts={finalScripts} onOpenScript={openFinalScript} />
+                  </section>
+                ) : null}
 
                 <Collapsible
                   open={artifactsOpen}
