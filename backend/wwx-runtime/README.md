@@ -8,7 +8,24 @@ This service is the hosted blackbox boundary for LFS4.1 handoff. WWX Desktop sho
 - Worker service: `pnpm backend:worker`
 - Local one-process smoke mode: `WWX_RUNTIME_EMBED_WORKER=1 pnpm backend:api`
 
-The API exposes only public-safe tools: create ads, research runs, status, replayable SSE, final ads, asset inputs, metrics, analysis, Q&A, stop, continue, and export.
+The compatibility API exposes only public-safe batch tools: create ads, research runs, status, replayable SSE, final ads, asset inputs, metrics, analysis, Q&A, stop, continue, and export.
+
+The workflow-first API adds the generic creative runtime:
+
+- `GET /capabilities`
+- `GET /me`
+- `POST /runs`
+- `POST /runs/:id/stop`
+- `POST /runs/:id/continue`
+- `POST /runs/:id/retry`
+- `GET /runs/:id/status`
+- `GET /runs/:id/events`
+- `GET /runs/:id/artifacts`
+- `GET /artifacts/:id`
+- `POST /runs/:id/question`
+- `POST /runs/:id/export`
+
+Admin observability lives behind `/admin` and `/admin/*`. The operator desktop must not call those routes.
 
 ## Required Production Environment
 
@@ -21,20 +38,30 @@ The API exposes only public-safe tools: create ads, research runs, status, repla
 - `PORT`: API port, supplied by Railway.
 - `WW2_ENGINE_ROOT`: absolute path to the private `ww-2/main` checkout for production LFS4.1 execution.
 - `WWX_RUNTIME_ENGINE=fake`: optional local/test override to force deterministic fake scripts.
+- `CLERK_SECRET_KEY`: enables Clerk token verification. Without it, local dev headers are accepted.
+- `WWX_DEFAULT_WORKSPACE_ID`: fallback workspace for invite-only internal usage.
+- `WWX_MINIMUM_DESKTOP_VERSION`: returns `426 Upgrade Required` for older clients.
+- `TRIGGER_SECRET_KEY`: enables Trigger.dev Cloud dispatch for `/runs`. Without it, runs use a no-op trigger for local testing.
+- `TRIGGER_API_URL`: optional Trigger API base URL, defaults to `https://api.trigger.dev`.
+- `SENTRY_DSN`: optional backend/worker crash reporting with pre-send redaction.
 
 Run the migration before starting workers:
 
 ```bash
 psql "$DATABASE_URL" -f backend/wwx-runtime/migrations/001_initial.sql
+psql "$DATABASE_URL" -f backend/wwx-runtime/migrations/002_workflow_observability.sql
 ```
 
-## Railway v1 Layout
+## Hosted v1 Layout
 
-Create three Railway resources:
+Create these hosted resources:
 
 - Managed Postgres.
 - API service using `backend/wwx-runtime/Dockerfile.api`.
-- Worker service using `backend/wwx-runtime/Dockerfile.worker`.
+- Worker service using `backend/wwx-runtime/Dockerfile.worker` for the local migration/fallback queue.
+- Cloudflare R2 bucket for artifact bodies.
+- Clerk invite-only application for Desktop OAuth/OIDC.
+- Trigger.dev Cloud project for durable workflow tasks.
 
 Set the same `DATABASE_URL` and R2 variables on both API and worker services. Set `WORKER_CONCURRENCY=6` on the worker. Do not set `WWX_RUNTIME_EMBED_WORKER` in hosted production.
 
@@ -42,9 +69,14 @@ Set the same `DATABASE_URL` and R2 variables on both API and worker services. Se
 
 - Postgres is the durable source of truth for products, research runs, batches, runs, stage states, work items, events, jobs, artifact metadata, agent memory, and audit records.
 - The queue claims jobs with `FOR UPDATE SKIP LOCKED`, leases, retry budgets, and one active leased run per batch.
-- SSE is backed by append-only `run_events` and supports replay via `Last-Event-ID`.
+- Trigger.dev Cloud is the production orchestration layer for workflow-first `/runs`; the Postgres queue remains available for local migration and fallback.
+- SSE is backed by append-only `run_events` for compatibility batches and `workflow_run_events` for workflow-first runs. Both support replay via `Last-Event-ID`.
 - Public API responses strip object keys and never return hidden artifacts.
 - Stop/continue is work-item based: succeeded work items remain succeeded, canceled or pending items resume without regenerating completed final ads.
+- The observability SDK writes `runs`, `run_stages`, `ai_calls`, `media_compute_events`, `run_artifacts`, `workflow_run_events`, and `observability_alerts` with sanitized fields only.
+- Operator routes omit costs, Trigger run IDs, raw logs, provider errors, object keys, signed URLs, canaries, hidden prompts, and hidden reports.
+- Admin routes expose costs, stage durations, retries, artifact counts, client versions, and alerts.
+- Sentry receives crash/error context only after local redaction.
 
 ## Engine Adapter
 

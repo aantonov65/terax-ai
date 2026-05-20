@@ -1,6 +1,8 @@
 import { createRuntimeFromEnv } from "./runtime.js";
+import { captureRuntimeException, initSentry } from "./sentry.js";
 import { RuntimeWorker } from "./worker.js";
 
+initSentry();
 const runtime = createRuntimeFromEnv();
 const concurrency = Number.parseInt(process.env.WORKER_CONCURRENCY ?? "6", 10);
 const workerCount = Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 6;
@@ -12,7 +14,10 @@ await Promise.all(
 async function workerLoop(workerId: string): Promise<void> {
   const worker = new RuntimeWorker(workerId, runtime.store, runtime.service, runtime.engine);
   for (;;) {
-    const ran = await worker.runOne();
+    const ran = await worker.runOne().catch((error: unknown) => {
+      captureRuntimeException(error, { worker_id: workerId });
+      return false;
+    });
     if (!ran) await sleep(500);
   }
 }

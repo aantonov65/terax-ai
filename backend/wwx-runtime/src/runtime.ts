@@ -1,25 +1,39 @@
+import { Pool } from "pg";
+import { ObservabilityClient } from "../../../packages/observability/src/index.js";
 import { FakeLfsEngine, LegacyLfs41Engine, type Engine } from "./engine.js";
+import { MemoryObservabilityRepository, PostgresObservabilityRepository } from "./observability-repo.js";
 import { PostgresStore } from "./postgres.js";
 import { RuntimeService } from "./service.js";
 import { MemoryObjectStorage, R2ObjectStorage, type ObjectStorage } from "./storage.js";
 import { MemoryStore, type Store } from "./store.js";
+import { createWorkflowTriggerFromEnv, type WorkflowTrigger } from "./trigger.js";
+import { WorkflowRuntimeService } from "./workflow-service.js";
 
 export type RuntimeParts = {
   store: Store;
   storage: ObjectStorage;
   engine: Engine;
   service: RuntimeService;
+  observability: ObservabilityClient;
+  trigger: WorkflowTrigger;
+  workflow: WorkflowRuntimeService;
 };
 
 export function createRuntimeFromEnv(): RuntimeParts {
   const maxActiveJobs = parseIntEnv("WORKER_CONCURRENCY", 6);
-  const store = process.env.DATABASE_URL
-    ? PostgresStore.fromDatabaseUrl(process.env.DATABASE_URL, maxActiveJobs)
+  const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : null;
+  const store = pool
+    ? new PostgresStore(pool, maxActiveJobs)
     : new MemoryStore(maxActiveJobs);
   const storage = createStorageFromEnv();
   const engine = createEngineFromEnv();
   const service = new RuntimeService(store, storage);
-  return { store, storage, engine, service };
+  const observability = new ObservabilityClient(
+    pool ? new PostgresObservabilityRepository(pool) : new MemoryObservabilityRepository(),
+  );
+  const trigger = createWorkflowTriggerFromEnv();
+  const workflow = new WorkflowRuntimeService(observability, trigger);
+  return { store, storage, engine, service, observability, trigger, workflow };
 }
 
 function createEngineFromEnv(): Engine {
