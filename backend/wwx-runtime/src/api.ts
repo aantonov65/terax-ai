@@ -218,6 +218,26 @@ function registerWorkflowRoutes(
     return { product: sanitizeProductIndexItem({ ...product, researchRuns: [], batches: [] }) };
   });
 
+  app.post<{ Params: { id: string }; Body: { batchName?: string; adCount?: number } }>("/products/:id/batches", async (request) => {
+    const auth = await authenticateRequest(request, observability);
+    const batchName = request.body?.batchName?.trim();
+    if (!batchName) throw workflowPublicError("BATCH_NAME_REQUIRED", 400);
+    const batch = await service.createBatch(auth.workspaceId, request.params.id, batchName, request.body?.adCount ?? 1);
+    return {
+      batch: {
+        id: batch.id,
+        product_id: batch.productId,
+        name: batch.name,
+        status: batch.status,
+        current_stage: batch.currentStage,
+        requested_ad_count: batch.requestedAdCount,
+        created_at: batch.createdAt,
+        updated_at: batch.updatedAt,
+        artifacts: [],
+      },
+    };
+  });
+
   app.post<{ Params: { id: string } }>("/runs/:id/stop", async (request) => {
     const auth = await authenticateRequest(request, observability);
     return { run: await workflow.stopRun(auth, request.params.id) };

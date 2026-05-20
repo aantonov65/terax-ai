@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { hostedRuntimeConfigured, wwxApiUrl, wwxAuthHeaders } from "./auth";
+import { hostedRuntimeConfigured, hostedRuntimeMode, wwxApiUrl, wwxAuthHeaders } from "./auth";
 import type {
   ArtifactKind,
   ArtifactSummary,
@@ -141,6 +141,8 @@ type HostedProduct = {
   }>;
 };
 
+type HostedBatch = NonNullable<HostedProduct["batches"]>[number];
+
 type HostedArtifact = {
   id: string;
   batch_id: string;
@@ -191,7 +193,7 @@ export function useWwxIndex(_rootPath: string | null): WwxIndexState {
     const load = async () => {
       setState((prev) => ({ ...prev, status: "loading" }));
       try {
-        const native = hostedRuntimeConfigured()
+        const native = shouldUseHostedSource()
           ? await loadHostedIndex()
           : await invoke<NativeIndex>("wwx_list_products");
         if (cancelled) return;
@@ -224,7 +226,7 @@ export async function createProductInStore(input: {
   productFolder?: string;
   config: Record<string, unknown>;
 }): Promise<CreatedProduct> {
-  if (hostedRuntimeConfigured()) {
+  if (shouldUseHostedSource()) {
     const response = await hostedRequest<{ product: HostedProduct }>("/products", {
       method: "POST",
       body: { productFolder: input.productFolder, config: input.config },
@@ -341,6 +343,18 @@ export async function createBatchInStore(input: {
   productId: string;
   batchName: string;
 }): Promise<CreatedBatch> {
+  if (shouldUseHostedSource()) {
+    const response = await hostedRequest<{ batch: HostedBatch }>(`/products/${encodeURIComponent(input.productId)}/batches`, {
+      method: "POST",
+      body: { batchName: input.batchName, adCount: 1 },
+    });
+    return {
+      batchId: response.batch.id,
+      batchPath: `hosted://wwx/batches/${response.batch.id}`,
+      metaPath: `hosted://wwx/batches/${response.batch.id}/wwx-batch.json`,
+      productId: response.batch.product_id,
+    };
+  }
   const batch = await invoke<NativeBatch>("wwx_create_batch", {
     input: { productId: input.productId, batchName: input.batchName },
   });
@@ -350,6 +364,10 @@ export async function createBatchInStore(input: {
     metaPath: `app://wwx/batches/${batch.id}/wwx-batch.json`,
     productId: batch.productId,
   };
+}
+
+function shouldUseHostedSource(): boolean {
+  return hostedRuntimeConfigured() && hostedRuntimeMode() !== "local";
 }
 
 export async function readWwxArtifact(artifactId: string): Promise<{
@@ -433,6 +451,7 @@ function mapProduct(product: NativeProduct): ProductSummary {
     name: product.name,
     path: `app://wwx/products/${product.id}`,
     configPath: `app://wwx/products/${product.id}/config.json`,
+    rawConfig: config,
     config: {
       brand: stringValue(config.brand),
       productName: stringValue(config.product_name) ?? product.name,

@@ -352,8 +352,14 @@ export function ResearchPreviewDialog({
     setArtifacts([]);
     setSelectedId(null);
     setArtifactExpanded(false);
-    setLoading(true);
     setError(null);
+    if (product.path.startsWith("hosted://")) {
+      setLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
+    setLoading(true);
     void invoke<{
       artifacts: Array<{
         artifact: {
@@ -483,8 +489,19 @@ export function ResearchPreviewDialog({
                   />
                 ))}
               </>
+            ) : product?.path.startsWith("hosted://") && product.researchRuns?.length ? (
+              <div className="divide-y divide-white/10">
+                {product.researchRuns.map((run) => (
+                  <div key={run.id} className="px-3 py-2 text-xs">
+                    <div className="truncate font-medium text-slate-200">{run.topic}</div>
+                    <div className="mt-0.5 text-[10px] text-slate-500">
+                      {run.status} · {new Date(run.updatedAt).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <div className="p-3 text-xs text-slate-400">No research artifacts found yet.</div>
+              <div className="p-3 text-xs text-slate-400">No research runs found yet.</div>
             )}
           </section>
           {error ? (

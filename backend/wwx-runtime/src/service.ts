@@ -52,6 +52,17 @@ export class RuntimeService {
     }));
   }
 
+  async createBatch(workspaceId: string, productId: string, batchName: string, adCount = 1) {
+    await this.store.ensureProduct(workspaceId, productId);
+    const batchId = batchIdFromName(batchName);
+    return this.store.ensureBatch(workspaceId, batchId, {
+      productId,
+      batchId,
+      batchName,
+      adCount: Math.max(1, Math.trunc(adCount)),
+    });
+  }
+
   async startResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[] = []): Promise<ResearchRun> {
     await this.store.ensureProduct(workspaceId, productId);
     return this.store.createResearchRun(workspaceId, productId, topic, searchTerms.length ? searchTerms : [topic]);
@@ -331,6 +342,15 @@ function productCodeFromConfig(config: Record<string, unknown>, fallback?: strin
 
 function productNameFromConfig(config: Record<string, unknown>, fallback: string): string {
   return stringValue(config.product_name) ?? stringValue(config.productName) ?? stringValue(config.name) ?? fallback;
+}
+
+function batchIdFromName(name: string): string {
+  const compact = name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return compact || `BATCH_${Date.now()}`;
 }
 
 function safeSegment(value: string): string {

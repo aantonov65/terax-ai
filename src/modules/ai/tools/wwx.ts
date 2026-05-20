@@ -5,8 +5,10 @@ import { artifactAudience, friendlyStageLabel } from "@/modules/wwx/workflow";
 import {
   continueHostedRunForBatch,
   hostedQuestion,
+  listHostedResearchRuns,
   shouldUseHostedRuntime,
   startHostedLfsRunForBatch,
+  startHostedResearchRunForProduct,
   stopHostedRunForBatch,
   syncHostedRunForBatch,
 } from "@/modules/wwx/hosted";
@@ -334,6 +336,21 @@ export function buildWwxTools(ctx: ToolContext) {
           const binding = ctx.getWwxBinding?.() ?? null;
           const productId = product_id?.trim() || binding?.productId;
           if (!productId) throw new Error("Provide product_id or run from a bound product batch.");
+          if (shouldUseHostedRuntime()) {
+            const run = await startHostedResearchRunForProduct({
+              productId,
+              productCode: binding?.productCode,
+              topic,
+            });
+            return {
+              ok: true,
+              workflow: "start_research_run",
+              product_id: productId,
+              run_id: run.id,
+              status: run.status,
+              current_stage: run.current_stage,
+            };
+          }
           const result = await invoke<Record<string, unknown>>("wwx_run_research_pipeline", {
             input: {
               productId,
@@ -356,6 +373,10 @@ export function buildWwxTools(ctx: ToolContext) {
           const binding = ctx.getWwxBinding?.() ?? null;
           const productId = product_id?.trim() || binding?.productId;
           if (!productId) throw new Error("Provide product_id or run from a bound product batch.");
+          if (shouldUseHostedRuntime()) {
+            const runs = await listHostedResearchRuns(productId);
+            return { ok: true, workflow: "list_research_runs", product_id: productId, research_runs: runs };
+          }
           const runs = await invoke<NativeResearchRun[]>("wwx_list_research_runs", { productId });
           return { ok: true, workflow: "list_research_runs", product_id: productId, research_runs: runs };
         } catch (error) {

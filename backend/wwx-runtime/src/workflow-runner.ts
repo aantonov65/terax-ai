@@ -56,6 +56,7 @@ async function executeResearchTask(
     await runtime.observability.markRunFailed(payload.runId, "invalid_input", "Research requires product and topic.");
     return { ok: false, runId: payload.runId, workflowType: "research", status: "failed" };
   }
+  const storedProduct = await findStoredProduct(runtime, payload.workspaceId, productId);
   const stage = await runtime.observability.startStage({ runId: payload.runId, stageName: "research", provider: "ww-2" });
   const startedAt = Date.now();
   try {
@@ -65,12 +66,17 @@ async function executeResearchTask(
       await runtime.observability.markRunCompleted(payload.runId);
       return { ok: true, runId: payload.runId, workflowType: "research", status: "succeeded" };
     }
-    await runtime.service.store.ensureProduct(payload.workspaceId, productId, stringValue(payload.input?.productName) ?? productId, objectValue(payload.input?.configJson ?? payload.input?.config_json));
+    await runtime.service.store.ensureProduct(
+      payload.workspaceId,
+      productId,
+      stringValue(payload.input?.productName) ?? storedProduct?.name ?? productId,
+      objectValue(payload.input?.configJson ?? payload.input?.config_json) ?? storedProduct?.config,
+    );
     const result = runtime.engine.runResearchPipeline({
       productId,
       productCode: stringValue(payload.input?.productCode) ?? stringValue(payload.input?.product_code) ?? undefined,
-      productName: stringValue(payload.input?.productName) ?? stringValue(payload.input?.product_name) ?? undefined,
-      configJson: objectOrString(payload.input?.configJson ?? payload.input?.config_json),
+      productName: stringValue(payload.input?.productName) ?? stringValue(payload.input?.product_name) ?? storedProduct?.name ?? undefined,
+      configJson: objectOrString(payload.input?.configJson ?? payload.input?.config_json) ?? storedProduct?.config,
       topic,
       searchTerms: stringArray(payload.input?.searchTerms ?? payload.input?.search_terms),
     });
@@ -126,10 +132,16 @@ async function executeStrategyTask(
     await runtime.observability.markRunFailed(payload.runId, "invalid_input", "Strategy requires product, batch, and creative guidance.");
     return { ok: false, runId: payload.runId, workflowType: "strategy", status: "failed", batchId };
   }
+  const storedProduct = await findStoredProduct(runtime, payload.workspaceId, productId);
   const stage = await runtime.observability.startStage({ runId: payload.runId, stageName: "strategy", provider: "ww-2" });
   const startedAt = Date.now();
   try {
-    await runtime.service.store.ensureProduct(payload.workspaceId, productId, stringValue(payload.input?.productName) ?? productId, objectValue(payload.input?.configJson ?? payload.input?.config_json));
+    await runtime.service.store.ensureProduct(
+      payload.workspaceId,
+      productId,
+      stringValue(payload.input?.productName) ?? storedProduct?.name ?? productId,
+      objectValue(payload.input?.configJson ?? payload.input?.config_json) ?? storedProduct?.config,
+    );
     await runtime.service.store.ensureBatch(payload.workspaceId, batchId, { productId, batchId, batchName: stringValue(payload.input?.batchName) ?? batchId, adCount: numberValue(payload.input?.adCount ?? payload.input?.ad_count) ?? 1 });
     if (!(runtime.engine instanceof LegacyLfs41Engine)) {
       await runtime.service.publishArtifact(payload.workspaceId, batchId, {
@@ -149,8 +161,8 @@ async function executeStrategyTask(
       productId,
       batchId,
       productCode: stringValue(payload.input?.productCode) ?? stringValue(payload.input?.product_code) ?? undefined,
-      productName: stringValue(payload.input?.productName) ?? stringValue(payload.input?.product_name) ?? undefined,
-      configJson: objectOrString(payload.input?.configJson ?? payload.input?.config_json),
+      productName: stringValue(payload.input?.productName) ?? stringValue(payload.input?.product_name) ?? storedProduct?.name ?? undefined,
+      configJson: objectOrString(payload.input?.configJson ?? payload.input?.config_json) ?? storedProduct?.config,
       strategyPlanJson: objectOrString(strategyPlanJson) ?? stringifyJson(strategyPlanJson),
       researchFiles: researchFiles(payload.input?.researchFiles ?? payload.input?.research_files),
       force: true,
@@ -224,7 +236,7 @@ async function executeLfsAdsTask(
       ok: status.batch.status === "complete",
       runId: payload.runId,
       workflowType: "lfs_ads",
-    batchId,
+      batchId,
       status: status.batch.status,
       publicArtifactCount: status.artifacts.length,
     };
@@ -238,6 +250,10 @@ async function executeLfsAdsTask(
     await runtime.observability.markRunFailed(payload.runId, "workflow_failed", "Hosted LFS run failed.");
     throw error;
   }
+}
+
+async function findStoredProduct(runtime: RuntimeParts, workspaceId: string, productId: string) {
+  return (await runtime.service.store.listProducts(workspaceId)).find((product) => product.id === productId) ?? null;
 }
 
 function stringValue(value: unknown): string | null {
@@ -254,16 +270,16 @@ function stringArray(value: unknown): string[] {
   return value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean);
 }
 
-function objectValue(value: unknown): Record<string, unknown> {
+function objectValue(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "string") {
     try {
       const parsed = JSON.parse(value) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
     } catch {
-      return {};
+      return undefined;
     }
   }
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function objectOrString(value: unknown): Record<string, unknown> | string | undefined {

@@ -37,6 +37,23 @@ type HostedBatchStatus = {
   artifacts?: HostedArtifact[];
 };
 
+export type HostedResearchRun = {
+  id: string;
+  productId?: string;
+  product_id?: string;
+  topicSlug?: string;
+  topic_slug?: string;
+  topic: string;
+  searchTerms?: string[];
+  search_terms?: string[];
+  status: string;
+  quality?: Record<string, unknown>;
+  createdAt?: number;
+  created_at?: number;
+  updatedAt?: number;
+  updated_at?: number;
+};
+
 export function shouldUseHostedRuntime(): boolean {
   const mode = hostedRuntimeMode();
   if (mode === "local") return false;
@@ -90,6 +107,100 @@ export async function startHostedLfsRunForBatch(input: {
   });
   await recordHostedRun(input.productId, input.batch.id, response.run);
   return response.run;
+}
+
+export async function startHostedResearchRun(input: {
+  product: ProductSummary;
+  topic: string;
+  searchTerms?: string[];
+}): Promise<HostedRun> {
+  return startHostedResearchRunForProduct({
+    productId: input.product.id,
+    productCode: input.product.code,
+    productName: input.product.name,
+    configJson: input.product.rawConfig,
+    topic: input.topic,
+    searchTerms: input.searchTerms,
+  });
+}
+
+export async function startHostedResearchRunForProduct(input: {
+  productId: string;
+  productCode?: string;
+  productName?: string;
+  configJson?: Record<string, unknown>;
+  topic: string;
+  searchTerms?: string[];
+}): Promise<HostedRun> {
+  const response = await hostedRequest<HostedCreateRunResponse>("/runs", {
+    method: "POST",
+    body: {
+      workflowType: "research",
+      productId: input.productId,
+      payload: {
+        productId: input.productId,
+        productCode: input.productCode,
+        productName: input.productName,
+        configJson: input.configJson,
+        topic: input.topic,
+        searchTerms: input.searchTerms ?? [],
+      },
+    },
+  });
+  return response.run;
+}
+
+export async function listHostedResearchRuns(productId: string): Promise<HostedResearchRun[]> {
+  const response = await hostedRequest<{ products: Array<{ id: string; research_runs?: HostedResearchRun[] }> }>("/products");
+  return response.products.find((product) => product.id === productId)?.research_runs ?? [];
+}
+
+export async function startHostedStrategyRun(input: {
+  product: ProductSummary;
+  batch: BatchSummary;
+  strategyPlanJson: Record<string, unknown> | string;
+  adCount?: number;
+}): Promise<HostedRun> {
+  const response = await hostedRequest<HostedCreateRunResponse>("/runs", {
+    method: "POST",
+    body: {
+      workflowType: "strategy",
+      productId: input.product.id,
+      batchId: input.batch.id,
+      payload: {
+        productId: input.product.id,
+        batchId: input.batch.id,
+        batchName: input.batch.name,
+        productCode: input.product.code,
+        productName: input.product.name,
+        configJson: input.product.rawConfig,
+        strategyPlanJson: input.strategyPlanJson,
+        adCount: input.adCount ?? input.batch.totalScripts ?? 1,
+      },
+    },
+  });
+  await recordHostedRun(input.product.id, input.batch.id, response.run);
+  return response.run;
+}
+
+export async function getHostedRunStatus(runId: string): Promise<HostedRun> {
+  const status = await hostedRequest<{ run: HostedRun }>(`/runs/${encodeURIComponent(runId)}/status`);
+  return status.run;
+}
+
+export async function waitForHostedRun(runId: string, options: { pollMs?: number; timeoutMs?: number } = {}): Promise<HostedRun> {
+  const pollMs = options.pollMs ?? 2_000;
+  const deadline = Date.now() + (options.timeoutMs ?? 30 * 60_000);
+  let last = await getHostedRunStatus(runId);
+  while (last.status === "queued" || last.status === "running") {
+    if (Date.now() > deadline) throw new Error("Hosted run is still running. Check the run status again shortly.");
+    await new Promise((resolve) => window.setTimeout(resolve, pollMs));
+    last = await getHostedRunStatus(runId);
+  }
+  if (last.status !== "succeeded") {
+    throw new Error(last.failure_message_safe || `Hosted run ${last.status}.`);
+  }
+  return last;
 }
 
 export async function syncHostedRun(input: {

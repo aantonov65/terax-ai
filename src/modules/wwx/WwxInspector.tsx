@@ -19,6 +19,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WwxArtifactViewer } from "./WwxArtifactViewer";
+import { shouldUseHostedRuntime } from "./hosted";
 import { readWwxArtifact, writeWwxArtifact } from "./store";
 import {
   deriveWorkflowState,
@@ -426,6 +427,7 @@ export function WwxInspector({
         source: "strategy-plan-import",
         public: true,
       });
+      if (shouldUseHostedRuntime()) return;
       const validation = await invoke<{ ok: boolean; error?: string | null }>("wwx_validate_strategy_plan", {
         input: {
           productId: selectedBatch.productId,

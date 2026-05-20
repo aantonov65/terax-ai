@@ -45,7 +45,10 @@ import {
 import {
   shouldUseHostedRuntime,
   startHostedLfsRun,
+  startHostedResearchRun,
+  startHostedStrategyRun,
   syncHostedRun,
+  waitForHostedRun,
 } from "@/modules/wwx/hosted";
 import {
   useWwxIndex,
@@ -515,6 +518,15 @@ export default function App() {
         name: String(draft.config.product_name ?? created.productFolder),
         path: created.productPath,
         configPath: `${created.productPath}/config.json`,
+        rawConfig: draft.config,
+        config: {
+          brand: typeof draft.config.brand === "string" ? draft.config.brand : undefined,
+          productName: typeof draft.config.product_name === "string" ? draft.config.product_name : undefined,
+          price: typeof draft.config.price === "string" || typeof draft.config.price === "number" ? draft.config.price : undefined,
+          guarantee: typeof draft.config.guarantee === "string" ? draft.config.guarantee : undefined,
+          url: typeof draft.config.url === "string" ? draft.config.url : undefined,
+          targetDemographic: draft.config.target_demographic,
+        },
         batchCount: 0,
         statusCounts: {
           draft: 0,
@@ -633,6 +645,11 @@ export default function App() {
 
       void (async () => {
         try {
+          if (shouldUseHostedRuntime()) {
+            const run = await startHostedResearchRun({ product, topic });
+            setHostedAuthState("signed_in");
+            await waitForHostedRun(run.id);
+          } else {
           const result = await invoke<{
             ok: boolean;
             productId: string;
@@ -647,6 +664,7 @@ export default function App() {
             },
           });
           if (!result.ok) throw new Error("Research pipeline failed.");
+          }
           setResearchJobs((current) => ({
             ...current,
             [product.id]: {
@@ -756,6 +774,41 @@ export default function App() {
       throw new Error("Upload or save strategy-plan.json before building strategy.json.");
     }
     const plan = await readWwxArtifact(planArtifact.id);
+    if (shouldUseHostedRuntime()) {
+      const run = await startHostedStrategyRun({
+        product,
+        batch,
+        strategyPlanJson: plan.contentText ?? "",
+      });
+      setHostedAuthState("signed_in");
+      pushNotification({
+        productId: product.id,
+        batchId: batch.id,
+        tone: "success",
+        title: "Strategy running",
+        body: `${batch.name} strategy build started on the hosted runtime.`,
+      });
+      void waitForHostedRun(run.id)
+        .then(() => {
+          pushNotification({
+            productId: product.id,
+            batchId: batch.id,
+            tone: "success",
+            title: "Strategy complete",
+            body: `${batch.name} strategy.json is ready on the hosted runtime.`,
+          });
+        })
+        .catch((error) => {
+          pushNotification({
+            productId: product.id,
+            batchId: batch.id,
+            tone: "error",
+            title: "Strategy blocked",
+            body: error instanceof Error ? error.message : String(error),
+          });
+        });
+      return;
+    }
     await invoke("wwx_build_strategy", {
       input: {
         productId: product.id,
@@ -763,7 +816,7 @@ export default function App() {
         strategyPlanJson: plan.contentText ?? "",
       },
     });
-  }, [productForBatch]);
+  }, [productForBatch, pushNotification]);
 
   const setBatchAutonomous = useCallback(
     async (batch: Pick<BatchSummary, "id" | "productId">, autonomous: boolean) => {

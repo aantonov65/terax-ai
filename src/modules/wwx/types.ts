@@ -181,6 +181,7 @@ export type ProductSummary = {
   path: string;
   configPath?: string;
   config?: ProductConfigSummary;
+  rawConfig?: Record<string, unknown>;
   researchArtifactCount?: number;
   researchArtifactUpdatedAt?: number | null;
   researchRuns?: ResearchRunSummary[];
