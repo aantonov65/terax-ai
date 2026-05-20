@@ -231,7 +231,11 @@ pub async fn wwx_auth_listen_once(port: u16, timeout_ms: Option<u64>) -> Result<
                         .nth(1)
                         .ok_or_else(|| "malformed auth callback".to_string())?;
                     let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-                    let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n<html><body><h1>WWX sign-in complete</h1><p>You can close this window and return to WWX Desktop.</p></body></html>";
+                    let response = if query.contains("error=") {
+                        b"HTTP/1.1 400 Bad Request\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n<html><body><h1>WWX sign-in failed</h1><p>Return to WWX Desktop and try again.</p></body></html>".as_slice()
+                    } else {
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n<html><body><h1>WWX sign-in complete</h1><p>You can close this window and return to WWX Desktop.</p></body></html>".as_slice()
+                    };
                     let _ = stream.write_all(response);
                     let _ = stream.flush();
                     return Ok(query.to_string());

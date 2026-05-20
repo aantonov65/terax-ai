@@ -37,10 +37,11 @@ import {
   createWwxProduct,
 } from "@/modules/wwx/mutations";
 import {
-  getWwxAuthSession,
+  getWwxMe,
   hostedRuntimeConfigured,
   signInWithClerkPkce,
   signOutWwx,
+  type WwxMe,
 } from "@/modules/wwx/auth";
 import {
   shouldUseHostedRuntime,
@@ -132,13 +133,18 @@ export default function App() {
     useState<ProductSummary | null>(null);
   const [researchJobs, setResearchJobs] = useState<Record<string, ProductResearchJob>>({});
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [hostedSignedIn, setHostedSignedIn] = useState(false);
+  const [hostedAuthState, setHostedAuthState] = useState<"checking" | "signed_out" | "signed_in">(
+    hostedRuntimeConfigured() ? "checking" : "signed_out",
+  );
+  const [hostedUser, setHostedUser] = useState<WwxMe["user"] | null>(null);
+  const [hostedAuthError, setHostedAuthError] = useState<string | null>(null);
   const [hostedAuthBusy, setHostedAuthBusy] = useState(false);
   const batchStatusRef = useRef<Record<string, BatchSummary["status"]>>({});
   const batchStatusBootedRef = useRef(false);
   const hostedSyncInFlightRef = useRef<Set<string>>(new Set());
   const [batchDialogTitle, setBatchDialogTitle] = useState("Create Batch");
   const hostedEnabled = hostedRuntimeConfigured();
+  const hostedSignedIn = !hostedEnabled || hostedAuthState === "signed_in";
 
   const pushNotification = useCallback(
     (notification: Omit<AppNotification, "id" | "createdAt">) => {
@@ -252,16 +258,24 @@ export default function App() {
 
   useEffect(() => {
     if (!hostedEnabled) {
-      setHostedSignedIn(false);
+      setHostedAuthState("signed_out");
+      setHostedUser(null);
       return;
     }
     let alive = true;
-    void getWwxAuthSession()
-      .then((session) => {
-        if (alive) setHostedSignedIn(Boolean(session));
+    setHostedAuthState("checking");
+    setHostedAuthError(null);
+    void getWwxMe()
+      .then((me) => {
+        if (!alive) return;
+        setHostedUser(me.user);
+        setHostedAuthState("signed_in");
       })
-      .catch(() => {
-        if (alive) setHostedSignedIn(false);
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setHostedUser(null);
+        setHostedAuthState("signed_out");
+        setHostedAuthError(error instanceof Error ? error.message : "Sign-in is required.");
       });
     return () => {
       alive = false;
@@ -295,11 +309,16 @@ export default function App() {
   const handleHostedSignIn = useCallback(async () => {
     if (!hostedEnabled || hostedAuthBusy) return;
     setHostedAuthBusy(true);
+    setHostedAuthError(null);
     try {
       await signInWithClerkPkce();
-      setHostedSignedIn(true);
-    } catch {
-      setHostedSignedIn(false);
+      const me = await getWwxMe();
+      setHostedUser(me.user);
+      setHostedAuthState("signed_in");
+    } catch (error) {
+      setHostedUser(null);
+      setHostedAuthState("signed_out");
+      setHostedAuthError(error instanceof Error ? error.message : "Sign-in failed.");
     } finally {
       setHostedAuthBusy(false);
     }
@@ -309,7 +328,8 @@ export default function App() {
     setHostedAuthBusy(true);
     try {
       await signOutWwx();
-      setHostedSignedIn(false);
+      setHostedUser(null);
+      setHostedAuthState("signed_out");
     } finally {
       setHostedAuthBusy(false);
     }
@@ -708,7 +728,7 @@ export default function App() {
     if (shouldUseHostedRuntime()) {
       try {
         const run = await startHostedLfsRun({ product, batch });
-        setHostedSignedIn(true);
+        setHostedAuthState("signed_in");
         pushNotification({
           productId: product.id,
           batchId: batch.id,
@@ -828,7 +848,13 @@ export default function App() {
     });
   }, [activeWindow, effectiveWorkspaceRoot, handleWwxBatchCreated, setLive, wwxIndex.batches]);
 
-  const shell = (
+  const shell = hostedEnabled && hostedAuthState !== "signed_in" ? (
+    <HostedSignInGate
+      busy={hostedAuthBusy || hostedAuthState === "checking"}
+      error={hostedAuthError}
+      onSignIn={() => void handleHostedSignIn()}
+    />
+  ) : (
     <ThemeProvider>
       <TooltipProvider>
         <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#17181b] text-slate-100">
@@ -837,6 +863,7 @@ export default function App() {
             activeWindows={agentWindows.length}
             hostedEnabled={hostedEnabled}
             hostedSignedIn={hostedSignedIn}
+            hostedUserEmail={hostedUser?.email ?? null}
             hostedAuthBusy={hostedAuthBusy}
             onHostedSignIn={() => void handleHostedSignIn()}
             onHostedSignOut={() => void handleHostedSignOut()}
@@ -1052,6 +1079,49 @@ export default function App() {
   return <AiComposerProvider>{shell}</AiComposerProvider>;
 }
 
+function HostedSignInGate({
+  busy,
+  error,
+  onSignIn,
+}: {
+  busy: boolean;
+  error: string | null;
+  onSignIn: () => void;
+}) {
+  return (
+    <ThemeProvider>
+      <TooltipProvider>
+        <div className="flex h-[100dvh] items-center justify-center bg-[#111216] px-6 text-slate-100">
+          <div className="w-full max-w-sm border border-white/15 bg-[#1b1c20] p-6 shadow-2xl">
+            <div className="mb-5 flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center border border-white/15 bg-[#101114]">
+                <span className="text-xs font-semibold tracking-[0.18em] text-slate-200">WWX</span>
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-sm font-semibold text-slate-100">Sign in required</h1>
+                <p className="mt-1 text-xs text-slate-400">Use your invited WWX account to continue.</p>
+              </div>
+            </div>
+            {error ? (
+              <div className="mb-4 border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs leading-relaxed text-amber-100">
+                {error}
+              </div>
+            ) : null}
+            <Button
+              className="w-full rounded-md"
+              disabled={busy}
+              onClick={onSignIn}
+            >
+              {busy ? <DotmCircular3 /> : null}
+              {busy ? "Checking session" : "Sign in"}
+            </Button>
+          </div>
+        </div>
+      </TooltipProvider>
+    </ThemeProvider>
+  );
+}
+
 function stableBatchSessionId(batchId: string): string {
   return `wwx-batch:${batchId}`;
 }
@@ -1061,6 +1131,7 @@ function WwxHeader({
   activeWindows,
   hostedEnabled,
   hostedSignedIn,
+  hostedUserEmail,
   hostedAuthBusy,
   onHostedSignIn,
   onHostedSignOut,
@@ -1072,6 +1143,7 @@ function WwxHeader({
   activeWindows: number;
   hostedEnabled: boolean;
   hostedSignedIn: boolean;
+  hostedUserEmail: string | null;
   hostedAuthBusy: boolean;
   onHostedSignIn: () => void;
   onHostedSignOut: () => void;
@@ -1113,7 +1185,7 @@ function WwxHeader({
           )}
           disabled={hostedAuthBusy}
           onClick={hostedSignedIn ? onHostedSignOut : onHostedSignIn}
-          title={hostedSignedIn ? "Hosted runtime signed in" : "Sign in to hosted runtime"}
+          title={hostedSignedIn ? hostedUserEmail ?? "Hosted runtime signed in" : "Sign in to hosted runtime"}
         >
           <span
             className={cn(

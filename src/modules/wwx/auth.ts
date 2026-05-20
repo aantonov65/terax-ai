@@ -13,6 +13,17 @@ export type WwxAuthSession = {
   expiresAt: number;
 };
 
+export type WwxMe = {
+  user: {
+    id: string;
+    email: string;
+    name: string | null;
+    role: string;
+    workspace_id: string;
+    desktop_client_version: string | null;
+  };
+};
+
 export function wwxApiUrl(): string | null {
   return stringEnv("VITE_WWX_API_URL")?.replace(/\/+$/, "") ?? null;
 }
@@ -68,7 +79,7 @@ export async function signInWithClerkPkce(): Promise<WwxAuthSession> {
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: stringEnv("VITE_WWX_AUTH_SCOPE") ?? "openid profile email offline_access",
+    scope: wwxAuthScope(),
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,
@@ -103,6 +114,26 @@ export async function wwxAuthHeaders(): Promise<Record<string, string>> {
   };
 }
 
+export async function getWwxMe(): Promise<WwxMe> {
+  const session = await getWwxAuthSession();
+  if (!session) throw new Error("Not signed in.");
+  const baseUrl = wwxApiUrl();
+  if (!baseUrl) throw new Error("Hosted WWX API is not configured.");
+  const response = await httpRequest(`${baseUrl}/me`, "GET", {
+    authorization: `Bearer ${session.accessToken}`,
+    "x-workspace-id": wwxWorkspaceId(),
+    "x-client-version": stringEnv("VITE_WWX_CLIENT_VERSION") ?? "0.1.0",
+  });
+  if (response.status === 401 || response.status === 403) {
+    await signOutWwx();
+    throw new Error("Sign-in is required for this WWX workspace.");
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Hosted session check failed with ${response.status}.`);
+  }
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(response.body))) as WwxMe;
+}
+
 async function refreshWwxAuthSession(): Promise<WwxAuthSession | null> {
   const refreshToken = (await getSecrets([REFRESH_TOKEN]))[0];
   const issuer = stringEnv("VITE_WWX_AUTH_ISSUER") ?? stringEnv("VITE_CLERK_ISSUER");
@@ -119,6 +150,16 @@ async function refreshWwxAuthSession(): Promise<WwxAuthSession | null> {
     await signOutWwx();
     return null;
   }
+}
+
+function wwxAuthScope(): string {
+  const raw = stringEnv("VITE_WWX_AUTH_SCOPE") ?? "openid profile email";
+  const scopes = raw
+    .split(/\s+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean)
+    .filter((scope) => scope !== "offline_access");
+  return [...new Set(scopes.length ? scopes : ["openid", "profile", "email"])].join(" ");
 }
 
 async function exchangeToken(tokenEndpoint: string, body: Record<string, string>): Promise<WwxAuthSession> {
