@@ -1,4 +1,3 @@
-import { verifyToken } from "@clerk/backend";
 import type { FastifyRequest } from "fastify";
 import type { ObservabilityClient, UserRecord, UserRole } from "../../../packages/observability/src/index.js";
 
@@ -23,18 +22,15 @@ export async function authenticateRequest(
     ?? "ws_default";
 
   if (bearer && process.env.CLERK_SECRET_KEY) {
-    const claims = await verifyToken(bearer, {
-      secretKey: process.env.CLERK_SECRET_KEY,
-      audience: process.env.CLERK_JWT_AUDIENCE || undefined,
-    });
-    const claimRecord = claims as Record<string, unknown>;
-    const role = coerceRole(readNestedString(claimRecord, ["public_metadata", "role"]) ?? readNestedString(claimRecord, ["metadata", "role"]));
+    const token = await verifyClerkOAuthAccessToken(bearer, process.env.CLERK_SECRET_KEY);
+    const profile = await getClerkUserProfile(token.subject, process.env.CLERK_SECRET_KEY);
+    const role = coerceRole(profile.role);
     const user = await observability.upsertUser({
-      workspaceId: readString(claimRecord.org_id) ?? workspaceId,
+      workspaceId,
       authProvider: "clerk",
-      authSubject: String(claimRecord.sub),
-      email: readString(claimRecord.email) ?? readString(claimRecord.email_address) ?? `${String(claimRecord.sub)}@clerk.local`,
-      name: readString(claimRecord.name) ?? null,
+      authSubject: token.subject,
+      email: profile.email ?? `${token.subject}@clerk.local`,
+      name: profile.name,
       role,
       desktopClientVersion: clientVersion,
     });
@@ -104,4 +100,110 @@ function readNestedString(value: Record<string, unknown>, path: string[]): strin
     cursor = (cursor as Record<string, unknown>)[part];
   }
   return readString(cursor);
+}
+
+type ClerkOAuthTokenVerification = {
+  subject: string;
+  scopes: string[];
+  expired: boolean;
+  revoked: boolean;
+};
+
+async function verifyClerkOAuthAccessToken(accessToken: string, secretKey: string): Promise<ClerkOAuthTokenVerification> {
+  let response: Response;
+  try {
+    response = await fetch("https://api.clerk.com/oauth_applications/access_tokens/verify", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secretKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ access_token: accessToken }),
+    });
+  } catch {
+    throw publicError("AUTH_PROVIDER_UNAVAILABLE", 503);
+  }
+
+  if (!response.ok) {
+    throw publicError("AUTH_INVALID_TOKEN", 401);
+  }
+
+  const payload = await safeJson(response);
+  if (!payload || typeof payload !== "object") {
+    throw publicError("AUTH_INVALID_TOKEN", 401);
+  }
+
+  const record = payload as Record<string, unknown>;
+  if (record.active === false || record.expired === true || record.revoked === true) {
+    throw publicError("AUTH_INVALID_TOKEN", 401);
+  }
+
+  const subject = readString(record.subject);
+  if (!subject) {
+    throw publicError("AUTH_INVALID_TOKEN", 401);
+  }
+
+  const scopes = Array.isArray(record.scopes)
+    ? record.scopes.filter((scope): scope is string => typeof scope === "string")
+    : [];
+
+  return {
+    subject,
+    scopes,
+    expired: record.expired === true,
+    revoked: record.revoked === true,
+  };
+}
+
+type ClerkUserProfile = {
+  email: string | null;
+  name: string | null;
+  role: string | null;
+};
+
+async function getClerkUserProfile(userId: string, secretKey: string): Promise<ClerkUserProfile> {
+  let response: Response;
+  try {
+    response = await fetch(`https://api.clerk.com/v1/users/${encodeURIComponent(userId)}`, {
+      headers: {
+        authorization: `Bearer ${secretKey}`,
+        accept: "application/json",
+      },
+    });
+  } catch {
+    return { email: null, name: null, role: null };
+  }
+
+  if (!response.ok) {
+    return { email: null, name: null, role: null };
+  }
+
+  const payload = await safeJson(response);
+  if (!payload || typeof payload !== "object") {
+    return { email: null, name: null, role: null };
+  }
+
+  const record = payload as Record<string, unknown>;
+  const primaryEmailId = readString(record.primary_email_address_id);
+  const emails = Array.isArray(record.email_addresses) ? record.email_addresses : [];
+  const primaryEmail = emails
+    .filter((email): email is Record<string, unknown> => Boolean(email) && typeof email === "object")
+    .find((email) => readString(email.id) === primaryEmailId);
+  const firstEmail = emails.find((email): email is Record<string, unknown> => Boolean(email) && typeof email === "object");
+  const email = readString(primaryEmail?.email_address) ?? readString(firstEmail?.email_address);
+  const firstName = readString(record.first_name);
+  const lastName = readString(record.last_name);
+  const joinedName = [firstName, lastName].filter(Boolean).join(" ").trim();
+  const name = readString(record.full_name) ?? (joinedName || null);
+  const role = readNestedString(record, ["public_metadata", "role"]) ?? readNestedString(record, ["private_metadata", "role"]);
+
+  return { email, name, role };
+}
+
+async function safeJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }

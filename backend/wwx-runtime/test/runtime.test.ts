@@ -368,6 +368,70 @@ test("workflow agent refuses operator cost and hidden prompt questions", async (
   await app.close();
 });
 
+test("Clerk OAuth access tokens authenticate /me without leaking verification failures", async () => {
+  const originalSecret = process.env.CLERK_SECRET_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.CLERK_SECRET_KEY = "sk_test_mock";
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = input.toString();
+    if (url === "https://api.clerk.com/oauth_applications/access_tokens/verify") {
+      return new Response(JSON.stringify({
+        object: "clerk_idp_oauth_access_token",
+        id: "oat_00000000000000000000000000000000",
+        client_id: "client_mock",
+        subject: "user_mock",
+        scopes: ["profile", "email"],
+        revoked: false,
+        revocation_reason: null,
+        expired: false,
+        expiration: null,
+        created_at: 1,
+        updated_at: 1,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url === "https://api.clerk.com/v1/users/user_mock") {
+      return new Response(JSON.stringify({
+        id: "user_mock",
+        first_name: "Ada",
+        last_name: "Lovelace",
+        primary_email_address_id: "email_primary",
+        public_metadata: { role: "operator" },
+        email_addresses: [{ id: "email_primary", email_address: "ada@example.com" }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const { app } = createWorkflowHarness();
+  try {
+    const ok = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: "Bearer oauth_token", "x-workspace-id": workspaceId },
+    });
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.json().user.email, "ada@example.com");
+    assert.equal(ok.json().user.name, "Ada Lovelace");
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({ errors: [{ code: "invalid_token" }] }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+    const invalid = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: "Bearer bad_token", "x-workspace-id": workspaceId },
+    });
+    assert.equal(invalid.statusCode, 401);
+    assert.equal(invalid.json().error, "AUTH_INVALID_TOKEN");
+  } finally {
+    await app.close();
+    if (originalSecret === undefined) delete process.env.CLERK_SECRET_KEY;
+    else process.env.CLERK_SECRET_KEY = originalSecret;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("observability SDK records costs and quarantines canary leaks", async () => {
   const observability = new ObservabilityClient(new MemoryObservabilityRepository());
   const user = await observability.upsertUser({
