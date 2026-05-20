@@ -209,6 +209,7 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
   const [topic, setTopic] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submittedTopic, setSubmittedTopic] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Array<{ filename: string; updatedAt: number }>>([]);
   const [artifactsLoading, setArtifactsLoading] = useState(false);
 
@@ -217,7 +218,12 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
     setTopic("");
     setStarting(false);
     setError(null);
+    setSubmittedTopic(null);
   }, [open, product?.id]);
+
+  useEffect(() => {
+    if (!alreadyRunning) setSubmittedTopic(null);
+  }, [alreadyRunning]);
 
   useEffect(() => {
     if (!open) return;
@@ -253,17 +259,20 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
 
   const submit = async () => {
     if (!topic.trim() || !product || alreadyRunning) return;
+    const nextTopic = topic.trim();
     setError(null);
     setStarting(true);
+    setSubmittedTopic(nextTopic);
     try {
-      await onRun({ topic: topic.trim() });
-      onOpenChange(false);
+      await onRun({ topic: nextTopic });
     } catch (err) {
+      setSubmittedTopic(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStarting(false);
     }
   };
+  const researchRunning = alreadyRunning || Boolean(submittedTopic);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -302,9 +311,12 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
             </div>
           </section>
         ) : null}
-        {alreadyRunning ? (
+        {researchRunning ? (
           <div className="rounded-md border border-sky-400/25 bg-sky-400/10 px-3 py-2 text-xs text-sky-200">
-            <DotMatrixLoader className="text-sky-200" label="Research running" />
+            <DotMatrixLoader
+              className="text-sky-200"
+              label={submittedTopic || topic.trim() ? `Research running: ${submittedTopic ?? topic.trim()}` : "Research running"}
+            />
           </div>
         ) : null}
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
@@ -314,7 +326,7 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
           </Button>
           <Button
             variant="secondary"
-            disabled={!topic.trim() || !product || starting || alreadyRunning}
+            disabled={!topic.trim() || !product || starting || researchRunning}
             className="text-slate-50 disabled:text-slate-500"
             onClick={() => void submit()}
           >
