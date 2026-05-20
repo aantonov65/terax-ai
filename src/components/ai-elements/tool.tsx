@@ -184,7 +184,7 @@ const ToolImpl = ({
   const isError = state === "output-error";
   const isWwx = isWwxTool(toolName);
   const toolState = getPromptKitToolState(toolName, state, output, errorText);
-  const summary = toolState.summary ?? inputSummary;
+  const summary = isWwx ? null : (toolState.summary ?? inputSummary);
   const open = defaultOpen ?? (isError || (isWwx && output !== undefined));
   const hidesInput = HEAVY_INPUT_TOOLS.has(toolName) || isWwx;
   const hidesOutput = HEAVY_CONTENT_TOOLS.has(toolName);
@@ -262,27 +262,21 @@ function getPromptKitToolState(
     const retryable = data.retryable === true || ui?.retryable === true;
     const operatorNeeded =
       data.operator_needed === true || ui?.operator_needed === true;
-    const summary =
-      ui?.stage_label ??
-      (typeof data.current_stage === "string"
-        ? data.current_stage.replace(/[_-]+/g, " ")
-        : null);
 
     if (awaitingReview || ui?.tone === "warning") {
       return {
         variant: "review",
         label: retryable && !awaitingReview ? "Needs repair" : "Needs review",
-        summary,
       };
     }
     if (ui?.tone === "danger" || operatorNeeded || data.ok === false) {
-      return { variant: "blocked", label: "Blocked", summary };
+      return { variant: "blocked", label: "Blocked" };
     }
     if (ui?.tone === "running") {
-      return { variant: "running", label: "Processing", summary };
+      return { variant: "running", label: "Processing" };
     }
     if (state === "output-available") {
-      return { variant: "completed", label: "Completed", summary };
+      return { variant: "completed", label: "Completed" };
     }
   }
 
@@ -672,19 +666,7 @@ const WWX_TOOL_NAMES = new Set([
 function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
   const openPreview = useChatStore((s) => s.live.openPreview);
   const focusInput = useChatStore((s) => s.focusInput);
-  const ok = data.ok !== false;
   const ui = readToolUi(data);
-  const summary =
-    ui?.summary ??
-    (typeof data.summary === "string" ? data.summary : null);
-  const headline =
-    ui?.headline ??
-    (ok ? "Workflow updated" : "Workflow needs attention");
-  const stageLabel =
-    ui?.stage_label ??
-    (typeof data.current_stage === "string"
-      ? data.current_stage.replace(/[_-]+/g, " ")
-      : null);
   const retryable = data.retryable === true;
   const action = ui?.primary_action?.kind === "wait" ? null : ui?.primary_action ?? null;
   const secondaryAction = ui?.secondary_action ?? null;
@@ -708,64 +690,9 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
         (artifact) => artifact.audience === "technical",
       )
     : [];
-  const reason = typeof data.reason === "string" ? data.reason : null;
-  const tone = ui?.tone ?? (ok ? "success" : "danger");
-  const statusBadge =
-    data.awaiting_review === true || data.status === "awaiting_review" || data.status === "held"
-      ? "needs review"
-      : tone === "warning" && retryable
-        ? "needs repair"
-        : tone === "danger"
-          ? "blocked"
-          : ok
-            ? "done"
-            : "failed";
 
   return (
     <div className="space-y-2.5">
-      <div
-        className={cn(
-          "rounded-md border px-2.5 py-2",
-          tone === "danger"
-            ? "border-rose-400/30 bg-rose-400/10"
-            : tone === "warning"
-              ? "border-amber-400/30 bg-amber-400/10"
-              : tone === "running"
-                ? "border-sky-400/30 bg-sky-400/10"
-                : "border-emerald-400/25 bg-emerald-400/10",
-        )}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-[12px] font-semibold text-foreground">
-              {headline}
-            </div>
-            {stageLabel ? (
-              <div className="mt-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                {stageLabel}
-              </div>
-            ) : null}
-          </div>
-          <span
-            className={cn(
-              "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-              ok
-                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                : tone === "warning"
-                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                  : "bg-destructive/15 text-destructive",
-            )}
-          >
-            {statusBadge}
-          </span>
-        </div>
-        {summary || reason ? (
-          <div className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-            {summary ?? reason}
-          </div>
-        ) : null}
-      </div>
-
       {action ? (
         <div className="flex flex-wrap gap-1.5">
           <button
@@ -889,7 +816,7 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
           </CollapsibleContent>
         </Collapsible>
       ) : null}
-      {!ok && retryable ? (
+      {data.ok === false && retryable ? (
         <div className="text-[10px] text-muted-foreground">
           Repairable by the workflow. Operator input is only needed if the next step asks for missing truth.
         </div>
