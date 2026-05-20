@@ -347,13 +347,14 @@ function WwxTerminalAction({ output }: { output: unknown }) {
     : null;
   const primary = ui?.primary_action;
   const secondary = ui?.secondary_action;
-  if (!primary || primary.kind === "wait") return null;
+  const status = typeof data.status === "string" ? data.status : null;
+  const awaitingReview =
+    data.awaiting_review === true ||
+    status === "awaiting_review" ||
+    status === "held";
+  if (!awaitingReview || primary?.kind !== "continue") return null;
 
   const question = terminalActionQuestion(ui?.stage_label, primary);
-  const statusLabel =
-    typeof data.status === "string" && data.status === "awaiting_review"
-      ? "needs review"
-      : ui?.status_label;
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-muted/50 px-3 py-2">
@@ -361,18 +362,12 @@ function WwxTerminalAction({ output }: { output: unknown }) {
         <div className="min-w-0 truncate text-[12px] font-semibold text-foreground">
           {question}
         </div>
-        {statusLabel ? (
-          <span className="shrink-0 rounded-full border border-white/15 bg-background/40 px-2 py-0.5 text-[9.5px] text-muted-foreground">
-            {statusLabel}
-          </span>
-        ) : null}
       </div>
       <div className="flex flex-wrap gap-1.5">
         <Button
           type="button"
           size="sm"
-          variant="secondary"
-          className="h-7 rounded-md px-2.5 text-[10.5px]"
+          className="h-7 rounded-md bg-white px-2.5 text-[10.5px] font-medium text-slate-950 hover:bg-white/90"
           onClick={() => void sendAction(primary)}
         >
           {terminalActionLabel(primary)}

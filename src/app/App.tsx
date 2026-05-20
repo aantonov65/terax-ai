@@ -438,16 +438,6 @@ export default function App() {
     [],
   );
 
-  const continueBatchInAgent = useCallback(
-    (batch: BatchSummary, prompt?: string) => {
-      ensureAgentWindowForBatch(
-        batch,
-        prompt ?? `Continue this workflow for ${batch.id} from the current checkpoint.`,
-      );
-    },
-    [ensureAgentWindowForBatch],
-  );
-
   const handleCreateProduct = useCallback(
     async (draft: ProductDraft) => {
       const created = await createWwxProduct({
@@ -647,19 +637,6 @@ export default function App() {
     });
   }, [productForBatch]);
 
-  const handleAdvanceBatch = useCallback(async (batch: BatchSummary) => {
-    const product = productForBatch(batch);
-    if (!product) return;
-    await invoke("wwx_advance_lfs_job", {
-      input: {
-        productId: product.id,
-        batchId: batch.id,
-        runMode: "review",
-        anthropicApiKey: await getKey("anthropic"),
-      },
-    });
-  }, [productForBatch]);
-
   const handleBuildStrategy = useCallback(async (batch: BatchSummary) => {
     const product = productForBatch(batch);
     if (!product) return;
@@ -828,10 +805,8 @@ export default function App() {
                   index={wwxIndex}
                   selectedBatch={selectedBatch}
                   selectedArtifactPath={selectedArtifactPath}
-                  onContinueInAgent={continueBatchInAgent}
                   onBuildStrategy={(batch) => void handleBuildStrategy(batch)}
                   onRunBatch={(batch) => void handleRunBatch(batch)}
-                  onAdvanceBatch={(batch) => void handleAdvanceBatch(batch)}
                   onToggleAutonomy={(batch) =>
                     void setBatchAutonomous(batch, !batch.autonomous)
                   }

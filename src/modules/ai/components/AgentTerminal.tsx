@@ -1,9 +1,14 @@
-import { Button } from "@/components/ui/button";
 import {
   FileUpload,
   FileUploadContent,
   FileUploadTrigger,
 } from "@/components/ui/file-upload";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "@/components/ui/input-group";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -455,19 +460,21 @@ function AgentTerminalChat({
               Drop files to attach
             </div>
           </FileUploadContent>
-          <div className="flex items-start gap-3">
-            <FileUploadTrigger asChild>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="mt-0.5 rounded-none bg-transparent text-slate-300 transition-colors hover:bg-transparent hover:text-slate-50 focus-visible:ring-0"
-                disabled={isBusy}
-                title="Attach file"
-              >
-                <HugeiconsIcon icon={Link02Icon} size={20} strokeWidth={1.8} />
-              </Button>
-            </FileUploadTrigger>
-            <textarea
+          <InputGroup className="min-h-10 rounded-none border-0 bg-transparent">
+            <InputGroupAddon align="inline-start" className="py-1 pl-0">
+              <FileUploadTrigger asChild>
+                <InputGroupButton
+                  size="icon-sm"
+                  variant="ghost"
+                  className="rounded-none text-slate-300 hover:bg-transparent hover:text-slate-50 focus-visible:ring-0"
+                  disabled={isBusy}
+                  title="Attach file"
+                >
+                  <HugeiconsIcon icon={Link02Icon} size={20} strokeWidth={1.8} />
+                </InputGroupButton>
+              </FileUploadTrigger>
+            </InputGroupAddon>
+            <InputGroupTextarea
               ref={inputRef}
               value={value}
               onChange={(event) => setValue(event.target.value)}
@@ -480,9 +487,9 @@ function AgentTerminalChat({
               rows={1}
               disabled={isBusy}
               placeholder="Create"
-              className="min-h-9 flex-1 resize-none bg-transparent pt-1.5 text-[13px] leading-6 text-slate-100 outline-none placeholder:text-slate-500"
+              className="min-h-9 py-1.5 text-[13px] leading-6 text-slate-100 placeholder:text-slate-500"
             />
-          </div>
+          </InputGroup>
         </FileUpload>
       </div>
     </div>
