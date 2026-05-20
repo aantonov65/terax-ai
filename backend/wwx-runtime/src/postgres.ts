@@ -5,6 +5,7 @@ import type {
   BatchRun,
   BatchStatus,
   CreateAdsInput,
+  Product,
   QueueJob,
   ResearchRun,
   RunEvent,
@@ -47,6 +48,22 @@ export class PostgresStore implements Store {
       `,
       [workspaceId, productId, name, config, now],
     );
+  }
+
+  async listProducts(workspaceId: string): Promise<Product[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM products WHERE workspace_id = $1 ORDER BY updated_at DESC",
+      [workspaceId],
+    );
+    return result.rows.map(mapProduct);
+  }
+
+  async listBatches(workspaceId: string, productId: string): Promise<Batch[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM batches WHERE workspace_id = $1 AND product_id = $2 ORDER BY updated_at DESC",
+      [workspaceId, productId],
+    );
+    return result.rows.map(mapBatch);
   }
 
   async createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun> {
@@ -692,6 +709,17 @@ function mapResearchRun(row: QueryResultRow): ResearchRun {
     searchTerms: asArray(row.search_terms),
     status: row.status,
     quality: asRecord(row.quality),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function mapProduct(row: QueryResultRow): Product {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    name: String(row.name),
+    config: asRecord(row.config),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };

@@ -156,7 +156,7 @@ export function buildApi(
   });
 
   if (workflow && observability) {
-    registerWorkflowRoutes(app, workflow, observability);
+    registerWorkflowRoutes(app, service, workflow, observability);
   }
 
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
@@ -169,7 +169,12 @@ export function buildApi(
   return app;
 }
 
-function registerWorkflowRoutes(app: FastifyInstance, workflow: WorkflowRuntimeService, observability: ObservabilityClient): void {
+function registerWorkflowRoutes(
+  app: FastifyInstance,
+  service: RuntimeService,
+  workflow: WorkflowRuntimeService,
+  observability: ObservabilityClient,
+): void {
   app.get("/capabilities", async () => workflow.capabilities());
 
   app.get("/me", async (request) => {
@@ -189,6 +194,28 @@ function registerWorkflowRoutes(app: FastifyInstance, workflow: WorkflowRuntimeS
   app.post<{ Body: WorkflowRunInput }>("/runs", async (request) => {
     const auth = await authenticateRequest(request, observability);
     return workflow.createRun(auth, request.body ?? {});
+  });
+
+  app.get("/products", async (request) => {
+    const auth = await authenticateRequest(request, observability);
+    return {
+      workspace: {
+        id: auth.workspaceId,
+        name: "WWX Hosted",
+        root_path: "hosted://wwx",
+        visibility: "account",
+        scope_label: "Hosted",
+      },
+      products: (await service.listProductIndex(auth.workspaceId)).map(sanitizeProductIndexItem),
+    };
+  });
+
+  app.post<{ Body: { productFolder?: string; config?: Record<string, unknown> } }>("/products", async (request) => {
+    const auth = await authenticateRequest(request, observability);
+    const config = request.body?.config;
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw workflowPublicError("INVALID_PRODUCT_CONFIG", 400);
+    const product = await service.createProduct(auth.workspaceId, config, request.body?.productFolder);
+    return { product: sanitizeProductIndexItem({ ...product, researchRuns: [], batches: [] }) };
   });
 
   app.post<{ Params: { id: string } }>("/runs/:id/stop", async (request) => {
@@ -353,6 +380,34 @@ function sanitizeArtifact(artifact: Artifact) {
     version: artifact.version,
     created_at: artifact.createdAt,
     updated_at: artifact.updatedAt,
+  };
+}
+
+function sanitizeProductIndexItem(product: Record<string, unknown>) {
+  const config = product.config && typeof product.config === "object" && !Array.isArray(product.config)
+    ? product.config as Record<string, unknown>
+    : {};
+  return {
+    id: product.id,
+    product_code: String(config.product_code ?? config.productCode ?? product.id ?? "").replace(/^prod_/, ""),
+    name: product.name,
+    config,
+    created_at: product.createdAt,
+    updated_at: product.updatedAt,
+    research_runs: Array.isArray(product.researchRuns) ? product.researchRuns : [],
+    batches: Array.isArray(product.batches)
+      ? (product.batches as Array<Record<string, unknown>>).map((batch) => ({
+          id: batch.id,
+          product_id: batch.productId,
+          name: batch.name,
+          status: batch.status,
+          current_stage: batch.currentStage ?? null,
+          requested_ad_count: batch.requestedAdCount,
+          created_at: batch.createdAt,
+          updated_at: batch.updatedAt,
+          artifacts: Array.isArray(batch.artifacts) ? batch.artifacts.map((artifact) => sanitizeArtifact(artifact as Artifact)) : [],
+        }))
+      : [],
   };
 }
 

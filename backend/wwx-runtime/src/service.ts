@@ -1,6 +1,6 @@
 import type { Store } from "./store.js";
 import type { ObjectStorage } from "./storage.js";
-import type { Artifact, CreateAdsInput, EngineWorkItem, ResearchRun, RunEvent } from "./model.js";
+import type { Artifact, CreateAdsInput, EngineWorkItem, Product, ResearchRun, RunEvent } from "./model.js";
 import { classifyVisibility, isSecretQuestion } from "./security.js";
 import { sha256 } from "./ids.js";
 
@@ -24,6 +24,32 @@ export class RuntimeService {
       payload: { jobId: job.id },
     });
     return { batch, job };
+  }
+
+  async createProduct(workspaceId: string, config: Record<string, unknown>, productFolder?: string): Promise<Product> {
+    const productCode = productCodeFromConfig(config, productFolder);
+    const productId = `prod_${productCode}`;
+    await this.store.ensureProduct(workspaceId, productId, productNameFromConfig(config, productCode), config);
+    const product = (await this.store.listProducts(workspaceId)).find((item) => item.id === productId);
+    if (!product) throw new Error("product not found after create");
+    return product;
+  }
+
+  async listProductIndex(workspaceId: string) {
+    const products = await this.store.listProducts(workspaceId);
+    return Promise.all(products.map(async (product) => {
+      const batches = await this.store.listBatches(workspaceId, product.id);
+      const researchRuns = await this.store.listResearchRuns(workspaceId, product.id);
+      const mappedBatches = await Promise.all(batches.map(async (batch) => ({
+        ...batch,
+        artifacts: await this.store.listPublicArtifacts(workspaceId, batch.id),
+      })));
+      return {
+        ...product,
+        researchRuns,
+        batches: mappedBatches,
+      };
+    }));
   }
 
   async startResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[] = []): Promise<ResearchRun> {
@@ -297,6 +323,22 @@ export class RuntimeService {
     if (!object) throw new Error("artifact body missing");
     return object.toString("utf8");
   }
+}
+
+function productCodeFromConfig(config: Record<string, unknown>, fallback?: string): string {
+  return safeSegment(stringValue(config.product_code) ?? stringValue(config.productCode) ?? fallback ?? "product").toUpperCase();
+}
+
+function productNameFromConfig(config: Record<string, unknown>, fallback: string): string {
+  return stringValue(config.product_name) ?? stringValue(config.productName) ?? stringValue(config.name) ?? fallback;
+}
+
+function safeSegment(value: string): string {
+  return value.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "product";
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function extractHook(script: string): string {

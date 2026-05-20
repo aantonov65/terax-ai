@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { hostedRuntimeConfigured, wwxApiUrl, wwxAuthHeaders } from "./auth";
 import type {
   ArtifactKind,
   ArtifactSummary,
@@ -99,6 +100,61 @@ type NativeIndex = {
   products: NativeProduct[];
 };
 
+type HostedIndex = {
+  workspace: NativeIndex["workspace"];
+  products: HostedProduct[];
+};
+
+type HostedProduct = {
+  id: string;
+  product_code: string;
+  name: string;
+  config: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  research_runs?: Array<{
+    id: string;
+    productId?: string;
+    product_id?: string;
+    topicSlug?: string;
+    topic_slug?: string;
+    topic: string;
+    searchTerms?: string[];
+    search_terms?: string[];
+    status: string;
+    quality?: Record<string, unknown>;
+    createdAt?: number;
+    created_at?: number;
+    updatedAt?: number;
+    updated_at?: number;
+  }>;
+  batches?: Array<{
+    id: string;
+    product_id: string;
+    name: string;
+    status: string;
+    current_stage?: string | null;
+    requested_ad_count?: number;
+    created_at: number;
+    updated_at: number;
+    artifacts?: HostedArtifact[];
+  }>;
+};
+
+type HostedArtifact = {
+  id: string;
+  batch_id: string;
+  filename: string;
+  label: string;
+  mime_type: string;
+  visibility_class: string;
+  content_sha256: string;
+  size: number;
+  version?: number;
+  created_at: number;
+  updated_at: number;
+};
+
 type NativeArtifactContent = {
   artifact: NativeArtifact;
   contentText?: string | null;
@@ -135,7 +191,9 @@ export function useWwxIndex(_rootPath: string | null): WwxIndexState {
     const load = async () => {
       setState((prev) => ({ ...prev, status: "loading" }));
       try {
-        const native = await invoke<NativeIndex>("wwx_list_products");
+        const native = hostedRuntimeConfigured()
+          ? await loadHostedIndex()
+          : await invoke<NativeIndex>("wwx_list_products");
         if (cancelled) return;
         const products = native.products.map(mapProduct);
         setState({
@@ -166,6 +224,18 @@ export async function createProductInStore(input: {
   productFolder?: string;
   config: Record<string, unknown>;
 }): Promise<CreatedProduct> {
+  if (hostedRuntimeConfigured()) {
+    const response = await hostedRequest<{ product: HostedProduct }>("/products", {
+      method: "POST",
+      body: { productFolder: input.productFolder, config: input.config },
+    });
+    return {
+      productFolder: response.product.product_code,
+      productPath: `hosted://wwx/products/${response.product.id}`,
+      productCode: response.product.product_code,
+      productId: response.product.id,
+    };
+  }
   const product = await invoke<NativeProduct>("wwx_create_product", {
     input: { productFolder: input.productFolder, config: input.config },
   });
@@ -175,6 +245,96 @@ export async function createProductInStore(input: {
     productCode: product.productCode,
     productId: product.id,
   };
+}
+
+async function loadHostedIndex(): Promise<NativeIndex> {
+  const hosted = await hostedRequest<HostedIndex>("/products");
+  return {
+    workspace: hosted.workspace,
+    products: hosted.products.map(hostedProductToNative),
+  };
+}
+
+async function hostedRequest<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  const baseUrl = wwxApiUrl();
+  if (!baseUrl) throw new Error("Hosted WWX API is not configured.");
+  const response = await invoke<{ status: number; headers: Record<string, string>; body: number[] }>("ai_http_request", {
+    url: `${baseUrl}${path}`,
+    method: options.method ?? "GET",
+    headers: {
+      ...await wwxAuthHeaders(),
+      "content-type": "application/json",
+    },
+    body: options.body ? Array.from(new TextEncoder().encode(JSON.stringify(options.body))) : undefined,
+  });
+  const text = new TextDecoder().decode(Uint8Array.from(response.body));
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(safeHostedError(text, response.status));
+  }
+  return text ? JSON.parse(text) as T : {} as T;
+}
+
+function hostedProductToNative(product: HostedProduct): NativeProduct {
+  return {
+    id: product.id,
+    productCode: product.product_code,
+    name: product.name,
+    configJson: JSON.stringify(product.config ?? {}, null, 2),
+    createdAt: product.created_at,
+    updatedAt: product.updated_at,
+    revision: 1,
+    researchRuns: (product.research_runs ?? []).map((run) => ({
+      id: run.id,
+      productId: run.productId ?? run.product_id ?? product.id,
+      topicSlug: run.topicSlug ?? run.topic_slug ?? "topic",
+      topic: run.topic,
+      searchTermsJson: JSON.stringify(run.searchTerms ?? run.search_terms ?? []),
+      runFolder: `hosted://wwx/products/${product.id}/research-runs/${run.id}`,
+      status: run.status,
+      qualityJson: JSON.stringify(run.quality ?? {}),
+      createdAt: run.createdAt ?? run.created_at ?? Date.now(),
+      updatedAt: run.updatedAt ?? run.updated_at ?? Date.now(),
+    })),
+    batches: (product.batches ?? []).map((batch) => ({
+      id: batch.id,
+      productId: product.id,
+      productCode: product.product_code,
+      name: batch.name,
+      batchId: batch.id,
+      status: batch.status,
+      currentStage: batch.current_stage,
+      createdAt: batch.created_at,
+      updatedAt: batch.updated_at,
+      revision: 1,
+      artifacts: (batch.artifacts ?? []).map((artifact) => ({
+        id: artifact.id,
+        batchId: artifact.batch_id,
+        productId: product.id,
+        kind: artifact.filename.endsWith(".json") ? "json" : "markdown",
+        label: artifact.label,
+        filename: artifact.filename,
+        mimeType: artifact.mime_type,
+        size: artifact.size,
+        source: "hosted",
+        public: artifact.visibility_class.startsWith("public_"),
+        visibilityClass: artifact.visibility_class,
+        contentSha256: artifact.content_sha256,
+        createdAt: artifact.created_at,
+        updatedAt: artifact.updated_at,
+        revision: artifact.version ?? 1,
+      })),
+      runs: [],
+    })),
+  };
+}
+
+function safeHostedError(text: string, status: number): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: string };
+    return parsed.error ?? `Hosted request failed with ${status}.`;
+  } catch {
+    return `Hosted request failed with ${status}.`;
+  }
 }
 
 export async function createBatchInStore(input: {

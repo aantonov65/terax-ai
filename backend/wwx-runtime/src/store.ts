@@ -4,6 +4,7 @@ import type {
   BatchRun,
   BatchStatus,
   CreateAdsInput,
+  Product,
   QueueJob,
   ResearchRun,
   RunEvent,
@@ -18,6 +19,8 @@ export type ClaimedJob = QueueJob & { run: BatchRun };
 
 export type Store = {
   ensureProduct(workspaceId: string, productId: string, name?: string, config?: Record<string, unknown>): Promise<void>;
+  listProducts(workspaceId: string): Promise<Product[]>;
+  listBatches(workspaceId: string, productId: string): Promise<Batch[]>;
   createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun>;
   listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]>;
   ensureBatch(workspaceId: string, batchId: string, input: CreateAdsInput): Promise<Batch>;
@@ -63,6 +66,23 @@ export class MemoryStore implements Store {
 
   async ensureProduct(workspaceId: string, productId: string, name = productId, config: Record<string, unknown> = {}): Promise<void> {
     this.products.set(`${workspaceId}:${productId}`, { workspaceId, id: productId, name, config });
+  }
+
+  async listProducts(workspaceId: string): Promise<Product[]> {
+    return [...this.products.values()]
+      .filter((product) => product.workspaceId === workspaceId)
+      .map((product) => ({
+        ...product,
+        createdAt: nowMs(),
+        updatedAt: nowMs(),
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async listBatches(workspaceId: string, productId: string): Promise<Batch[]> {
+    return [...this.batches.values()]
+      .filter((batch) => batch.workspaceId === workspaceId && batch.productId === productId)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   async createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun> {
