@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.33.4",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -14,6 +15,7 @@
     "backend:test": "tsx --test backend/wwx-runtime/test/*.test.ts",
     "backend:api": "tsx backend/wwx-runtime/src/main.ts",
     "backend:worker": "tsx backend/wwx-runtime/src/worker-main.ts",
+    "engine:bundle": "node scripts/build-ww2-runtime-bundle.mjs",
     "trigger:dev": "pnpm dlx trigger.dev@latest dev",
     "trigger:deploy": "pnpm dlx trigger.dev@latest deploy"
   },
@@ -105,6 +107,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@trigger.dev/build": "4.4.6",
+    "@trigger.dev/python": "4.4.6",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.1.8",
@@ -116,7 +120,8 @@
   },
   "pnpm": {
     "overrides": {
-      "shiki": "^4.0.2"
+      "shiki": "^4.0.2",
+      "socket.io-adapter": "2.5.6"
     }
   }
 }

@@ -1,0 +1,1423 @@
+#!/usr/bin/env bash
+#
+# WW CLI - Entry point for ad generation operations
+#
+# Usage:
+#   ww plan <batch_id> [options]        Generate batch spec from parameters
+#   ww compile-angles <angles.md>       Compile strategist angles into product-scoped batch artifacts
+#   ww rich-strategy <angle.md>         Compile detailed angle markdown into rich legacy strategy
+#   ww product-package <bundle>         Generate production upstream package from source evidence
+#   ww strategy build --product P ...   Build V4.1 strategy.json from strategy-plan YAML/JSON
+#   ww compile-spec <strategy.json>     Compile strategist plan into canonical spec.json
+#   ww lfs-brief <strategy.json>        Generate LFS per-task prompts from strategist brief
+#   ww lfs-v4 <strategy.json>           Run full LFS V4 autopilot through final QA
+#   ww lfs-v41 <strategy.json|dir>      Run V4.1 semantic-first autopilot beside V4
+#   ww lfs-agent <angles.md|strategy.json> Guided LFS workflow with review pauses
+#   ww research-cards <product>         Compile/verify product research cards
+#   ww generate <task_id> [options]     Generate a single ad
+#   ww batch <batch_id> [options]       Generate batch scripts once
+#   ww video batch <batch_id> [options] Generate modular video component batch
+#   ww storyboard <script|batch_id> [options] Generate visual storyboard from script
+#   ww enrich <batch_id> [options]      Add visual briefs to generated scripts
+#   ww upload <batch_id> [options]      Upload scripts to Google Docs + ClickUp
+#   ww meta-upload <batch_id> [options] Upload creatives to META (copies x images)
+#   ww perf-pull [options]             Pull read-only META performance insights
+#   ww clarity-pull [options]           Pull Microsoft Clarity landing-page insights
+#   ww status <batch_id>                Show batch status from report.json
+#   ww validate <script_path> [options] Validate a generated script
+#   ww imagebatch <batch_id> [options]   Generate ad images (character + text overlay)
+#   ww headlines <product> <arc> <mech>  Generate ad headlines
+#   ww copy <product> <arc> <mech>      Generate primary copy (above-image text)
+#   ww animated <batch_id> [options]     Generate animated videos (or --full pipeline with QA + stitch)
+#   ww broll --video <file> [options]     Add AI b-roll + captions to spokesperson video
+#   ww visualize <script|--batch id>       Generate visual brief for editors (post-avatar)
+#   ww avatar <batch_id> [options]         Generate avatar videos (WW-2 → WW-Ralph bridge)
+#   ww qa <script|--batch batch_id>        Deterministic QA - format checks (hooks, CTA, product bridge)
+#   ww qa-craft <script|--batch id>        LLM 7-dim craft audit (conversion leaks, belief gaps, advisory)
+#   ww lfs-outline <batch_id>              Generate + contract-repair LFS outlines
+#   ww lfs-chief <batch_id>                Copy-chief generated LFS scripts into output-chiefed/
+#   ww lfs-semantic <batch_id>             Check script adherence to saved outlines
+#   ww rank-combos <product|batch>         Rank modular component combos worst→best (Inceptly workflow)
+#   ww preflight <batch_id> [options]     Pre-flight checklist before generation/upload
+#   ww dashboard [--port N]              Open pipeline dashboard (default: localhost:8420)
+#   ww scan [options]                    Scan META Ad Library for new creatives
+#   ww research <product> [options]      Scrape Reddit + generate archetypes/hotwords
+#   ww simulate <batch|script> [options]  Synthetic audience pre-test (archetype reactions)
+#   ww products [--verbose] [--json]      Portfolio health check - all products at a glance
+#   ww learn "<rule>"                    Add a quality gate from human correction
+#   ww hire <subcommand> [options]       Upwork hiring automation (auth, post, search, invite, etc.)
+#   ww lp-rip <URL> [options]            Rip a competitor landing page (capture + extract)
+#   ww ad-scrape <URL|--query "brand">  Scrape META Ad Library (deep scroll, structured output)
+#   ww tweet <URL> [--thread] [--save]  Read an X/Twitter post (uses FxTwitter, no auth)
+#   ww x-signal [options]               Daily X timeline scan → signal digest (Scrapling + Nitter)
+#   ww slides <product> "concept" -f X  Generate TikTok slideshow ad (6–10 slides, 9:16, fal)
+#   ww transcribe <dir|file> [options]  Parallel transcribe videos (Boris pipeline)
+#   ww help                             Show this help message
+#
+
+set -e
+
+# Get the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_PATH="$(dirname "$SCRIPT_DIR")"
+BASE_PATH="${WW_BASE_PATH:-$REPO_PATH}"
+export PYTHONUNBUFFERED=1
+if [ -n "${WW_PYTHON:-}" ]; then
+    PYTHON_BIN="$WW_PYTHON"
+elif [ -x "$REPO_PATH/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_PATH/.venv/bin/python"
+else
+    PYTHON_BIN="python3"
+fi
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+show_help() {
+    cat << 'EOF'
+WW CLI - Ad Generation System
+
+Usage:
+  ww <command> [arguments] [options]
+
+Commands:
+  plan <batch_id>        Generate batch spec.json from parameters
+    Options:
+      -p, --product      Product code (NOOR, NRJNT, etc.) [required]
+      -f, --format       Format (lfs, yapfest, rvsl) [required]
+      -a, --archetypes   Comma-separated archetypes (ARC1,ARC2) [required]
+      --angles           Comma-separated angles (A1B1,A2B3) [required]
+      -m, --mechanism    Mechanism code (M1, M2) [required]
+      --hooks            Comma-separated hooks (RAGE,THIRD) [lfs/yapfest]
+      --rb               Comma-separated rock bottoms (RBPUB,RBREL) [lfs/yapfest]
+      -v, --version      Version (default: V001)
+      --dry-run          Preview task IDs without creating spec
+
+  compile-angles <angles.md>    Compile strategist angles into product-scoped strategy/spec/artifacts
+  rich-strategy <angle.md>      Compile detailed angle markdown into rich legacy strategy/spec
+  product-package <bundle>      Generate config/research/angle/strategy artifacts from source evidence
+  strategy build --product P    Build V4.1 strategy.json from strategy-plan YAML/JSON
+  compile-spec <strategy.json>  Compile strategist plan into canonical spec.json
+  lfs-brief <strategy.json>     Generate LFS per-task prompts from strategist brief
+    Options:
+      --batch-id ID      Override batch_id from strategy
+      --workers N        Parallel Claude calls (default: 4)
+      --force            Replace existing prompts/spec
+      --dry-run          Validate planned work without API calls
+      --max-attempts N   Generation + repair attempts per prompt
+
+  lfs-v4 <strategy.json> Run full LFS V4 autopilot
+    Runs: research-cards -> lfs-brief -> lfs-outline -> preflight ->
+          batch --clean-output -> lfs-chief -> lfs-semantic -> lfs-finish
+    Options:
+      -w, --workers      Parallel workers for LLM repair/judge stages (default: 4)
+      --generation-workers N  Parallel script generation workers (default: 20)
+      --max-repair-rounds N   lfs-finish repair rounds (default: 4)
+      --output-subdir DIR     Chiefed/final script directory (default: output-chiefed)
+      --brief-model MODEL     Override LFS prompt-writing model
+      --outline-model MODEL   Override outline-writing model
+      --chief-model MODEL     Override copy-chief model
+      --semantic-model MODEL  Override semantic judge/repair model
+
+  lfs-v41 <strategy.json|dir> Run V4.1 semantic-first autopilot beside V4
+    Runs: research-cards -> cached lfs-brief -> cached lfs-outline -> relaxed preflight ->
+          batch --resume-missing -> output-v41 candidates -> objective finish ->
+          semantic launchable -> final objective/semantic gate
+    Folder mode runs many isolated strategy files in parallel. Outer jobs own
+    parallelism; each child V4.1 run uses 1 inner worker to avoid nested API blasts.
+    Options:
+      --jobs N          Folder mode: isolated V4.1 child jobs (default: 20)
+      -w, --workers      Parallel workers for LLM repair/judge stages (default: 4)
+      --generation-workers N  Parallel script generation workers (default: 20)
+      --objective-repair-rounds N  Objective hard-fact repair rounds (default: 1)
+      --output-subdir DIR     V4.1 final script directory (default: output-v41)
+      --brief-model MODEL     Override LFS prompt-writing model
+      --outline-model MODEL   Override outline-writing model
+      --semantic-model MODEL  Override semantic judge/repair model
+
+  lfs-agent <angles.md|strategy.json> Guided terminal-first LFS V4.1 workflow
+    Runs the V4.1 stages with durable state, artifact previews, and review
+    pauses after each artifact-producing stage.
+    Options:
+      --resume BATCH_ID   Resume a held or partial guided run
+      --from STAGE        Start from a specific stage
+      --yolo              Run without review pauses
+      -w, --workers       Parallel workers for LLM stages (default: 4)
+      --generation-workers N  Parallel script generation workers (default: 20)
+
+  research-cards <product> Compile/verify product-scoped research cards
+    Options:
+      --verify           Verify existing cards against legacy source sections
+      --dry-run          Preview card creation without writing
+      --force            Rewrite differing cards from source sections
+      --json             Output report JSON
+
+  generate <task_id>     Generate a single ad
+    Options:
+      -o, --output-dir   Output directory (default: output/)
+
+  batch <batch_id>       Generate batch scripts once
+    Options:
+      -w, --workers      Max parallel workers (default: 20)
+      --clean-output     Delete output/ before generating
+      --resume-missing   Generate only task IDs with no existing output
+      --append-version   Preserve existing output and add timestamped files
+
+  video <subcommand>     Modular video engine (separate from LFS batch)
+    Subcommands:
+      batch <batch_id>       Write hooks/leads/bodies/ctas and assemble videos
+      assemble <batch_id>    Assemble existing component libraries
+      track <batch_id>       Build local tracking manifests from assembled output
+
+  storyboard <script>         Generate visual storyboard from approved script
+    Arguments:
+      script             Script file path or task ID
+    Options:
+      --batch <id>       Brief all scripts in a batch
+      --style "..."      Editing style note (e.g., "fast-cut UGC, handheld")
+      -o, --output       Output file path
+      -w, --workers      Parallel workers for batch mode (default: 5)
+
+  enrich <batch_id>      Add visual briefs to generated scripts
+    Options:
+      -w, --workers      Max parallel workers (default: 10)
+      -f, --force        Re-enrich even if already done
+      --single <script>  Enrich a single script instead of batch
+      --product <code>   Product code (for --single mode)
+
+  upload <batch_id>      Upload scripts to Google Docs + ClickUp
+    Options:
+      --dry-run          Simulate without actual uploads
+      --folder <id|url>  Google Drive folder (overrides upload-config.json)
+      --no-color         Disable colored output
+      --verbose          Enable verbose logging
+
+  meta-upload <batch_id> Upload creatives to META (copies x images)
+    Options:
+      --dry-run          Simulate without actual uploads
+      --ad-account       Override ad account ID (act_123456789)
+
+  perf-pull              Pull read-only META performance insights
+    Options:
+      --product CODE     Product/client label and config folder (default: Sofyre)
+      --ad-account ID    Account to read, with or without act_
+      --date-preset P    today, yesterday, last_7d, last_30d, etc. (default: today)
+      --since DATE       Start date YYYY-MM-DD; pair with --until
+      --until DATE       End date YYYY-MM-DD; pair with --since
+      --level LEVEL      account, campaign, adset, or ad (default: campaign)
+      --list-accounts    List accounts visible to the token and exit
+
+  clarity-pull           Pull Microsoft Clarity Data Export API live insights
+    Options:
+      --num-days N       Last 1, 2, or 3 days (default: 1)
+      --dimension NAME   URL, Campaign, Source, Medium, Device, etc. Repeat up to 3
+      --url-contains S   Post-filter rows for a landing page path/domain
+      --product CODE     Label output files, e.g. FatOnFire
+
+  status <batch_id>      Show batch status from report.json
+
+  imagebatch <batch_id> [batch_id2 ...]  Generate ad images (one or multi-batch)
+    Options:
+      -w, --workers      Max parallel workers (default: 10)
+      --rpm              API requests per minute limit (default: 18)
+      --dry-run          Validate specs and write image-report.json without API calls
+
+  headlines <script.md>                        Generate 2 fascination headlines for a script
+  headlines --batch <BATCH_ID>                 All scripts in batch (parallel)
+  headlines <product> <archetype> <mechanism>  Legacy: product-level headlines
+    Options:
+      -w, --workers      Parallel workers for batch mode (default: 10)
+      -n, --count        Number of headlines (legacy mode, default: 20)
+      -s, --save         Save to file (legacy mode)
+
+  copy <product> <archetype> <mechanism>  Generate primary copy (above-image text)
+    Arguments:
+      product            Product code (NOOR, NRJNT, etc.)
+      archetype          Archetype code (ARC1, ARC2, etc.)
+      mechanism          Mechanism code (M1, M2, etc.)
+    Options:
+      -n, --count        Number of copy options (default: 10)
+      -s, --save         Save to products/{product}/copy/
+
+  animated-brief <product> "concept"  Generate 5-scene animated spec from rough idea
+    Arguments:
+      product            Product code (NOOR, NRJNT, etc.)
+      concept            Your rough concept description
+    Options:
+      --arc              Narrative arc (villain, villain_first, before_after, trial,
+                         cascade, rescue, confession, origin) (default: villain)
+      -m, --model        Video model for spec (default: kling-v3-standard)
+      --batch-id         Custom batch ID (auto-generated if omitted)
+
+  animated <batch_id>    Generate animated videos from scene specs
+    Options:
+      -w, --workers      Max parallel workers (default: 5)
+      -m, --model        Video model override (kling-v3-standard, veo3.1, sora2-pro, etc.)
+      --frames-only      Only generate starting frames, skip video
+      --skip-frames      Reuse existing frames, generate videos only
+      -a, --account      fal.ai account override (e.g., NOOR, NR)
+      --full             Full pipeline: frames + videos + QA + retry + stitch
+      --qa               Run QA on existing videos only (Whisper transcription check)
+      --stitch           Stitch existing scene videos into single final video
+      --qa-threshold     QA match threshold 0-1 (default: 0.45)
+      --qa-retries       Max QA retry cycles (default: 2)
+
+  visualize <script>     Generate visual brief for editors (post-avatar)
+    Arguments:
+      script               Script file path
+    Options:
+      --batch <id>         Visualize all scripts in a batch
+      --product <code>     Product code override
+
+  avatar <batch_id>      Generate avatar videos (WW-2 -> WW-Ralph bridge)
+    Options:
+      --run                Generate config AND run avatar_batch.py
+      --dry-run            Show config without writing
+      --persona <name>     Override persona for all scripts
+      --folder <id>        Google Drive folder for video output
+      --workers N          TTS workers (default: 3)
+      --parallel-jobs N    Parallel avatar jobs (default: 2)
+
+  qa <script>            Deterministic QA - format/voice/craft checks (no API)
+    Arguments:
+      script               Script file path
+    Options:
+      --batch <id>         QA all scripts in a batch
+      --product "Name"     Product name (for product-bridge checks)
+      --json               Output as JSON
+
+  qa-craft <script>      LLM 7-dim craft audit (conversion leaks, advisory only)
+    Arguments:
+      script               Script file path (or use --batch)
+    Options:
+      --batch <id>         Audit all scripts in a batch (writes craft-audit-report.json)
+      --workers N          Parallel API calls (default: 8)
+      --json               Output raw JSON
+    Dimensions: awareness match, hook mechanics, desire escalation, belief gap
+    audit, mechanism conviction, specificity, offer architecture (each 1-10)
+
+  lfs-outline <batch_id> Generate + contract-repair LFS outlines
+    Options:
+      -w, --workers      Parallel Claude calls (default: 4)
+      --model MODEL      Claude model (default: LFS_OUTLINE_MODEL or claude-sonnet-4-6)
+      --force            Replace existing outlines
+      --dry-run          Validate prompt mappings without API calls
+      --max-attempts N   Generation + deterministic repair attempts (default: 3)
+    Source-swipe prompts may include:
+      ## SOURCE SWIPE
+      scanner/tyver/.../copies/source-copy.md
+
+  lfs-chief <batch_id>   Copy-chief generated LFS scripts into output-chiefed/
+    Options:
+      --input-subdir DIR   Raw script directory (default: output)
+      --output-subdir DIR  Chiefed script directory (default: output-chiefed)
+      --docs PATH          Chiefing doc file or directory; repeatable
+      -w, --workers        Parallel Claude calls (default: 4)
+      --dry-run            Run without writing output-chiefed/
+
+  lfs-semantic <batch_id> Check whether scripts follow saved outlines
+    Options:
+      --output-subdir DIR  Script directory to check/repair (default: output-chiefed)
+      -w, --workers        Parallel Claude calls (default: 4)
+      --max-attempts N     Repair attempts after failed judge pass (default: 2)
+      --dry-run            Judge without writing repairs
+
+  rank-combos <target>   Rank modular component combinations worst→best (Inceptly)
+    Arguments:
+      target               Product code (NRJNT, NOOR) or batch ID with modular/
+    Options:
+      --axes A,B           Two axes to rank (default: hooks,bridges)
+                           Options: hooks, bridges, cores, ctas
+      --hooks/--bridges/   Override specific component file path
+        --cores/--ctas
+      --output PATH        Output file (default: <modular>/rank-report_AxB.json)
+      --model MODEL        Claude model (default: claude-opus-4-5)
+      --json               Output raw JSON to stdout
+    Reads hooks.md × bridges.md from products/{PRODUCT}/modular/, asks Claude to
+    forced-rank all combinations with reasoning, flags components to SCALE vs REWRITE.
+
+  preflight <batch_id>   Pre-flight checklist - verify everything before generation
+    Options:
+      --upload             Also check Google Drive + ClickUp readiness
+      --meta               Also check META upload readiness
+      --all                Check everything (generate + upload + META)
+      --test               Test live connections (ClickUp API, etc.)
+
+  dashboard              Open pipeline dashboard (visual Kanban board)
+    Options:
+      --port N             Port number (default: 8420)
+
+  scan                   Scan META Ad Library pages for new creatives
+    Options:
+      --no-analyze       Scan only, skip Gemini analysis
+      --video            Enable video analysis (slower, downloads videos)
+      --max-videos N     Max videos to analyze per page (default: 3)
+      --page <id|label>  Scan a single page
+      --stats            Show database overview stats
+      --winners          Show long-running ads (probable winners)
+      --new-today        Show ads first seen today
+      --killed           Show ads killed fast (failed tests)
+      --min-days N       Min days for --winners (default: 14)
+      --migrate          One-time: import existing JSON scans into SQLite
+
+  research               Scrape Reddit → corpus file → Opus 1M Q&A loop (cached)
+    Options:
+      --topic TEXT       Research topic (required unless --corpus given)
+      --product CODE     Product code, routes corpus to products/CODE/research/corpus/
+      --corpus PATH      Skip scraping, load existing corpus file and open Q&A
+      --max-threads N    Max threads kept after filter (default: 80)
+      --scrape-only      Build corpus and exit, no Q&A
+      --dry-run          Show queries + filter counts only
+
+  validate <script>      Validate a generated script
+    Options:
+      -t, --task-id      Task ID (extracted from filename if not provided)
+      -q, --quiet        Only output pass/fail
+
+  simulate <batch|script> Synthetic audience pre-test (archetype reactions)
+    Arguments:
+      target               Batch ID or script file path
+    Options:
+      -p, --product        Product code (auto-detected for batches)
+      -c, --concept "..."  Test raw concept text (no script needed)
+      -a, --archetypes     Comma-separated archetypes (default: all)
+      -w, --workers        Parallel API calls (default: 8)
+      --json               Output raw JSON instead of formatted report
+
+  learn "<rule>"         Add a quality gate from a human correction
+    - Creates a bead to track the correction
+    - Appends rule to Quality Gates section in AGENTS.md
+    - Next generation run picks it up automatically
+
+  hire <subcommand>      Upwork hiring automation
+    Subcommands:
+      auth                 Run OAuth2 flow, store tokens
+      post [--dry-run]     Create DR video editor job posting
+      search [options]     Search freelancers (--skills, --rate-max, --jss-min, --country, --top-rated)
+      invite               Invite freelancers to job (--job, --freelancers) [--dry-run]
+      proposals            List proposals (--job) [--score]
+      shortlist            Shortlist a proposal (--job, --proposal)
+      decline              Decline a proposal (--job, --proposal)
+      message              Message a candidate (--job, --proposal, --msg)
+      offer                Send offer (--job, --freelancer, --rate) [--hours] [--dry-run]
+      status               Show org info + active jobs
+
+  help                   Show this help message
+
+Examples:
+  ww plan NOOR_LFS_001 -p NOOR -f lfs -a ARC1,ARC2 --angles A1B1,A2B3 --hooks RAGE,THIRD --rb RBPUB,RBREL -m M1
+  ww plan NOOR_LFS_001 -p NOOR -f lfs -a ARC1 --angles A1B1 --hooks RAGE --rb RBPUB -m M1 --dry-run
+  ww generate NOOR_YAPFEST_ARC1_A1B2_M1_RAGE_RBPUB_V001
+  ww lfs-v4 strategy.json
+  ww lfs-v41 strategy.json
+  ww lfs-v41 ./strategy-folder --jobs 20
+  ww research-cards PRODUCT --verify
+  ww lfs-chief BATCH_ID --output-subdir output-chiefed
+  ww lfs-semantic BATCH_ID --output-subdir output-chiefed
+  ww batch TEST_001 --workers 10
+  ww video batch SOFYRE_VIDEO_May14 --product SOFYRE --brief-file briefs/video.md
+  ww enrich TEST_001
+  ww enrich TEST_001 --force
+  ww enrich --single output/NRJNT_LFS_ARC1.md --product NRJNT
+  ww upload TEST_001 --dry-run
+  ww meta-upload TEST_001 --dry-run
+  ww status TEST_001
+  ww imagebatch NRJNT_IMG_001
+  ww imagebatch NRJNT_IMG_001 --workers 3
+  ww imagebatch BATCH_A BATCH_B BATCH_C --workers 10 --rpm 18
+  ww headlines NOOR ARC1 M1
+  ww headlines NRJNT ARC3 M1 --count 30 --save
+  ww copy NOOR ARC1 M1
+  ww copy NRJNT ARC1 M1 --save
+  ww animated-brief NOOR "adrenal gland stealing silica from hair follicles, pixar characters inside the scalp"
+  ww animated-brief NOOR "cortisol villain stealing silica" --arc trial
+  ww animated-brief NOOR "cortisol villain stealing silica" --arc before_after
+  ww animated-brief NRJNT "tiny joint cartilage character getting crushed by inflammation crystals"
+  ww animated NOOR_ANIMATED_001
+  ww animated NOOR_ANIMATED_001 --workers 10 --model veo3.1
+  ww animated NOOR_ANIMATED_001 --frames-only
+  ww animated NOOR_ANIMATED_001 --skip-frames
+  ww animated NOOR_ANIMATED_001 --account NOOR
+  ww animated NOOR_ANIMATED_001 --full
+  ww animated NOOR_ANIMATED_001 --qa
+  ww animated NOOR_ANIMATED_001 --stitch
+  ww animated NOOR_ANIMATED_001 --full --qa-threshold 0.6 --qa-retries 3
+  ww scan
+  ww scan --no-analyze
+  ww scan --video --max-videos 5
+  ww scan --page "Competitor Name"
+  ww scan --stats
+  ww scan --winners
+  ww scan --winners --page "Meno Hair 1" --min-days 7
+  ww scan --migrate
+  ww research NRJNT --topic "joint pain men over 40"
+  ww research NRJNT --topic "joint pain men over 40" --dry-run
+  ww simulate NOOR_LFS_RAW_Mar13                    # All scripts x all archetypes
+  ww simulate NOOR_LFS_RAW_Mar13 -a ARC1,ARC5       # Specific archetypes
+  ww simulate output/script.md -p NOOR               # Single script
+  ww simulate -c "Your hair isn't thinning because of age..." -p NOOR  # Test concept
+  ww validate output/NOOR_YAPFEST_ARC1_A1B2_M1_RAGE_RBPUB_V001_20260127.md
+  ww hire auth                                      # OAuth2 setup
+  ww hire post --dry-run                             # Preview job posting
+  ww hire search --rate-max 20 --jss-min 90          # Find editors
+  ww hire proposals --job JOB_ID --score             # AI-score proposals
+  ww hire invite --job JOB_ID --freelancers ID1,ID2  # Invite freelancers
+  ww hire offer --job JOB_ID --freelancer FL_ID --rate 15 --dry-run
+EOF
+}
+
+cmd_plan() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww plan <batch_id> -p PRODUCT -f FORMAT -a ARCHETYPES --angles ANGLES -m MECHANISM [--hooks HOOKS] [--rb ROCK_BOTTOMS]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/plan.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_generate() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: task_id required${NC}" >&2
+        echo "Usage: ww generate <task_id> [--output-dir <path>]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/generate.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_compile_spec() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: strategy JSON required${NC}" >&2
+        echo "Usage: ww compile-spec <strategy.json> [--batch-id ID] [--dry-run]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/compile_spec.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_compile_angles() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: angles.md required${NC}" >&2
+        echo "Usage: ww compile-angles products/PRODUCT/batches/BATCH/angles.md [--dry-run] [--force]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/compile_angles.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_rich_strategy() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: angle.md required${NC}" >&2
+        echo "Usage: ww rich-strategy <angle.md> --product PRODUCT [--batch-id ID] [--format expose] [--mechanism M1] [--archetype ARC1] [--dry-run] [--force]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/rich_strategy.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_brief() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: strategy JSON required${NC}" >&2
+        echo "Usage: ww lfs-brief <strategy.json> [--workers N] [--force] [--dry-run] [--max-attempts N]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_brief.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_agent() {
+    if [ -z "${1:-}" ]; then
+        echo -e "${RED}Error: angles.md/strategy.json required, or use --resume BATCH_ID${NC}" >&2
+        echo "Usage: ww lfs-agent <angles.md|strategy.json> [--yolo|--app-step] [--resume BATCH_ID] [--from STAGE] [--workers N]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_agent.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_batch() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww batch <batch_id> [--workers N] [--clean-output|--resume-missing|--append-version]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/batch.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_video() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: video subcommand required${NC}" >&2
+        echo "Usage: ww video batch <batch_id> --product PRODUCT [--brief '...']" >&2
+        echo "       ww video assemble <batch_id> [--track]" >&2
+        echo "       ww video track <batch_id>" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/vid-gen.py" --base-path "$BASE_PATH" "$@"
+}
+
+cmd_storyboard() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script path/task ID or --batch required${NC}" >&2
+        echo "Usage: ww storyboard <script> [--style '...']" >&2
+        echo "       ww storyboard --batch <batch_id> [--style '...']" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/storyboard.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_enrich() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required (or use --single for single script mode)${NC}" >&2
+        echo "Usage: ww enrich <batch_id> [--workers N] [--force]" >&2
+        echo "       ww enrich --single <script> --product <code>" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/enrich.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_upload() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww upload <batch_id> [--dry-run] [--verbose]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/batch_upload.py" --batch "$@" --base-path "$BASE_PATH"
+}
+
+cmd_meta_upload() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww meta-upload <batch_id> [--dry-run] [--allow-unfinished-lfs] [--ad-account act_123456789]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/meta_upload.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_clarity_pull() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/clarity_pull.py" "$@"
+}
+
+cmd_perf_pull() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/perf_pull.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_validate() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script_path required${NC}" >&2
+        echo "Usage: ww validate <script_path> [--task-id <task_id>] [--quiet]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/validate.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_pdp() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: subcommand required${NC}" >&2
+        echo "Usage: ww pdp new <brief.yaml> [--skip-images] [--dry-run]" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/ww_pdp.py" "$@"
+}
+
+cmd_imagebatch() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww imagebatch <batch_id> [batch_id2 ...] [--workers N] [--rpm N] [--engine gemini|fal]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/imagegen.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_headlines() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script path, --batch BATCH_ID, or product/arc/mech required${NC}" >&2
+        echo "Usage: ww headlines <script.md>                  # Per-script" >&2
+        echo "       ww headlines --batch <BATCH_ID>           # All scripts in batch" >&2
+        echo "       ww headlines <product> <arc> <mech>       # Legacy product-level" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/headlines.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_copy() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: product, archetype, and mechanism required${NC}" >&2
+        echo "Usage: ww copy <product> <archetype> <mechanism> [--count N] [--save]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/primary_copy.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_animated_brief() {
+    if [ -z "$1" ] || [ -z "$2" ]; then
+        echo -e "${RED}Error: product and concept required${NC}" >&2
+        echo "Usage: ww animated-brief <product> \"concept description...\" [--model MODEL] [--batch-id ID]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/animated_brief.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_animated() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww animated <batch_id> [--workers N] [--model MODEL] [--frames-only] [--skip-frames] [--full] [--qa] [--stitch]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/animated.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_visualize() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script path or --batch required${NC}" >&2
+        echo "Usage: ww visualize <script_path>" >&2
+        echo "       ww visualize --batch <batch_id>" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/visualize.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_avatar() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww avatar <batch_id> [--run] [--dry-run] [--persona <name>]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/avatar.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_qa() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script path or --batch required${NC}" >&2
+        echo "Usage: ww qa <script_path> [--product 'Name']" >&2
+        echo "       ww qa --batch <batch_id>" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/qa.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_qa_craft() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: script path or --batch required${NC}" >&2
+        echo "Usage: ww qa-craft <script_path>" >&2
+        echo "       ww qa-craft --batch <batch_id> [--workers N]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/craft_audit.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_verify() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: --batch <batch_id> required${NC}" >&2
+        echo "Usage: ww lfs-verify --batch <batch_id> [--compact] [--json]" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_verify.py" "$@"
+}
+
+cmd_lfs_opener_rewrite() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: --batch <batch_id> or --script <path> required${NC}" >&2
+        echo "Usage: ww lfs-opener-rewrite --batch <batch_id> [--dry-run] [--include-partial] [--workers N]" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_rewrite.py" "$@"
+}
+
+cmd_lfs_finish() {
+    local batch_id="$1"
+    if [ -z "$batch_id" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww lfs-finish <batch_id>" >&2
+        echo "       Runs the full LFS QA chain: verify → fix → opener-check → opener-rewrite → final verify" >&2
+        exit 1
+    fi
+    local batch_dir="$BASE_PATH/batches/$batch_id"
+    if [ ! -d "$batch_dir" ]; then
+        echo -e "${RED}Error: batch directory not found: $batch_dir${NC}" >&2
+        echo "       Did you mean one of these?" >&2
+        ls "$BASE_PATH/batches" 2>/dev/null | grep -i "$batch_id" | head -5 | sed 's/^/         /' >&2
+        exit 1
+    fi
+    if [ ! -f "$batch_dir/spec.json" ]; then
+        echo -e "${RED}Error: $batch_dir/spec.json missing${NC}" >&2
+        echo "       LFS QA needs a spec.json with product + cta_text fields." >&2
+        exit 1
+    fi
+    shift
+    local output_subdir="output"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --output-subdir)
+                output_subdir="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}Error: unknown lfs-finish option: $1${NC}" >&2
+                echo "Usage: ww lfs-finish <batch_id> [--output-subdir output-chiefed]" >&2
+                exit 1
+                ;;
+        esac
+    done
+    if [ ! -d "$batch_dir/$output_subdir" ] || [ -z "$(ls -A "$batch_dir/$output_subdir" 2>/dev/null)" ]; then
+        echo -e "${RED}Error: $batch_dir/$output_subdir is empty or missing${NC}" >&2
+        echo "       Run \`ww batch $batch_id\` first, or choose the correct --output-subdir." >&2
+        exit 1
+    fi
+    local verify_status=0
+    local fix_status=0
+    local opener_status=0
+    local rewrite_status=0
+    local final_verify_status=0
+    local final_opener_status=0
+    local max_repair_rounds="${LFS_FINISH_MAX_ROUNDS:-4}"
+    local fix_rounds_run=0
+    local opener_rounds_run=0
+
+    echo -e "\n${YELLOW}=== [1/4] verify ===${NC}"
+    set +e
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_verify.py" --batch "$batch_id" --compact --output-subdir "$output_subdir"
+    verify_status=$?
+    set -e
+    if [ $verify_status -ne 0 ]; then
+        echo -e "${YELLOW}  Initial verifier found issues — continuing to fix${NC}"
+    fi
+
+    final_verify_status=$verify_status
+    local fix_round=1
+    while [ $fix_round -le "$max_repair_rounds" ] && [ $final_verify_status -ne 0 ]; do
+        echo -e "\n${YELLOW}=== [2/$max_repair_rounds] compliance-fix round $fix_round ===${NC}"
+        set +e
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_fix.py" --batch "$batch_id" --max-passes 1 --output-subdir "$output_subdir"
+        fix_status=$?
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_verify.py" --batch "$batch_id" --compact --output-subdir "$output_subdir"
+        final_verify_status=$?
+        set -e
+        fix_rounds_run=$fix_round
+        if [ $final_verify_status -eq 0 ]; then
+            echo -e "${GREEN}  Compliance clean after round $fix_round${NC}"
+            break
+        fi
+        echo -e "${YELLOW}  Compliance issues remain after round $fix_round${NC}"
+        fix_round=$((fix_round + 1))
+    done
+
+    echo -e "\n${YELLOW}=== [3/5] opener-check ===${NC}"
+    set +e
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_check.py" --batch "$batch_id" --workers 6 --output-subdir "$output_subdir"
+    opener_status=$?
+    set -e
+    final_opener_status=$opener_status
+    local opener_round=1
+    while [ $opener_round -le "$max_repair_rounds" ] && [ $final_opener_status -ne 0 ]; do
+        echo -e "\n${YELLOW}=== [3b/$max_repair_rounds] opener-rewrite round $opener_round (FAILs only; PARTIALs keep edge) ===${NC}"
+        set +e
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_rewrite.py" --batch "$batch_id" --output-subdir "$output_subdir"
+        rewrite_status=$?
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_check.py" --batch "$batch_id" --workers 6 --output-subdir "$output_subdir"
+        final_opener_status=$?
+        set -e
+        opener_rounds_run=$opener_round
+        if [ $final_opener_status -eq 0 ]; then
+            echo -e "${GREEN}  Openers clean after round $opener_round${NC}"
+            break
+        fi
+        echo -e "${YELLOW}  Opener issues remain after round $opener_round${NC}"
+        opener_round=$((opener_round + 1))
+    done
+
+    echo -e "\n${YELLOW}=== [4/5] final verify ===${NC}"
+    set +e
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_verify.py" --batch "$batch_id" --compact --output-subdir "$output_subdir"
+    final_verify_status=$?
+    set -e
+
+    echo -e "\n${YELLOW}=== [5/5] final opener-check ===${NC}"
+    if [ $final_opener_status -eq 0 ]; then
+        echo -e "${GREEN}  Openers already clean after repair loop${NC}"
+    else
+        set +e
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_check.py" --batch "$batch_id" --workers 6 --output-subdir "$output_subdir"
+        final_opener_status=$?
+        set -e
+    fi
+
+    echo -e "\n${YELLOW}=== finish report ===${NC}"
+    set +e
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_finish_report.py" \
+        --batch "$batch_id" \
+        --initial-verify "$verify_status" \
+        --fix "$fix_status" \
+        --initial-opener "$opener_status" \
+        --rewrite "$rewrite_status" \
+        --final-verify "$final_verify_status" \
+        --final-opener "$final_opener_status" \
+        --fix-rounds "$fix_rounds_run" \
+        --opener-rounds "$opener_rounds_run" \
+        --max-rounds "$max_repair_rounds" \
+        --output-subdir "$output_subdir"
+    report_status=$?
+    set -e
+
+    if [ $final_verify_status -ne 0 ] || [ $final_opener_status -ne 0 ] || [ $report_status -ne 0 ]; then
+        echo -e "${RED}  LFS finish completed with remaining issues${NC}" >&2
+        return 1
+    fi
+    echo -e "${GREEN}  LFS finish clean${NC}"
+}
+
+cmd_lfs_opener_check() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: --batch <batch_id> or --script <path> required${NC}" >&2
+        echo "Usage: ww lfs-opener-check --batch <batch_id> [--workers N] [--json]" >&2
+        echo "       ww lfs-opener-check --script <path>" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_opener_check.py" "$@"
+}
+
+cmd_lfs_fix() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: --batch <batch_id> required${NC}" >&2
+        echo "Usage: ww lfs-fix --batch <batch_id> [--dry-run] [--max-passes N] [--only substr,...]" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_fix.py" "$@"
+}
+
+cmd_lfs_outline() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww lfs-outline <batch_id> [--workers N] [--force] [--dry-run] [--max-attempts N]" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_outline.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_v4() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: strategy JSON required${NC}" >&2
+        echo "Usage: ww lfs-v4 <strategy.json> [--workers N] [--generation-workers N] [--output-subdir DIR]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_v4.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_v41() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: strategy JSON or folder required${NC}" >&2
+        echo "Usage: ww lfs-v41 <strategy.json|dir> [--jobs N] [--workers N] [--generation-workers N] [--output-subdir DIR]" >&2
+        echo "       ww lfs-v41 acceptance --gold|--real [options]" >&2
+        exit 1
+    fi
+
+    if [ "$1" = "acceptance" ]; then
+        "$PYTHON_BIN" "$SCRIPT_DIR/lfs_v41_acceptance.py" "$@" --base-path "$BASE_PATH"
+        return
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_v41.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_chief() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww lfs-chief <batch_id> [--input-subdir output] [--output-subdir output-chiefed] [--docs PATH]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_chief.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_lfs_semantic() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww lfs-semantic <batch_id> [--output-subdir output-chiefed] [--max-attempts N]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/lfs_semantic.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_research_cards() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: product code or product folder required${NC}" >&2
+        echo "Usage: ww research-cards <product> [--verify] [--dry-run] [--force] [--json]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/research_cards.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_rank_combos() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: product code or batch ID required${NC}" >&2
+        echo "Usage: ww rank-combos <product|batch_id> [--axes hooks,bridges] [--json]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/rank_combos.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_preflight() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww preflight <batch_id> [--upload] [--meta] [--all] [--test]" >&2
+        exit 1
+    fi
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/preflight.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_dashboard() {
+    echo -e "${BLUE}Opening WW-2 Dashboard...${NC}"
+    # Open browser after a short delay
+    (sleep 1 && open "http://localhost:${1:-8420}" 2>/dev/null || xdg-open "http://localhost:${1:-8420}" 2>/dev/null) &
+    "$PYTHON_BIN" "$SCRIPT_DIR/dashboard.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_scan() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/scan.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_research() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/research.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_strategy() {
+    if [ "$1" != "build" ]; then
+        echo -e "${RED}Error: strategy subcommand required${NC}" >&2
+        echo "Usage: ww strategy build --product PRODUCT --batch-id BATCH_ID --plan strategy-plan.yaml" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/strategy_build.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_simulate() {
+    "$PYTHON_BIN" "$SCRIPT_DIR/simulate.py" "$@" --base-path "$BASE_PATH"
+}
+
+cmd_learn() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: rule text required${NC}" >&2
+        echo "Usage: ww learn \"Product name must appear in script body\"" >&2
+        exit 1
+    fi
+
+    local rule_text="$1"
+    local agents_file="$BASE_PATH/AGENTS.md"
+    local today=$(date +%Y-%m-%d)
+
+    # Create a bead to track this correction
+    local bd_output
+    bd_output=$(bd create --title="QG: $rule_text" --description="Quality gate learned from human correction" --type=task --priority=2 2>&1)
+    local bead_id
+    bead_id=$(echo "$bd_output" | grep -o 'ww-2-[a-z0-9]*')
+
+    if [ -z "$bead_id" ]; then
+        echo -e "${RED}Error: Failed to create bead${NC}" >&2
+        echo "$bd_output" >&2
+        exit 1
+    fi
+
+    # Get next QG number from AGENTS.md
+    local last_num
+    last_num=$(grep -o 'QG-[0-9]*' "$agents_file" | sort -t- -k2 -n | tail -1 | grep -o '[0-9]*')
+    if [ -z "$last_num" ]; then
+        last_num=0
+    fi
+    local next_num=$(( 10#$last_num + 1 ))
+    local gate_id=$(printf "QG-%03d" "$next_num")
+
+    # Insert new gate row before the QUALITY_GATES_END marker
+    local new_row="| $gate_id | $rule_text | $today | $bead_id |"
+    # Use awk to insert before the end marker (sed chokes on pipe chars in table rows)
+    awk -v row="$new_row" '/<!-- QUALITY_GATES_END -->/{print row}1' "$agents_file" > "$agents_file.tmp" && mv "$agents_file.tmp" "$agents_file"
+
+    # Close the bead as applied
+    bd close "$bead_id" --reason="Applied as $gate_id in AGENTS.md" > /dev/null 2>&1
+
+    echo -e "${GREEN}Learned:${NC} $gate_id - $rule_text"
+    echo -e "${BLUE}Bead:${NC} $bead_id (closed)"
+    echo -e "${YELLOW}Next generation will pick this up automatically.${NC}"
+}
+
+cmd_status() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: batch_id required${NC}" >&2
+        echo "Usage: ww status <batch_id>" >&2
+        exit 1
+    fi
+
+    local batch_id="$1"
+    local report_file
+    set +e
+    report_file=$(PYTHONPATH="$SCRIPT_DIR" "$PYTHON_BIN" << EOF
+from pathlib import Path
+from ww_paths import resolve_batch_dir
+base = Path("$BASE_PATH")
+batch = "$batch_id"
+try:
+    batch_dir = resolve_batch_dir(batch, base_path=base)
+except Exception as exc:
+    raise SystemExit(str(exc))
+for name in ("lfs-v41-report.json", "image-report.json", "report.json"):
+    path = batch_dir / name
+    if path.exists():
+        print(path)
+        raise SystemExit(0)
+raise SystemExit(f"No report found in {batch_dir}")
+EOF
+)
+    local resolver_status=$?
+    set -e
+
+    if [ $resolver_status -ne 0 ] || [ ! -f "$report_file" ]; then
+        echo -e "${RED}Error: No report found for batch '$batch_id'${NC}" >&2
+        echo "$report_file" >&2
+        exit 1
+    fi
+
+    # Parse and display report
+    echo -e "${BLUE}Batch Status: $batch_id${NC}"
+    echo "----------------------------------------"
+
+    # Use Python to parse JSON and display nicely
+    "$PYTHON_BIN" << EOF
+import json
+from pathlib import Path
+
+report_file = Path("$report_file")
+report = json.loads(report_file.read_text())
+
+total = report.get("total_tasks", report.get("total", 0))
+success = report.get("successful", report.get("generated", 0))
+failed = report.get("failed", 0)
+validated = report.get("validated")
+schema = report.get("schema")
+
+if schema:
+    print(f"Schema:        {schema}")
+print(f"Total tasks:   {total}")
+print(f"Successful:    {success}")
+print(f"Failed:        {failed}")
+if validated is not None:
+    print(f"Validated:     {validated}")
+
+print()
+
+# Show failed tasks if any
+results = report.get("results", [])
+failed_tasks = [r for r in results if not r.get("success")]
+if failed_tasks:
+    print("Failed tasks:")
+    for t in failed_tasks:
+        print(f"  ✗ {t.get('task_id')}")
+        if t.get('error'):
+            print(f"    Error: {t.get('error')}")
+
+# Show validation failures if any
+validation_results = report.get("validation_results", [])
+if validation_results:
+    failed_validations = [v for v in validation_results if not v.get("passed")]
+    if failed_validations:
+        print()
+        print("Validation failures:")
+        for v in failed_validations:
+            print(f"  ✗ {v.get('task_id')}")
+            errors = v.get('errors', [])
+            for e in errors[:3]:  # Show first 3 errors
+                print(f"    - {e}")
+            if len(errors) > 3:
+                print(f"    ... and {len(errors) - 3} more")
+EOF
+}
+
+# Main command dispatcher
+case "${1:-}" in
+    plan)
+        shift
+        cmd_plan "$@"
+        ;;
+    generate)
+        shift
+        cmd_generate "$@"
+        ;;
+    compile-spec)
+        shift
+        cmd_compile_spec "$@"
+        ;;
+    compile-angles)
+        shift
+        cmd_compile_angles "$@"
+        ;;
+    rich-strategy)
+        shift
+        cmd_rich_strategy "$@"
+        ;;
+    product-package)
+        shift
+        exec "$PYTHON_BIN" "$SCRIPT_DIR/product_package.py" "$@"
+        ;;
+    lfs-brief)
+        shift
+        cmd_lfs_brief "$@"
+        ;;
+    lfs-agent)
+        shift
+        cmd_lfs_agent "$@"
+        ;;
+    batch)
+        shift
+        cmd_batch "$@"
+        ;;
+    video)
+        shift
+        cmd_video "$@"
+        ;;
+    storyboard)
+        shift
+        cmd_storyboard "$@"
+        ;;
+    enrich)
+        shift
+        cmd_enrich "$@"
+        ;;
+    upload)
+        shift
+        cmd_upload "$@"
+        ;;
+    meta-upload)
+        shift
+        cmd_meta_upload "$@"
+        ;;
+    perf-pull)
+        shift
+        cmd_perf_pull "$@"
+        ;;
+    clarity-pull)
+        shift
+        cmd_clarity_pull "$@"
+        ;;
+    pdp)
+        shift
+        cmd_pdp "$@"
+        ;;
+    imagebatch)
+        shift
+        cmd_imagebatch "$@"
+        ;;
+    headlines)
+        shift
+        cmd_headlines "$@"
+        ;;
+    copy)
+        shift
+        cmd_copy "$@"
+        ;;
+    animated-brief)
+        shift
+        cmd_animated_brief "$@"
+        ;;
+    animated)
+        shift
+        cmd_animated "$@"
+        ;;
+    visualize)
+        shift
+        cmd_visualize "$@"
+        ;;
+    avatar)
+        shift
+        cmd_avatar "$@"
+        ;;
+    qa)
+        shift
+        cmd_qa "$@"
+        ;;
+    qa-craft)
+        shift
+        cmd_qa_craft "$@"
+        ;;
+    rank-combos)
+        shift
+        cmd_rank_combos "$@"
+        ;;
+    lfs-verify)
+        shift
+        cmd_lfs_verify "$@"
+        ;;
+    lfs-fix)
+        shift
+        cmd_lfs_fix "$@"
+        ;;
+    lfs-outline)
+        shift
+        cmd_lfs_outline "$@"
+        ;;
+    lfs-v4)
+        shift
+        cmd_lfs_v4 "$@"
+        ;;
+    lfs-v41|lfs-v4.1)
+        shift
+        cmd_lfs_v41 "$@"
+        ;;
+    lfs-chief)
+        shift
+        cmd_lfs_chief "$@"
+        ;;
+    lfs-semantic)
+        shift
+        cmd_lfs_semantic "$@"
+        ;;
+    lfs-opener-check)
+        shift
+        cmd_lfs_opener_check "$@"
+        ;;
+    lfs-opener-rewrite)
+        shift
+        cmd_lfs_opener_rewrite "$@"
+        ;;
+    lfs-finish)
+        shift
+        cmd_lfs_finish "$@"
+        ;;
+    preflight)
+        shift
+        cmd_preflight "$@"
+        ;;
+    dashboard)
+        shift
+        cmd_dashboard "$@"
+        ;;
+    scan)
+        shift
+        cmd_scan "$@"
+        ;;
+    research)
+        shift
+        cmd_research "$@"
+        ;;
+    strategy)
+        shift
+        cmd_strategy "$@"
+        ;;
+    research-cards)
+        shift
+        cmd_research_cards "$@"
+        ;;
+    validate)
+        shift
+        cmd_validate "$@"
+        ;;
+    simulate)
+        shift
+        cmd_simulate "$@"
+        ;;
+    learn)
+        shift
+        cmd_learn "$@"
+        ;;
+    products)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/products.py" "$@" --base-path "$BASE_PATH"
+        ;;
+    broll)
+        shift
+        "$PYTHON_BIN" /Users/borko/Documents/WW-Ralph/video/scripts/smart_broll_pipeline.py "$@"
+        ;;
+    eval)
+        shift
+        "$BASE_PATH/evals/run.sh" "$@"
+        ;;
+    status)
+        shift
+        cmd_status "$@"
+        ;;
+    hire)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/upwork_hire.py" "$@" --base-path "$BASE_PATH"
+        ;;
+    lp-rip)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/lp_rip.py" "$@"
+        ;;
+    ad-scrape)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/ad_scrape.py" "$@"
+        ;;
+    tweet)
+        shift
+        if [ -z "$1" ]; then
+            echo -e "${RED}Error: tweet URL or ID required${NC}" >&2
+            echo "Usage: ww tweet <URL> [--thread] [--save] [--json]" >&2
+            exit 1
+        fi
+        "$PYTHON_BIN" "$SCRIPT_DIR/tweet_read.py" "$@"
+        ;;
+    x-signal)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/x_signal.py" "$@"
+        ;;
+    slides)
+        shift
+        if [ -z "$1" ] || [ -z "$2" ]; then
+            echo -e "${RED}Error: product and concept required${NC}" >&2
+            echo "Usage: ww slides <product> \"concept\" --format <fmt> [--slides N] [--run]" >&2
+            echo "Formats: mistake-list | listicle | warning | qa | challenge" >&2
+            exit 1
+        fi
+        "$PYTHON_BIN" "$SCRIPT_DIR/slides.py" "$@"
+        ;;
+    transcribe)
+        shift
+        BORIS_DIR="$BASE_PATH/boris-black-box"
+        # Single file or directory
+        if [ -f "$1" ]; then
+            doppler run --project boris-black-box --config dev -- bun run "$BORIS_DIR/scripts/transcribe-local.ts" "$@"
+        elif [ -d "$1" ]; then
+            doppler run --project boris-black-box --config dev -- bun run "$BORIS_DIR/scripts/transcribe-batch.ts" "$@"
+        else
+            echo "Usage: ww transcribe <file.mp4|directory> [--workers 5] [--chunk-seconds 30]"
+            exit 1
+        fi
+        ;;
+    log)
+        shift
+        "$PYTHON_BIN" "$SCRIPT_DIR/tracker_log.py" "$@"
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    "")
+        show_help
+        exit 1
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown command '$1'${NC}" >&2
+        echo "Run 'ww help' for usage" >&2
+        exit 1
+        ;;
+esac

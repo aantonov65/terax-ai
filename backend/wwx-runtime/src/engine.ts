@@ -220,16 +220,22 @@ export class LegacyLfs41Engine implements Engine {
   }
 
   private pythonBin(): string {
+    if (process.env.PYTHON_BIN_PATH) return process.env.PYTHON_BIN_PATH;
     if (process.env.WWX_PYTHON_BIN) return process.env.WWX_PYTHON_BIN;
     const venvPython = join(this.engineRoot, ".venv", "bin", "python");
     return existsSync(venvPython) ? venvPython : "python3";
   }
 
   private runWw(args: string[]): void {
+    const python = process.env.WW_PYTHON ?? process.env.PYTHON_BIN_PATH ?? process.env.WWX_PYTHON_BIN;
     const output = spawnSync(join(this.engineRoot, "tools", "ww"), args, {
       cwd: this.engineRoot,
       encoding: "utf8",
-      env: { ...process.env, WW_BASE_PATH: basePathFromArgs(args) ?? process.env.WW_BASE_PATH ?? this.engineRoot },
+      env: {
+        ...process.env,
+        ...(python ? { WW_PYTHON: python } : {}),
+        WW_BASE_PATH: basePathFromArgs(args) ?? process.env.WW_BASE_PATH ?? this.engineRoot,
+      },
       maxBuffer: 1024 * 1024 * 100,
     });
     if (output.error) throw output.error;

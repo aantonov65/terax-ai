@@ -1,0 +1,56 @@
+{
+  "format": "LFS",
+  "format_name": "Long Form Static",
+  "description": "1400-1700 word Facebook/IG ad copy for health/wellness products",
+
+  "word_count": {
+    "min": 1300,
+    "target": 1400,
+    "max": 1500
+  },
+
+  "character_count": {
+    "max": 9999
+  },
+
+  "sections": {
+    "count": 11,
+    "names": [
+      "SHOCK HOOK",
+      "PERSONAL PAIN SETUP",
+      "GRAPHIC SYMPTOM BREAKDOWN",
+      "FAILED SOLUTIONS",
+      "ROCK BOTTOM MOMENT",
+      "DISCOVERY + MECHANISM",
+      "TIMELINE OF RECOVERY",
+      "VICTORY STATE",
+      "DIRECT READER ADDRESS",
+      "PRODUCT CTA",
+      "P.S. CLOSE"
+    ]
+  },
+
+  "section_divider": "========",
+  "min_dividers": 6,
+
+  "cta": {
+    "format": "emoji_bullets",
+    "emojis": ["👉", "👍", "🌿", "📍", "⭐"],
+    "required_text": "Click \"LEARN MORE\" below"
+  },
+
+  "forbidden_phrases": [
+    "In this video",
+    "Let me tell you",
+    "What I'm about to share",
+    "I know how you feel",
+    "Disclaimer:",
+    "*Results may vary*",
+    "Dr. Mitchell",
+    "Dr. Chen",
+    "Dr. Smith"
+  ],
+
+  "hook_types": ["RAGE", "THIRD", "DESP", "DISMISS", "CONFESS", "MISDIAG"],
+  "rock_bottom_types": ["RBPUB", "RBREL", "RBPHOTO", "RBSEARCH", "RBEVENT"]
+}
