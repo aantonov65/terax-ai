@@ -22,6 +22,8 @@ export type Store = {
   listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]>;
   ensureBatch(workspaceId: string, batchId: string, input: CreateAdsInput): Promise<Batch>;
   enqueueJob(workspaceId: string, batchId: string, type: QueueJob["type"], payload: Record<string, unknown>): Promise<QueueJob>;
+  getLatestJobPayload(workspaceId: string, batchId: string): Promise<Record<string, unknown> | null>;
+  claimJob(jobId: string, workerId: string, leaseMs: number): Promise<ClaimedJob | null>;
   claimNextJob(workerId: string, leaseMs: number): Promise<ClaimedJob | null>;
   heartbeatJob(jobId: string, runId: string, workerId: string, leaseMs: number): Promise<void>;
   completeJob(jobId: string, runId: string, status: RunStatus): Promise<void>;
@@ -132,6 +134,13 @@ export class MemoryStore implements Store {
     return job;
   }
 
+  async getLatestJobPayload(workspaceId: string, batchId: string): Promise<Record<string, unknown> | null> {
+    const latest = [...this.jobs.values()]
+      .filter((job) => job.workspaceId === workspaceId && job.batchId === batchId && (job.type === "create_ads" || job.type === "continue_batch"))
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    return latest?.payload ?? null;
+  }
+
   async claimNextJob(workerId: string, leaseMs: number): Promise<ClaimedJob | null> {
     const now = nowMs();
     const running = [...this.jobs.values()].filter((job) => job.status === "running" && job.leaseExpiresAt && job.leaseExpiresAt > now);
@@ -150,6 +159,29 @@ export class MemoryStore implements Store {
       )
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (!job) return null;
+    const run = this.startRun(job.workspaceId, job.batchId);
+    job.status = "running";
+    job.attempts += 1;
+    job.leaseOwner = workerId;
+    job.leaseExpiresAt = now + leaseMs;
+    job.runId = run.id;
+    job.updatedAt = now;
+    return { ...job, run };
+  }
+
+  async claimJob(jobId: string, workerId: string, leaseMs: number): Promise<ClaimedJob | null> {
+    const now = nowMs();
+    const job = this.jobs.get(jobId);
+    if (!job || job.attempts >= job.maxAttempts) return null;
+    const running = [...this.jobs.values()].filter((item) => item.status === "running" && item.leaseExpiresAt && item.leaseExpiresAt > now);
+    if (running.length >= this.maxActiveJobs && job.status !== "running") return null;
+    const sameBatchRunning = running.some((active) =>
+      active.id !== job.id &&
+      active.workspaceId === job.workspaceId &&
+      active.batchId === job.batchId
+    );
+    if (sameBatchRunning) return null;
+    if (job.status !== "queued" && !(job.status === "running" && (job.leaseExpiresAt ?? 0) <= now)) return null;
     const run = this.startRun(job.workspaceId, job.batchId);
     job.status = "running";
     job.attempts += 1;

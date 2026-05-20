@@ -5,7 +5,8 @@ This service is the hosted blackbox boundary for LFS4.1 handoff. WWX Desktop sho
 ## Services
 
 - API service: `pnpm backend:api`
-- Worker service: `pnpm backend:worker`
+- Trigger.dev task bundle: `pnpm trigger:deploy`
+- Worker service: `pnpm backend:worker` for local/fallback queue processing only
 - Local one-process smoke mode: `WWX_RUNTIME_EMBED_WORKER=1 pnpm backend:api`
 
 The compatibility API exposes only public-safe batch tools: create ads, research runs, status, replayable SSE, final ads, asset inputs, metrics, analysis, Q&A, stop, continue, and export.
@@ -42,7 +43,9 @@ Admin observability lives behind `/admin` and `/admin/*`. The operator desktop m
 - `WWX_DEFAULT_WORKSPACE_ID`: fallback workspace for invite-only internal usage.
 - `WWX_MINIMUM_DESKTOP_VERSION`: returns `426 Upgrade Required` for older clients.
 - `TRIGGER_SECRET_KEY`: enables Trigger.dev Cloud dispatch for `/runs`. Without it, runs use a no-op trigger for local testing.
+- `TRIGGER_PROJECT_REF`: Trigger.dev project reference used by `trigger.config.ts`.
 - `TRIGGER_API_URL`: optional Trigger API base URL, defaults to `https://api.trigger.dev`.
+- `TRIGGER_LFS_CONCURRENCY`: defaults to `6`.
 - `SENTRY_DSN`: optional backend/worker crash reporting with pre-send redaction.
 
 Run the migration before starting workers:
@@ -58,12 +61,36 @@ Create these hosted resources:
 
 - Managed Postgres.
 - API service using `backend/wwx-runtime/Dockerfile.api`.
-- Worker service using `backend/wwx-runtime/Dockerfile.worker` for the local migration/fallback queue.
+- Trigger.dev Cloud project for durable workflow tasks.
+- Optional worker service using `backend/wwx-runtime/Dockerfile.worker` only for local migration/fallback queue processing.
 - Cloudflare R2 bucket for artifact bodies.
 - Clerk invite-only application for Desktop OAuth/OIDC.
-- Trigger.dev Cloud project for durable workflow tasks.
 
-Set the same `DATABASE_URL` and R2 variables on both API and worker services. Set `WORKER_CONCURRENCY=6` on the worker. Do not set `WWX_RUNTIME_EMBED_WORKER` in hosted production.
+Set the same `DATABASE_URL`, R2 variables, `WW2_ENGINE_ROOT`, `WWX_RUNTIME_WORK_ROOT`, Clerk/Sentry variables, and provider keys in the Trigger.dev task environment. Set `TRIGGER_SECRET_KEY` on the API service so `/runs` can schedule tasks. Do not set `WWX_RUNTIME_EMBED_WORKER` in hosted production.
+
+Deploy Trigger tasks after environment variables are present:
+
+```bash
+pnpm trigger:deploy
+```
+
+The API enqueues the exact runtime job first, then triggers Trigger.dev with only safe task payload fields such as `runId`, `jobId`, `batchId`, `workflowType`, and `correlationId`. Strategy JSON and angle markdown stay in the backend job ledger and are not sent as Trigger-visible payload.
+
+## Desktop Hosted Runtime Environment
+
+Set these at Desktop build time:
+
+- `VITE_WWX_API_URL`: hosted API base URL.
+- `VITE_WWX_RUNTIME_MODE=hosted`: forces hosted runs. `auto` uses hosted when `VITE_WWX_API_URL` exists. `local` keeps the Tauri local fallback.
+- `VITE_WWX_WORKSPACE_ID`: default workspace, normally `ws_default` for the first internal rollout.
+- `VITE_WWX_AUTH_ISSUER`: Clerk/OIDC issuer URL.
+- `VITE_WWX_AUTH_CLIENT_ID`: Clerk public OAuth/OIDC client ID.
+- `VITE_WWX_AUTH_REDIRECT_PORT`: defaults to `17891`.
+- `VITE_WWX_AUTH_REDIRECT_URI`: defaults to `http://127.0.0.1:17891/auth/callback`; add this callback to Clerk.
+- `VITE_WWX_AUTH_SCOPE`: defaults to `openid profile email offline_access`.
+- `VITE_WWX_CLIENT_VERSION`: sent to the API for minimum-version enforcement.
+
+The Desktop stores the Clerk/OIDC session in the OS keychain, starts LFS through `POST /runs`, records hosted runs into local SQLite as a read cache, polls safe run status, and mirrors public final scripts/asset inputs/analysis back into the existing artifact viewer. The local Tauri LFS command remains available only when the hosted runtime is disabled.
 
 ## Runtime Guarantees
 

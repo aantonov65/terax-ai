@@ -116,6 +116,22 @@ export class PostgresStore implements Store {
     return mapQueueJob(result.rows[0]);
   }
 
+  async getLatestJobPayload(workspaceId: string, batchId: string): Promise<Record<string, unknown> | null> {
+    const result = await this.pool.query(
+      `
+      SELECT payload
+      FROM job_queue
+      WHERE workspace_id = $1
+        AND batch_id = $2
+        AND type IN ('create_ads', 'continue_batch')
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [workspaceId, batchId],
+    );
+    return result.rows[0] ? asRecord(result.rows[0].payload) : null;
+  }
+
   async claimNextJob(workerId: string, leaseMs: number): Promise<ClaimedJob | null> {
     const client = await this.pool.connect();
     try {
@@ -155,6 +171,80 @@ export class PostgresStore implements Store {
       );
       const jobRow = selected.rows[0];
       if (!jobRow) {
+        await client.query("COMMIT");
+        return null;
+      }
+      const run = await this.startRun(client, jobRow.workspace_id, jobRow.batch_id, now);
+      const updated = await client.query(
+        `
+        UPDATE job_queue
+        SET status = 'running',
+            attempts = attempts + 1,
+            lease_owner = $2,
+            lease_expires_at = $3,
+            run_id = $4,
+            updated_at = $5
+        WHERE id = $1
+        RETURNING *
+        `,
+        [jobRow.id, workerId, now + leaseMs, run.id, now],
+      );
+      await client.query("COMMIT");
+      return { ...mapQueueJob(updated.rows[0]), run };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async claimJob(jobId: string, workerId: string, leaseMs: number): Promise<ClaimedJob | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const now = nowMs();
+      const selected = await client.query(
+        `
+        SELECT *
+        FROM job_queue
+        WHERE id = $2
+          AND attempts < max_attempts
+          AND (
+            status = 'queued'
+            OR (status = 'running' AND COALESCE(lease_expires_at, 0) <= $1)
+          )
+        FOR UPDATE SKIP LOCKED
+        `,
+        [now, jobId],
+      );
+      const jobRow = selected.rows[0];
+      if (!jobRow) {
+        await client.query("COMMIT");
+        return null;
+      }
+      const active = await client.query(
+        "SELECT COUNT(*)::int AS count FROM job_queue WHERE status = 'running' AND lease_expires_at > $1 AND id <> $2",
+        [now, jobId],
+      );
+      if (Number(active.rows[0]?.count ?? 0) >= this.maxActiveJobs) {
+        await client.query("COMMIT");
+        return null;
+      }
+      const sameBatchActive = await client.query(
+        `
+        SELECT 1
+        FROM job_queue
+        WHERE id <> $2
+          AND workspace_id = $3
+          AND batch_id = $4
+          AND status = 'running'
+          AND COALESCE(lease_expires_at, 0) > $1
+        LIMIT 1
+        `,
+        [now, jobId, jobRow.workspace_id, jobRow.batch_id],
+      );
+      if (sameBatchActive.rows[0]) {
         await client.query("COMMIT");
         return null;
       }

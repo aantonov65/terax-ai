@@ -53,8 +53,11 @@ export class RuntimeService {
     await this.store.clearStop(workspaceId, batchId);
     const status = await this.store.getBatchStatus(workspaceId, batchId);
     if (!status) throw new Error("batch not found");
+    const lastPayload = await this.store.getLatestJobPayload(workspaceId, batchId);
     const job = await this.store.enqueueJob(workspaceId, batchId, "continue_batch", {
+      ...(lastPayload ?? {}),
       productId: status.batch.productId,
+      batchId,
       adCount: status.batch.requestedAdCount,
     });
     await this.store.appendEvent({

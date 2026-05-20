@@ -47,7 +47,7 @@ export type ArtifactSummary = {
   contentSha256?: string;
   content?: string;
   dataUrl?: string;
-  source?: "account" | "local";
+  source?: "account" | "local" | "hosted";
   description?: string;
   size?: number;
   mtime?: number;

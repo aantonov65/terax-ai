@@ -12,5 +12,11 @@
     "resolveJsonModule": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "../../packages/observability/src/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "../../packages/observability/src/**/*.ts",
+    "../../trigger/**/*.ts",
+    "../../trigger.config.ts"
+  ]
 }

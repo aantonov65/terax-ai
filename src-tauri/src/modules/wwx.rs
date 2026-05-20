@@ -396,6 +396,17 @@ pub struct LfsJobInput {
     anthropic_api_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedRunRecordInput {
+    product_id: String,
+    batch_id: String,
+    run_id: String,
+    status: String,
+    current_stage: Option<String>,
+    error: Option<String>,
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2774,6 +2785,45 @@ pub fn wwx_cancel_lfs_job(
         .into_iter()
         .find(|r| r.id == run_id)
         .ok_or_else(|| "run not found after cancel".into())
+}
+
+#[tauri::command]
+pub fn wwx_record_hosted_run(
+    app: AppHandle,
+    input: HostedRunRecordInput,
+) -> Result<WwxRun, String> {
+    let conn = open_db(&app)?;
+    let now = now_ms();
+    conn.execute(
+        r#"
+        INSERT INTO runs (id, batch_id, status, current_stage, started_at, finished_at, error, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?3 IN ('complete', 'blocked', 'failed', 'canceled') THEN ?5 ELSE NULL END, ?6, ?5)
+        ON CONFLICT(id) DO UPDATE SET
+          status=excluded.status,
+          current_stage=excluded.current_stage,
+          finished_at=excluded.finished_at,
+          error=excluded.error,
+          updated_at=excluded.updated_at
+        "#,
+        params![
+            input.run_id,
+            input.batch_id,
+            input.status,
+            input.current_stage,
+            now,
+            input.error
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE batches SET status = ?2, current_stage = ?3, updated_at = ?4, revision = revision + 1 WHERE id = ?1 AND product_id = ?5",
+        params![input.batch_id, input.status, input.current_stage, now, input.product_id],
+    )
+    .map_err(|e| e.to_string())?;
+    list_runs_for_batch(&conn, &input.batch_id)?
+        .into_iter()
+        .find(|run| run.id == input.run_id)
+        .ok_or_else(|| "hosted run was not recorded".into())
 }
 
 #[tauri::command]

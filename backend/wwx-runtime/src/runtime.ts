@@ -32,7 +32,7 @@ export function createRuntimeFromEnv(): RuntimeParts {
     pool ? new PostgresObservabilityRepository(pool) : new MemoryObservabilityRepository(),
   );
   const trigger = createWorkflowTriggerFromEnv();
-  const workflow = new WorkflowRuntimeService(observability, trigger);
+  const workflow = new WorkflowRuntimeService(observability, trigger, service);
   return { store, storage, engine, service, observability, trigger, workflow };
 }
 

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -191,4 +193,56 @@ pub async fn ai_http_stream(
 
     let _ = on_event.send(AiStreamEvent::End);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn wwx_auth_listen_once(port: u16, timeout_ms: Option<u64>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+        listener
+            .set_nonblocking(false)
+            .map_err(|e| e.to_string())?;
+        listener
+            .set_ttl(64)
+            .map_err(|e| e.to_string())?;
+        let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000));
+        listener
+            .set_nonblocking(false)
+            .map_err(|e| e.to_string())?;
+        listener
+            .set_ttl(64)
+            .map_err(|e| e.to_string())?;
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err("auth callback timed out".into());
+            }
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| e.to_string())?;
+            match listener.accept() {
+                Ok((mut stream, _addr)) => {
+                    let mut buf = [0_u8; 8192];
+                    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let first_line = request.lines().next().unwrap_or_default();
+                    let path = first_line
+                        .split_whitespace()
+                        .nth(1)
+                        .ok_or_else(|| "malformed auth callback".to_string())?;
+                    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n<html><body><h1>WWX sign-in complete</h1><p>You can close this window and return to WWX Desktop.</p></body></html>";
+                    let _ = stream.write_all(response);
+                    let _ = stream.flush();
+                    return Ok(query.to_string());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

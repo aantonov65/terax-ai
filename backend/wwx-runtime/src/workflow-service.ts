@@ -8,7 +8,9 @@ import {
 } from "../../../packages/observability/src/index.js";
 import type { AuthContext } from "./auth.js";
 import { publicError } from "./auth.js";
+import type { RuntimeService } from "./service.js";
 import type { WorkflowTrigger } from "./trigger.js";
+import { createAdsInputFromWorkflow } from "./workflow-input.js";
 
 export type WorkflowRunInput = {
   workflowType?: string;
@@ -21,6 +23,7 @@ export class WorkflowRuntimeService {
   constructor(
     private readonly observability: ObservabilityClient,
     private readonly trigger: WorkflowTrigger,
+    private readonly runtimeService: RuntimeService | null = null,
     private readonly minimumClientVersion = process.env.WWX_MINIMUM_DESKTOP_VERSION ?? null,
   ) {}
 
@@ -50,13 +53,14 @@ export class WorkflowRuntimeService {
       desktopClientVersion: auth.clientVersion,
       correlationId: auth.correlationId,
     });
+    const triggerPayload = await this.prepareTriggerPayload(auth, run, input);
     const triggerRun = await this.trigger.trigger({
       runId: run.id,
       workflowType,
       workspaceId: auth.workspaceId,
       createdByUserId: auth.user.id,
       correlationId: run.correlationId,
-      payload: sanitizeOperatorInput(input.payload ?? {}),
+      payload: triggerPayload,
     });
     await this.observability.attachTriggerRunId(run.id, triggerRun.triggerRunId);
     await this.observability.emitRunEvent({
@@ -70,6 +74,9 @@ export class WorkflowRuntimeService {
 
   async stopRun(auth: AuthContext, runId: string): Promise<Record<string, unknown>> {
     const run = await this.requireRun(auth, runId);
+    if (this.runtimeService && run.batchId) {
+      await this.runtimeService.stopBatch(auth.workspaceId, run.batchId, "operator stop requested");
+    }
     await this.observability.emitRunEvent({
       runId: run.id,
       eventType: "stop_requested",
@@ -85,13 +92,14 @@ export class WorkflowRuntimeService {
     if (run.status !== "cancelled" && run.status !== "failed") {
       throw publicError("RUN_NOT_CONTINUABLE", 409);
     }
+    const triggerPayload = await this.prepareResumePayload(auth, run);
     const triggerRun = await this.trigger.trigger({
       runId: run.id,
       workflowType: run.workflowType,
       workspaceId: auth.workspaceId,
       createdByUserId: auth.user.id,
       correlationId: run.correlationId,
-      payload: { resume: true },
+      payload: triggerPayload,
     });
     const resumed = await this.observability.attachTriggerRunId(run.id, triggerRun.triggerRunId);
     await this.observability.markRunQueued(run.id);
@@ -104,13 +112,14 @@ export class WorkflowRuntimeService {
     if (run.status !== "failed" && run.status !== "quarantined") {
       throw publicError("RUN_NOT_RETRYABLE", 409);
     }
+    const triggerPayload = await this.prepareResumePayload(auth, run);
     const triggerRun = await this.trigger.trigger({
       runId: run.id,
       workflowType: run.workflowType,
       workspaceId: auth.workspaceId,
       createdByUserId: auth.user.id,
       correlationId: run.correlationId,
-      payload: { retry: true },
+      payload: { ...triggerPayload, retry: true },
     });
     const retried = await this.observability.attachTriggerRunId(run.id, triggerRun.triggerRunId);
     await this.observability.markRunQueued(run.id);
@@ -244,6 +253,26 @@ export class WorkflowRuntimeService {
   private requireSupportedClient(version: string | null): void {
     if (!this.minimumClientVersion || !version) return;
     if (compareVersions(version, this.minimumClientVersion) < 0) throw publicError("UPGRADE_REQUIRED", 426);
+  }
+
+  private async prepareTriggerPayload(auth: AuthContext, run: RunRecord, input: WorkflowRunInput): Promise<Record<string, unknown>> {
+    if (run.workflowType !== "lfs_ads" || !this.runtimeService) return sanitizeOperatorInput(input.payload ?? {});
+    const createAdsInput = createAdsInputFromWorkflow({
+      productId: input.productId,
+      batchId: input.batchId,
+      payload: input.payload,
+    });
+    const batchId = createAdsInput.batchId ?? run.batchId ?? run.id;
+    const { job } = await this.runtimeService.createAds(auth.workspaceId, batchId, createAdsInput);
+    return { jobId: job.id, batchId, productId: createAdsInput.productId };
+  }
+
+  private async prepareResumePayload(auth: AuthContext, run: RunRecord): Promise<Record<string, unknown>> {
+    if (run.workflowType !== "lfs_ads" || !this.runtimeService || !run.batchId) {
+      return { resume: true };
+    }
+    const { job } = await this.runtimeService.continueBatch(auth.workspaceId, run.batchId);
+    return { resume: true, jobId: job.id, batchId: run.batchId, productId: run.productId };
   }
 }
 

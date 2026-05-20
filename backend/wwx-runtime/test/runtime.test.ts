@@ -7,9 +7,10 @@ import { classifyVisibility } from "../src/security.js";
 import { RuntimeService } from "../src/service.js";
 import { MemoryObjectStorage } from "../src/storage.js";
 import { MemoryStore } from "../src/store.js";
-import { NoopWorkflowTrigger } from "../src/trigger.js";
+import { NoopWorkflowTrigger, type TriggerRunInput, type WorkflowTrigger } from "../src/trigger.js";
 import { RuntimeWorker } from "../src/worker.js";
 import { WorkflowRuntimeService } from "../src/workflow-service.js";
+import { executeWorkflowTask } from "../src/workflow-runner.js";
 import { ObservabilityClient, sanitizeTelemetryPayload } from "../../../packages/observability/src/index.js";
 
 const workspaceId = "ws_test";
@@ -207,6 +208,57 @@ test("workflow run API keeps operator output safe while admin sees ledger fields
   await app.close();
 });
 
+test("hosted workflow run executes through Trigger payload and exact queue job", async () => {
+  const trigger = new CapturingWorkflowTrigger();
+  const { app, store, service, observability } = createWorkflowHarness(trigger);
+  const operatorHeaders = {
+    "x-workspace-id": workspaceId,
+    "x-user-id": "operator-hosted",
+    "x-user-email": "operator-hosted@wwx.local",
+    "x-user-role": "operator",
+    "x-client-version": "1.4.2",
+  };
+  const created = await app.inject({
+    method: "POST",
+    url: "/runs",
+    headers: operatorHeaders,
+    payload: {
+      workflowType: "lfs_ads",
+      productId: "prod_hair",
+      batchId: "batch_hosted",
+      payload: { adCount: 2, strategyJson: { ads: [{ id: "one" }, { id: "two" }] } },
+    },
+  });
+  assert.equal(created.statusCode, 200);
+  const runId = created.json().run.id as string;
+  assert.equal(typeof trigger.lastInput?.payload.jobId, "string");
+  assert.equal(JSON.stringify(trigger.lastInput?.payload).includes("strategyJson"), false);
+
+  await executeWorkflowTask({
+    runId,
+    workspaceId,
+    createdByUserId: "operator-hosted",
+    workflowType: "lfs_ads",
+    correlationId: "test-hosted",
+    input: trigger.lastInput?.payload,
+  }, {
+    store,
+    storage: new MemoryObjectStorage(),
+    engine: new FakeLfsEngine(),
+    service,
+    observability,
+    trigger,
+    workflow: new WorkflowRuntimeService(observability, trigger, service, "1.4.0"),
+  });
+
+  const status = await app.inject({ method: "GET", url: `/runs/${runId}/status`, headers: operatorHeaders });
+  assert.equal(status.json().run.status, "succeeded");
+  assert.equal(status.json().artifacts.length >= 2, true);
+  const finalAds = await app.inject({ method: "GET", url: "/batches/batch_hosted/final-ads", headers });
+  assert.equal(finalAds.json().ads.length, 2);
+  await app.close();
+});
+
 test("workflow agent refuses operator cost and hidden prompt questions", async () => {
   const { app } = createWorkflowHarness();
   const headersWithUser = { ...headers, "x-user-id": "operator-2", "x-user-role": "operator", "x-client-version": "1.4.2" };
@@ -309,12 +361,21 @@ function createHarness() {
   return { app, service, worker };
 }
 
-function createWorkflowHarness() {
+function createWorkflowHarness(trigger: WorkflowTrigger = new NoopWorkflowTrigger()) {
   const store = new MemoryStore();
   const storage = new MemoryObjectStorage();
   const service = new RuntimeService(store, storage);
   const observability = new ObservabilityClient(new MemoryObservabilityRepository());
-  const workflow = new WorkflowRuntimeService(observability, new NoopWorkflowTrigger(), "1.4.0");
+  const workflow = new WorkflowRuntimeService(observability, trigger, service, "1.4.0");
   const app = buildApi(service, workflow, observability);
-  return { app, service, observability, workflow };
+  return { app, store, service, observability, workflow };
+}
+
+class CapturingWorkflowTrigger implements WorkflowTrigger {
+  lastInput: TriggerRunInput | null = null;
+
+  async trigger(input: TriggerRunInput): Promise<{ triggerRunId: string; provider: "noop" }> {
+    this.lastInput = input;
+    return { triggerRunId: `captured_${input.runId}`, provider: "noop" };
+  }
 }

@@ -607,5 +607,6 @@ function redactString(value: string): string {
 
 function sanitizeStorageRef(value: string | null): string | null {
   if (!value) return null;
+  if (/^artifact:[A-Za-z0-9_.:-]+$/.test(value)) return value;
   return hashValue(value).slice(0, 32);
 }

@@ -37,6 +37,17 @@ import {
   createWwxProduct,
 } from "@/modules/wwx/mutations";
 import {
+  getWwxAuthSession,
+  hostedRuntimeConfigured,
+  signInWithClerkPkce,
+  signOutWwx,
+} from "@/modules/wwx/auth";
+import {
+  shouldUseHostedRuntime,
+  startHostedLfsRun,
+  syncHostedRun,
+} from "@/modules/wwx/hosted";
+import {
   useWwxIndex,
   WwxInspector,
   WwxSidebar,
@@ -121,9 +132,13 @@ export default function App() {
     useState<ProductSummary | null>(null);
   const [researchJobs, setResearchJobs] = useState<Record<string, ProductResearchJob>>({});
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [hostedSignedIn, setHostedSignedIn] = useState(false);
+  const [hostedAuthBusy, setHostedAuthBusy] = useState(false);
   const batchStatusRef = useRef<Record<string, BatchSummary["status"]>>({});
   const batchStatusBootedRef = useRef(false);
+  const hostedSyncInFlightRef = useRef<Set<string>>(new Set());
   const [batchDialogTitle, setBatchDialogTitle] = useState("Create Batch");
+  const hostedEnabled = hostedRuntimeConfigured();
 
   const pushNotification = useCallback(
     (notification: Omit<AppNotification, "id" | "createdAt">) => {
@@ -236,6 +251,24 @@ export default function App() {
   }, [hydrateSessions]);
 
   useEffect(() => {
+    if (!hostedEnabled) {
+      setHostedSignedIn(false);
+      return;
+    }
+    let alive = true;
+    void getWwxAuthSession()
+      .then((session) => {
+        if (alive) setHostedSignedIn(Boolean(session));
+      })
+      .catch(() => {
+        if (alive) setHostedSignedIn(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [hostedEnabled]);
+
+  useEffect(() => {
     if (
       selectedBatchId &&
       wwxIndex.batches.some((batch) => batch.id === selectedBatchId)
@@ -258,6 +291,29 @@ export default function App() {
       ) ?? null,
     [wwxIndex.products],
   );
+
+  const handleHostedSignIn = useCallback(async () => {
+    if (!hostedEnabled || hostedAuthBusy) return;
+    setHostedAuthBusy(true);
+    try {
+      await signInWithClerkPkce();
+      setHostedSignedIn(true);
+    } catch {
+      setHostedSignedIn(false);
+    } finally {
+      setHostedAuthBusy(false);
+    }
+  }, [hostedAuthBusy, hostedEnabled]);
+
+  const handleHostedSignOut = useCallback(async () => {
+    setHostedAuthBusy(true);
+    try {
+      await signOutWwx();
+      setHostedSignedIn(false);
+    } finally {
+      setHostedAuthBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     const next: Record<string, BatchSummary["status"]> = {};
@@ -624,9 +680,54 @@ export default function App() {
     [pushNotification, researchDialogProduct, researchJobs],
   );
 
+  useEffect(() => {
+    if (!shouldUseHostedRuntime()) return;
+    const syncRunning = () => {
+      for (const batch of wwxIndex.batches) {
+        if (batch.status !== "running") continue;
+        const runId = batch.runs[0]?.id;
+        if (!runId || runId.startsWith("run-")) continue;
+        const product = productForBatch(batch);
+        if (!product || hostedSyncInFlightRef.current.has(runId)) continue;
+        hostedSyncInFlightRef.current.add(runId);
+        void syncHostedRun({ product, batch, runId })
+          .catch(() => undefined)
+          .finally(() => {
+            hostedSyncInFlightRef.current.delete(runId);
+          });
+      }
+    };
+    syncRunning();
+    const interval = window.setInterval(syncRunning, 4_000);
+    return () => window.clearInterval(interval);
+  }, [productForBatch, wwxIndex.batches]);
+
   const handleRunBatch = useCallback(async (batch: BatchSummary) => {
     const product = productForBatch(batch);
     if (!product) return;
+    if (shouldUseHostedRuntime()) {
+      try {
+        const run = await startHostedLfsRun({ product, batch });
+        setHostedSignedIn(true);
+        pushNotification({
+          productId: product.id,
+          batchId: batch.id,
+          tone: "success",
+          title: "Batch running",
+          body: `${batch.name} started on the hosted runtime.`,
+        });
+        void syncHostedRun({ product, batch, runId: run.id }).catch(() => undefined);
+      } catch (error) {
+        pushNotification({
+          productId: product.id,
+          batchId: batch.id,
+          tone: "error",
+          title: "Batch blocked",
+          body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     await invoke("wwx_start_lfs_job", {
       input: {
         productId: product.id,
@@ -635,7 +736,7 @@ export default function App() {
         anthropicApiKey: await getKey("anthropic"),
       },
     });
-  }, [productForBatch]);
+  }, [productForBatch, pushNotification]);
 
   const handleBuildStrategy = useCallback(async (batch: BatchSummary) => {
     const product = productForBatch(batch);
@@ -734,6 +835,11 @@ export default function App() {
           <WwxHeader
             selectedBatch={selectedBatch}
             activeWindows={agentWindows.length}
+            hostedEnabled={hostedEnabled}
+            hostedSignedIn={hostedSignedIn}
+            hostedAuthBusy={hostedAuthBusy}
+            onHostedSignIn={() => void handleHostedSignIn()}
+            onHostedSignOut={() => void handleHostedSignOut()}
             onToggleSidebar={() => togglePanel(sidebarRef)}
             onToggleInspector={() => togglePanel(inspectorRef)}
             onOpenSettings={() => void openSettingsWindow()}
@@ -953,12 +1059,22 @@ function stableBatchSessionId(batchId: string): string {
 function WwxHeader({
   selectedBatch,
   activeWindows,
+  hostedEnabled,
+  hostedSignedIn,
+  hostedAuthBusy,
+  onHostedSignIn,
+  onHostedSignOut,
   onToggleSidebar,
   onToggleInspector,
   onOpenSettings,
 }: {
   selectedBatch: BatchSummary | null;
   activeWindows: number;
+  hostedEnabled: boolean;
+  hostedSignedIn: boolean;
+  hostedAuthBusy: boolean;
+  onHostedSignIn: () => void;
+  onHostedSignOut: () => void;
   onToggleSidebar: () => void;
   onToggleInspector: () => void;
   onOpenSettings: () => void;
@@ -983,10 +1099,31 @@ function WwxHeader({
             {selectedBatch.name}
           </span>
         ) : null}
-        <span className="text-[10.5px] text-slate-500">
+      <span className="text-[10.5px] text-slate-500">
           {activeWindows} agent{activeWindows === 1 ? "" : "s"}
         </span>
       </div>
+      {hostedEnabled ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-7 rounded-md px-2 text-[11px] hover:bg-white/10",
+            hostedSignedIn ? "text-emerald-200" : "text-amber-200",
+          )}
+          disabled={hostedAuthBusy}
+          onClick={hostedSignedIn ? onHostedSignOut : onHostedSignIn}
+          title={hostedSignedIn ? "Hosted runtime signed in" : "Sign in to hosted runtime"}
+        >
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              hostedSignedIn ? "bg-emerald-300" : "bg-amber-300",
+            )}
+          />
+          {hostedSignedIn ? "Hosted" : "Sign in"}
+        </Button>
+      ) : null}
       <Button
         variant="ghost"
         size="icon-sm"

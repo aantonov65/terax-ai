@@ -2,6 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
 import { artifactAudience, friendlyStageLabel } from "@/modules/wwx/workflow";
+import {
+  continueHostedRunForBatch,
+  hostedQuestion,
+  shouldUseHostedRuntime,
+  startHostedLfsRunForBatch,
+  stopHostedRunForBatch,
+  syncHostedRunForBatch,
+} from "@/modules/wwx/hosted";
+import type { BatchSummary } from "@/modules/wwx";
 import { getKey } from "../lib/keyring";
 import type { ToolContext } from "./context";
 
@@ -54,6 +63,7 @@ type NativeBatch = {
   decisionCounts?: { ship: number; review: number; fail: number };
   workflowState?: Record<string, unknown>;
   artifacts: NativeArtifact[];
+  runs?: Array<{ id: string; status: string; stage?: string | null }>;
   finalScripts?: Array<{ taskId: string; script: string; decision: string }>;
 };
 
@@ -164,6 +174,32 @@ async function startNativeJob(
     generationWorkers?: number;
   },
 ): Promise<NativeJobResult> {
+  if (shouldUseHostedRuntime()) {
+    const batch = await getBoundBatch(binding);
+    if (!batch) throw new Error("Bound batch was not found.");
+    const run = await startHostedLfsRunForBatch({
+      productId: binding.productId,
+      batch: batch as unknown as BatchSummary,
+      anglesMarkdown: input.anglesMarkdown,
+      workers: input.workers,
+      generationWorkers: input.generationWorkers,
+    });
+    return {
+      ok: true,
+      workflow: "create_ads",
+      batchId: binding.batchId,
+      productId: binding.productId,
+      runId: run.id,
+      status: "running",
+      currentStage: run.current_stage ?? "queued",
+      awaitingReview: false,
+      retryable: false,
+      reason: null,
+      stdout: "",
+      stderr: "",
+      artifacts: [],
+    };
+  }
   return invoke<NativeJobResult>("wwx_start_lfs_job", {
     input: {
       productId: binding.productId,
@@ -175,6 +211,23 @@ async function startNativeJob(
       anthropicApiKey: await getKey("anthropic"),
     },
   });
+}
+
+async function syncHostedBinding(binding: WwxBinding, batch: NativeBatch): Promise<void> {
+  if (!shouldUseHostedRuntime()) return;
+  const runId = latestHostedRunId(batch);
+  if (!runId || runId.startsWith("run-")) return;
+  await syncHostedRunForBatch({
+    productId: binding.productId,
+    batch: batch as unknown as BatchSummary,
+    runId,
+  }).catch(() => undefined);
+}
+
+function latestHostedRunId(batch: NativeBatch): string | null {
+  const runId = batch.runs?.[0]?.id;
+  if (!runId || runId.startsWith("run-")) return null;
+  return runId;
 }
 
 export function buildWwxTools(ctx: ToolContext) {
@@ -201,6 +254,70 @@ export function buildWwxTools(ctx: ToolContext) {
           return jobResult(result);
         } catch (error) {
           return { ok: false, workflow: "create_ads", error: String(error), retryable: false };
+        }
+      },
+    }),
+
+    stop_batch_run: tool({
+      description: "Stop the current hosted batch run at the next safe stage/work-item boundary while preserving completed work.",
+      inputSchema: z.object({ reason: z.string().optional() }),
+      needsApproval: true,
+      execute: async ({ reason }) => {
+        try {
+          const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (!batch) throw new Error("Bound batch was not found.");
+          if (!shouldUseHostedRuntime()) {
+            const run = await invoke<Record<string, unknown>>("wwx_cancel_lfs_job", {
+              batchId: binding.batchId,
+              reason: reason ?? "operator stop requested",
+            });
+            return { ok: true, workflow: "stop_batch_run", run };
+          }
+          const runId = latestHostedRunId(batch);
+          if (!runId) throw new Error("No hosted run is active for this batch.");
+          const run = await stopHostedRunForBatch({
+            productId: binding.productId,
+            batch: batch as unknown as BatchSummary,
+            runId,
+          });
+          return { ok: true, workflow: "stop_batch_run", run_id: run.id, status: run.status };
+        } catch (error) {
+          return { ok: false, workflow: "stop_batch_run", error: String(error), retryable: true };
+        }
+      },
+    }),
+
+    continue_batch_run: tool({
+      description: "Continue a stopped or failed hosted batch run from the earliest incomplete work item.",
+      inputSchema: z.object({}),
+      needsApproval: true,
+      execute: async () => {
+        try {
+          const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (!batch) throw new Error("Bound batch was not found.");
+          if (!shouldUseHostedRuntime()) {
+            const result = await invoke<NativeJobResult>("wwx_resume_lfs_job", {
+              input: {
+                productId: binding.productId,
+                batchId: binding.batchId,
+                runMode: "full",
+                anthropicApiKey: await getKey("anthropic"),
+              },
+            });
+            return jobResult(result);
+          }
+          const runId = latestHostedRunId(batch);
+          if (!runId) throw new Error("No hosted run is available to continue.");
+          const run = await continueHostedRunForBatch({
+            productId: binding.productId,
+            batch: batch as unknown as BatchSummary,
+            runId,
+          });
+          return { ok: true, workflow: "continue_batch_run", run_id: run.id, status: run.status };
+        } catch (error) {
+          return { ok: false, workflow: "continue_batch_run", error: String(error), retryable: true };
         }
       },
     }),
@@ -255,17 +372,19 @@ export function buildWwxTools(ctx: ToolContext) {
           const binding = requireBinding(ctx);
           const batch = await getBoundBatch(binding);
           if (!batch) throw new Error("Bound batch was not found.");
+          await syncHostedBinding(binding, batch);
+          const syncedBatch = await getBoundBatch(binding) ?? batch;
           return {
             ok: true,
             workflow: "get_batch_status",
             batch_id: binding.batchId,
-            status: batch.status,
-            current_stage: batch.currentStage,
-            stage_label: friendlyStageLabel(batch.currentStage ?? batch.status),
-            decision_counts: batch.decisionCounts,
-            workflow_state: batch.workflowState,
-            final_script_count: batch.finalScripts?.length ?? 0,
-            artifacts: publicArtifacts(batch.artifacts),
+            status: syncedBatch.status,
+            current_stage: syncedBatch.currentStage,
+            stage_label: friendlyStageLabel(syncedBatch.currentStage ?? syncedBatch.status),
+            decision_counts: syncedBatch.decisionCounts,
+            workflow_state: syncedBatch.workflowState,
+            final_script_count: syncedBatch.finalScripts?.length ?? 0,
+            artifacts: publicArtifacts(syncedBatch.artifacts),
           };
         } catch (error) {
           return { ok: false, workflow: "get_batch_status", error: String(error) };
@@ -279,6 +398,8 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async () => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
           const artifacts = await listPublicArtifacts(binding.batchId);
           return {
             ok: true,
@@ -302,6 +423,8 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async ({ artifact_id, task_id }) => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
           const artifacts = await listPublicArtifacts(binding.batchId);
           const artifact = artifact_id
             ? artifacts.find((item) => item.id === artifact_id)
@@ -327,6 +450,8 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async () => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
           const artifacts = await listPublicArtifacts(binding.batchId);
           const artifact = artifactByFilename(artifacts, "asset-inputs.json");
           if (!artifact) throw new Error("Asset inputs are not available yet.");
@@ -350,6 +475,8 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async () => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
           const metrics = await invoke<Record<string, unknown>>("wwx_get_batch_metrics", { batchId: binding.batchId });
           return { ok: true, workflow: "get_batch_metrics", metrics };
         } catch (error) {
@@ -364,6 +491,8 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async () => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
           const analysis = await invoke<Record<string, unknown>>("wwx_analyze_ads", { batchId: binding.batchId });
           return { ok: true, workflow: "analyze_ads", analysis };
         } catch (error) {
@@ -394,6 +523,13 @@ export function buildWwxTools(ctx: ToolContext) {
       execute: async ({ question }) => {
         try {
           const binding = requireBinding(ctx);
+          const batch = await getBoundBatch(binding);
+          if (batch) await syncHostedBinding(binding, batch);
+          const runId = batch?.runs?.[0]?.id;
+          if (shouldUseHostedRuntime() && runId && !runId.startsWith("run-")) {
+            const answer = await hostedQuestion(runId, question);
+            return { ok: true, workflow: "answer_batch_question", ...answer };
+          }
           const answer = await invoke<Record<string, unknown>>("wwx_answer_batch_question", {
             input: { batchId: binding.batchId, question },
           });

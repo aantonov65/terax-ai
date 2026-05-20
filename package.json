@@ -13,7 +13,9 @@
     "backend:typecheck": "tsc -p backend/wwx-runtime/tsconfig.json --noEmit",
     "backend:test": "tsx --test backend/wwx-runtime/test/*.test.ts",
     "backend:api": "tsx backend/wwx-runtime/src/main.ts",
-    "backend:worker": "tsx backend/wwx-runtime/src/worker-main.ts"
+    "backend:worker": "tsx backend/wwx-runtime/src/worker-main.ts",
+    "trigger:dev": "pnpm dlx trigger.dev@latest dev",
+    "trigger:deploy": "pnpm dlx trigger.dev@latest deploy"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
@@ -62,6 +64,7 @@
     "@tauri-apps/plugin-store": "~2.4.2",
     "@tauri-apps/plugin-updater": "~2.10.1",
     "@tauri-apps/plugin-window-state": "~2.4.1",
+    "@trigger.dev/sdk": "^4.4.6",
     "@uiw/codemirror-theme-atomone": "^4.25.9",
     "@uiw/codemirror-theme-aura": "^4.25.9",
     "@uiw/codemirror-theme-copilot": "^4.25.9",
