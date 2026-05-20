@@ -17,6 +17,21 @@ export function buildApi(
 ): FastifyInstance {
   const app = Fastify({ logger: true });
 
+  app.get("/", async () => ({
+    service: "wwx-runtime-api",
+    ok: true,
+    endpoints: {
+      health: "/healthz",
+      capabilities: "/capabilities",
+      admin: "/admin",
+    },
+  }));
+
+  app.get("/healthz", async () => ({
+    ok: true,
+    service: "wwx-runtime-api",
+  }));
+
   app.post<{ Params: BatchParams; Body: CreateAdsInput }>("/batches/:id/create-ads", async (request) => {
     const workspaceId = requireWorkspace(request);
     const input = request.body;
