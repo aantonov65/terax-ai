@@ -11,7 +11,11 @@ export default defineConfig({
         files: ["engines/ww-2-runtime/**"],
       }),
       pythonExtension({
-        requirementsFile: "./engines/ww-2-runtime/requirements.txt",
+        requirements: [
+          "anthropic>=0.75.0",
+          "requests>=2.32.0",
+          "python-dotenv>=1.0.0",
+        ],
         scripts: ["engines/ww-2-runtime/tools/**/*.py"],
       }),
     ],
