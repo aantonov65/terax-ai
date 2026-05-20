@@ -9,7 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "fixtures:wwx": "node scripts/create-wwx-demo-fixtures.mjs",
-    "smoke:wwx:lfs-upload": "cargo test --manifest-path src-tauri/Cargo.toml smoke_uploaded_angle_submission_generates_lfs_artifacts -- --ignored --nocapture"
+    "smoke:wwx:lfs-upload": "cargo test --manifest-path src-tauri/Cargo.toml smoke_uploaded_angle_submission_generates_lfs_artifacts -- --ignored --nocapture",
+    "backend:typecheck": "tsc -p backend/wwx-runtime/tsconfig.json --noEmit",
+    "backend:test": "tsx --test backend/wwx-runtime/test/*.test.ts",
+    "backend:api": "tsx backend/wwx-runtime/src/main.ts",
+    "backend:worker": "tsx backend/wwx-runtime/src/worker-main.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
@@ -20,6 +24,7 @@
     "@ai-sdk/openai-compatible": "^2.0.42",
     "@ai-sdk/react": "^3.0.170",
     "@ai-sdk/xai": "^3.0.83",
+    "@aws-sdk/client-s3": "^3.1050.0",
     "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-css": "^6.3.1",
@@ -73,9 +78,11 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "fastify": "^5.8.5",
     "lucide-react": "^1.16.0",
     "metal-fx": "^1.0.4",
     "motion": "^12.38.0",
+    "pg": "^8.21.0",
     "radix-ui": "^1.4.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -94,9 +101,11 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "tsx": "^4.22.3",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   },
