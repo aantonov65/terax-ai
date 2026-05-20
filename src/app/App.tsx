@@ -40,7 +40,6 @@ import {
   getWwxMe,
   hostedRuntimeConfigured,
   signInWithClerkPkce,
-  signOutWwx,
   type WwxMe,
 } from "@/modules/wwx/auth";
 import {
@@ -323,17 +322,6 @@ export default function App() {
       setHostedAuthBusy(false);
     }
   }, [hostedAuthBusy, hostedEnabled]);
-
-  const handleHostedSignOut = useCallback(async () => {
-    setHostedAuthBusy(true);
-    try {
-      await signOutWwx();
-      setHostedUser(null);
-      setHostedAuthState("signed_out");
-    } finally {
-      setHostedAuthBusy(false);
-    }
-  }, []);
 
   useEffect(() => {
     const next: Record<string, BatchSummary["status"]> = {};
@@ -866,7 +854,6 @@ export default function App() {
             hostedUserEmail={hostedUser?.email ?? null}
             hostedAuthBusy={hostedAuthBusy}
             onHostedSignIn={() => void handleHostedSignIn()}
-            onHostedSignOut={() => void handleHostedSignOut()}
             onToggleSidebar={() => togglePanel(sidebarRef)}
             onToggleInspector={() => togglePanel(inspectorRef)}
             onOpenSettings={() => void openSettingsWindow()}
@@ -1134,7 +1121,6 @@ function WwxHeader({
   hostedUserEmail,
   hostedAuthBusy,
   onHostedSignIn,
-  onHostedSignOut,
   onToggleSidebar,
   onToggleInspector,
   onOpenSettings,
@@ -1146,7 +1132,6 @@ function WwxHeader({
   hostedUserEmail: string | null;
   hostedAuthBusy: boolean;
   onHostedSignIn: () => void;
-  onHostedSignOut: () => void;
   onToggleSidebar: () => void;
   onToggleInspector: () => void;
   onOpenSettings: () => void;
@@ -1182,10 +1167,11 @@ function WwxHeader({
           className={cn(
             "h-7 rounded-md px-2 text-[11px] hover:bg-white/10",
             hostedSignedIn ? "text-emerald-200" : "text-amber-200",
+            hostedSignedIn ? "cursor-default hover:bg-transparent" : "",
           )}
           disabled={hostedAuthBusy}
-          onClick={hostedSignedIn ? onHostedSignOut : onHostedSignIn}
-          title={hostedSignedIn ? hostedUserEmail ?? "Hosted runtime signed in" : "Sign in to hosted runtime"}
+          onClick={hostedSignedIn ? undefined : onHostedSignIn}
+          title={hostedSignedIn ? hostedUserEmail ?? "Hosted runtime connected" : "Sign in to hosted runtime"}
         >
           <span
             className={cn(
