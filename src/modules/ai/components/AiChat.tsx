@@ -10,6 +10,7 @@ import {
   MessageResponse,
 } from "@/components/ai-elements/message";
 import { Tool as RichTool } from "@/components/ai-elements/tool";
+import { Button } from "@/components/ui/button";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -22,6 +23,7 @@ import {
   hasSuccessfulWwxToolResult,
   isRecoverableWwxFollowupError,
 } from "../lib/wwxToolResult";
+import { sendMessage } from "../store/chatStore";
 import { DotMatrixLoader } from "@/components/ui/dot-matrix-loader";
 import { ThinkingBar } from "@/components/ui/thinking-bar";
 import { Tool as PromptKitTool } from "@/components/ui/tool";
@@ -314,13 +316,114 @@ const RenderedTool = memo(function RenderedTool({
     );
   }
 
+  const output = "output" in part ? part.output : undefined;
+
   return (
-    <RichTool
-      toolName={toolName}
-      state={part.state}
-      input={part.input}
-      output={"output" in part ? part.output : undefined}
-      errorText={"errorText" in part ? part.errorText : undefined}
-    />
+    <div className="flex flex-col gap-2">
+      <RichTool
+        toolName={toolName}
+        state={part.state}
+        input={part.input}
+        output={output}
+        errorText={"errorText" in part ? part.errorText : undefined}
+      />
+      {WWX_TOOL_NAMES.has(toolName) ? (
+        <WwxTerminalAction output={output} />
+      ) : null}
+    </div>
   );
 });
+
+function WwxTerminalAction({ output }: { output: unknown }) {
+  if (!output || typeof output !== "object") return null;
+  const data = output as Record<string, unknown>;
+  const ui = data.ui && typeof data.ui === "object"
+    ? (data.ui as {
+        stage_label?: string;
+        status_label?: string;
+        primary_action?: WwxAction;
+        secondary_action?: WwxAction;
+      })
+    : null;
+  const primary = ui?.primary_action;
+  const secondary = ui?.secondary_action;
+  if (!primary || primary.kind === "wait") return null;
+
+  const question = terminalActionQuestion(ui?.stage_label, primary);
+  const statusLabel =
+    typeof data.status === "string" && data.status === "awaiting_review"
+      ? "needs review"
+      : ui?.status_label;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-muted/50 px-3 py-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="min-w-0 truncate text-[12px] font-semibold text-foreground">
+          {question}
+        </div>
+        {statusLabel ? (
+          <span className="shrink-0 rounded-full border border-white/15 bg-background/40 px-2 py-0.5 text-[9.5px] text-muted-foreground">
+            {statusLabel}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-7 rounded-md px-2.5 text-[10.5px]"
+          onClick={() => void sendAction(primary)}
+        >
+          {terminalActionLabel(primary)}
+        </Button>
+        {secondary ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 rounded-md px-2.5 text-[10.5px]"
+            onClick={() => void sendAction(secondary)}
+          >
+            {terminalActionLabel(secondary)}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+type WwxAction = {
+  kind?: string;
+  label?: string;
+  prompt?: string;
+};
+
+async function sendAction(action: WwxAction) {
+  if (!action.prompt) return;
+  await sendMessage(action.prompt);
+}
+
+function terminalActionQuestion(stageLabel: string | undefined, action: WwxAction): string {
+  const stage = stageLabel || "Stage";
+  if (action.kind === "continue") return `${stage} completed. Continue to next stage?`;
+  if (action.kind === "repair") return "Repair needed. Repair and continue?";
+  if (action.kind === "provide_input") return "Input needed. Open agent?";
+  if (action.kind === "review_final") return "Final ads completed. Review now?";
+  if (action.kind === "export") return "Final ads completed. Export now?";
+  if (action.kind === "build_strategy") return "Creative direction saved. Build strategy?";
+  if (action.kind === "run_batch") return "Strategy completed. Run batch?";
+  return action.label || "Continue?";
+}
+
+function terminalActionLabel(action: WwxAction): string {
+  if (action.kind === "continue") return "Continue";
+  if (action.kind === "open_agent") return "Wait";
+  if (action.kind === "repair") return "Repair";
+  if (action.kind === "provide_input") return "Open agent";
+  if (action.kind === "review_final") return "Review";
+  if (action.kind === "export") return "Export";
+  if (action.kind === "build_strategy") return "Build";
+  if (action.kind === "run_batch") return "Run";
+  return action.label || "Continue";
+}

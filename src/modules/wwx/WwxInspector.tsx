@@ -24,7 +24,6 @@ import {
   deriveWorkflowState,
   friendlyStageLabel,
   groupArtifacts,
-  workflowToneClass,
 } from "./workflow";
 import type {
   ArtifactKind,
@@ -251,50 +250,72 @@ function ActionPanel({
     }
     onContinueInAgent(batch, action.prompt);
   };
+  const question = workflowActionQuestion(workflow);
 
   return (
-    <section className={cn("space-y-2 rounded-md border px-2.5 py-2", workflowToneClass(workflow.tone))}>
-      <div className="flex min-w-0 items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-[12px] font-semibold">{workflow.headline}</div>
-          {workflow.stageLabel ? (
-            <div className="mt-0.5 text-[9.5px] uppercase tracking-[0.12em] opacity-65">
-              {workflow.stageLabel}
-            </div>
-          ) : null}
+    <section className="flex flex-col gap-2 rounded-lg border border-white/10 bg-muted/50 px-3 py-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="min-w-0 truncate text-[12px] font-semibold text-slate-100">
+          {question}
         </div>
-        <Badge className="h-5 shrink-0 rounded-md border border-white/15 bg-black/10 px-1.5 text-[9.5px] text-current">
+        <Badge className="h-5 shrink-0 rounded-full border border-white/15 bg-background/40 px-2 text-[9.5px] text-slate-300">
           {workflow.statusLabel}
         </Badge>
       </div>
-      <p className="text-[11px] leading-snug opacity-80">{workflow.summary}</p>
       {workflow.primaryAction || workflow.secondaryAction ? (
         <div className="flex flex-wrap gap-1.5">
           {workflow.primaryAction ? (
             <Button
               size="sm"
               variant="secondary"
-              className="h-7 rounded-md px-2 text-[10.5px]"
+              className="h-7 rounded-md px-2.5 text-[10.5px]"
               onClick={() => runAction(workflow.primaryAction)}
               disabled={workflow.primaryAction.kind === "wait"}
             >
-              {workflow.primaryAction.label}
+              {actionLabel(workflow.primaryAction)}
             </Button>
           ) : null}
           {workflow.secondaryAction ? (
             <Button
               size="sm"
               variant="outline"
-              className="h-7 rounded-md px-2 text-[10.5px]"
+              className="h-7 rounded-md px-2.5 text-[10.5px]"
               onClick={() => runAction(workflow.secondaryAction)}
             >
-              {workflow.secondaryAction.label}
+              {actionLabel(workflow.secondaryAction)}
             </Button>
           ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+function workflowActionQuestion(workflow: WorkflowState): string {
+  const stage = workflow.stageLabel ?? "Stage";
+  const action = workflow.primaryAction?.kind;
+  if (action === "continue") return `${stage} completed. Continue to next stage?`;
+  if (action === "repair") return "Repair needed. Repair and continue?";
+  if (action === "provide_input") return "Input needed. Open agent?";
+  if (action === "review_final") return "Final ads completed. Review now?";
+  if (action === "export") return "Final ads completed. Export now?";
+  if (action === "build_strategy") return "Creative direction saved. Build strategy?";
+  if (action === "run_batch") return "Strategy completed. Run batch?";
+  if (action === "wait") return `${stage} is running.`;
+  return workflow.headline;
+}
+
+function actionLabel(action: WorkflowAction): string {
+  if (action.kind === "continue") return "Continue";
+  if (action.kind === "open_agent") return "Wait";
+  if (action.kind === "repair") return "Repair";
+  if (action.kind === "provide_input") return "Open agent";
+  if (action.kind === "review_final") return "Review";
+  if (action.kind === "export") return "Export";
+  if (action.kind === "build_strategy") return "Build";
+  if (action.kind === "run_batch") return "Run";
+  if (action.kind === "wait") return "Wait";
+  return action.label;
 }
 
 function finalDecisionTone(decision: string): string {
