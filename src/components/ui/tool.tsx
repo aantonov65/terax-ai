@@ -181,7 +181,7 @@ const Tool = ({
           <Button
             variant="ghost"
             disabled={!detailsAvailable}
-            className="bg-background h-auto w-full justify-between rounded-b-none px-3 py-2 font-normal disabled:opacity-100"
+            className="h-auto w-full justify-between rounded-b-none bg-muted/50 px-3 py-2 font-normal hover:bg-muted/50 disabled:opacity-100"
           >
             <div className="flex min-w-0 items-center gap-2">
               {getStateIcon()}
@@ -207,7 +207,7 @@ const Tool = ({
               "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
             )}
           >
-            <div className="bg-background space-y-3 p-3">
+            <div className="space-y-3 bg-muted/50 p-3">
               {children ?? (
                 <>
                   {input && Object.keys(input).length > 0 && (
