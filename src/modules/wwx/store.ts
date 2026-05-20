@@ -7,8 +7,10 @@ import type {
   BatchSummary,
   ProductSummary,
   RunStatus,
+  WorkflowState,
   WwxIndexState,
 } from "./types";
+import { deriveWorkflowState, friendlyStageLabel } from "./workflow";
 
 type NativeArtifact = {
   id: string;
@@ -51,8 +53,10 @@ type NativeBatch = {
   artifacts: NativeArtifact[];
   runs: NativeRun[];
   decisionCounts?: { ship: number; review: number; fail: number };
-  stageTimeline?: Array<{ stage: string; status: string; approved: boolean; artifactCount: number }>;
+  stageTimeline?: Array<{ stage: string; status: string; approved: boolean; artifactCount: number; label?: string; summary?: string }>;
   finalScripts?: Array<{ taskId: string; script: string; decision: string; semanticReason?: string | null }>;
+  autonomous?: boolean;
+  workflowState?: WorkflowState;
 };
 
 type NativeProduct = {
@@ -63,6 +67,8 @@ type NativeProduct = {
   createdAt: number;
   updatedAt: number;
   revision: number;
+  researchArtifactCount?: number;
+  researchArtifactUpdatedAt?: number | null;
   batches: NativeBatch[];
 };
 
@@ -228,6 +234,8 @@ function mapProduct(product: NativeProduct): ProductSummary {
           }
         : undefined,
     },
+    researchArtifactCount: product.researchArtifactCount ?? 0,
+    researchArtifactUpdatedAt: product.researchArtifactUpdatedAt ?? null,
     batchCount: batches.length,
     statusCounts: statusCounts(batches),
     updatedAt: product.updatedAt,
@@ -237,36 +245,50 @@ function mapProduct(product: NativeProduct): ProductSummary {
 
 function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
   const decisions = batch.decisionCounts ?? decisionCounts(batch.artifacts);
-  const hasConceptMatrix = batch.artifacts.some((artifact) => artifact.filename === "concept-matrix.json");
-  const hasConceptApproval = batch.artifacts.some((artifact) => artifact.filename === "concept-matrix-approval.json");
+  const hasStrategyPlan = batch.artifacts.some((artifact) => artifact.filename === "strategy-plan.json");
+  const hasStrategy = batch.artifacts.some((artifact) => artifact.filename === "strategy.json");
+  const artifacts = batch.artifacts.map(mapArtifact);
+  const finalScripts = (batch.finalScripts ?? []).map((script) => ({
+    ...script,
+    semanticReason: script.semanticReason ?? undefined,
+  }));
+  const status = toBatchStatus(batch.status);
+  const workflowState = deriveWorkflowState({
+    status,
+    currentStage: batch.currentStage,
+    artifacts,
+    finalScripts,
+    autonomous: Boolean(batch.autonomous),
+    nextAction: nextAction(status, batch.currentStage, hasStrategyPlan, hasStrategy),
+    workflowState: batch.workflowState,
+  });
   return {
     id: batch.id,
+    productId: batch.productId,
     name: batch.name,
     path: `app://wwx/batches/${batch.id}`,
     product: product.name,
     productCode: product.productCode,
     productPath: `app://wwx/products/${product.id}`,
     format: "lfs",
-    status: toBatchStatus(batch.status),
+    status,
+    currentStage: batch.currentStage ?? undefined,
     updatedAt: batch.updatedAt,
     decisionCounts: decisions,
-    nextAction: nextAction(
-      toBatchStatus(batch.status),
-      batch.currentStage,
-      hasConceptMatrix,
-      hasConceptApproval,
-    ),
+    nextAction: workflowState.summary,
     strategyPath: artifactPath(batch.artifacts, "strategy.json"),
     manifestPath: artifactPath(batch.artifacts, "lfs-v41-manifest.json"),
     reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
-    artifacts: batch.artifacts.map(mapArtifact),
+    artifacts,
     runs: batch.runs.map(mapRun),
-    stageTimeline: batch.stageTimeline ?? [],
-    finalScripts: (batch.finalScripts ?? []).map((script) => ({
-      ...script,
-      semanticReason: script.semanticReason ?? undefined,
+    stageTimeline: (batch.stageTimeline ?? []).map((stage) => ({
+      ...stage,
+      label: stage.label ?? friendlyStageLabel(stage.stage),
     })),
+    finalScripts,
     alerts: alertsFor(batch),
+    autonomous: Boolean(batch.autonomous),
+    workflowState,
   };
 }
 
@@ -379,20 +401,18 @@ function decisionCounts(artifacts: NativeArtifact[]) {
 function nextAction(
   status: BatchStatus,
   stage?: string | null,
-  hasConceptMatrix = false,
-  hasConceptApproval = false,
+  hasStrategyPlan = false,
+  hasStrategy = false,
 ): string {
   if (status === "draft") {
-    return hasConceptMatrix
-      ? hasConceptApproval
-        ? "Concept matrix approved. Start the batch when ready."
-        : "Review the concept matrix, then approve generation."
-      : "Start the guided workflow.";
+    if (hasStrategy) return "Strategy ready. Run LFS4.1 when ready.";
+    if (hasStrategyPlan) return "Review the creative direction, then build strategy.";
+    return "Add owner-authored creative direction.";
   }
-  if (status === "review") return `Review checkpoint${stage ? ` at ${stage}` : ""}.`;
-  if (status === "running") return "Run is currently active.";
-  if (status === "blocked") return "Open the agent to inspect the failure.";
-  if (status === "complete") return "Batch is complete.";
+  if (status === "review") return `${friendlyStageLabel(stage)} is ready. Continue when approved.`;
+  if (status === "running") return `${friendlyStageLabel(stage)} is running.`;
+  if (status === "blocked") return "The batch needs operator attention.";
+  if (status === "complete") return "Final ads are ready for review.";
   return "Start or continue the guided workflow.";
 }
 

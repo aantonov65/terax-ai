@@ -1,9 +1,12 @@
 import { Button } from "@/components/ui/button";
+import { DotmCircular3 } from "@/components/ui/dotm-circular-3";
+import { MatrixRainIntro } from "@/components/ui/matrix-rain-intro";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { UploadArrowOutlineIcon } from "@/components/ui/upload-arrow-outline-icon";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -14,6 +17,7 @@ import {
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
+import { getKey } from "@/modules/ai/lib/keyring";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -23,38 +27,66 @@ import { ThemeProvider } from "@/modules/theme";
 import {
   CreateBatchDialog,
   CreateProductDialog,
+  ResearchPreviewDialog,
+  RunResearchDialog,
   type ProductDraft,
+  type ResearchDraft,
 } from "@/modules/wwx/WwxCreateDialogs";
 import {
   createWwxBatch,
   createWwxProduct,
-  seedWwxBatchFromPackage,
 } from "@/modules/wwx/mutations";
 import {
   useWwxIndex,
   WwxInspector,
   WwxSidebar,
+  readWwxArtifact,
   type AgentWindow,
   type BatchSummary,
+  type ProductResearchJob,
   type ProductSummary,
 } from "@/modules/wwx";
 import {
+  Alert02Icon,
   AiMagicIcon,
   Cancel01Icon,
+  CheckmarkCircle02Icon,
   Copy01Icon,
   LayoutLeftIcon,
+  PlayIcon,
   Settings01Icon,
   SidebarLeftIcon,
   SquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject,
+} from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
+import { writeWwxArtifact } from "@/modules/wwx";
+import { useGlobalShortcuts } from "@/modules/shortcuts";
 
 const WWX_WORKSPACE_STORAGE_KEY = "wwx.workspaceRoot";
 const DEFAULT_WWX_WORKSPACE_ROOT = "/Users/aantonov1/boris/ww-2";
 const CREATIVE_STRATEGIST_ID = "builtin:creative-strategist";
+
+type AppNotification = {
+  id: string;
+  productId: string;
+  batchId?: string;
+  title: string;
+  body: string;
+  tone: "success" | "error" | "warning";
+  createdAt: number;
+};
 
 export default function App() {
   const [home, setHome] = useState<string | null>(null);
@@ -83,8 +115,51 @@ export default function App() {
   const [createProductOpen, setCreateProductOpen] = useState(false);
   const [batchDialogProduct, setBatchDialogProduct] =
     useState<ProductSummary | null>(null);
+  const [researchDialogProduct, setResearchDialogProduct] =
+    useState<ProductSummary | null>(null);
+  const [researchPreviewProduct, setResearchPreviewProduct] =
+    useState<ProductSummary | null>(null);
+  const [researchJobs, setResearchJobs] = useState<Record<string, ProductResearchJob>>({});
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const batchStatusRef = useRef<Record<string, BatchSummary["status"]>>({});
+  const batchStatusBootedRef = useRef(false);
   const [batchDialogTitle, setBatchDialogTitle] = useState("Create Batch");
-  const firstBatchProductRef = useRef<ProductSummary | null>(null);
+
+  const pushNotification = useCallback(
+    (notification: Omit<AppNotification, "id" | "createdAt">) => {
+      const key = `${notification.productId}:${notification.batchId ?? "product"}:${notification.title}`;
+      const next: AppNotification = {
+        ...notification,
+        id: `${key}:${Date.now().toString(36)}`,
+        createdAt: Date.now(),
+      };
+      setNotifications((current) => [
+        next,
+        ...current.filter(
+          (item) =>
+            `${item.productId}:${item.batchId ?? "product"}:${item.title}` !== key,
+        ),
+      ].slice(0, 8));
+    },
+    [],
+  );
+
+  const currentResearchDialogProduct = useMemo(
+    () =>
+      researchDialogProduct
+        ? wwxIndex.products.find((product) => product.id === researchDialogProduct.id) ??
+          researchDialogProduct
+        : null,
+    [researchDialogProduct, wwxIndex.products],
+  );
+  const currentResearchPreviewProduct = useMemo(
+    () =>
+      researchPreviewProduct
+        ? wwxIndex.products.find((product) => product.id === researchPreviewProduct.id) ??
+          researchPreviewProduct
+        : null,
+    [researchPreviewProduct, wwxIndex.products],
+  );
 
   const apiKeys = useChatStore((s) => s.apiKeys);
   const setApiKeys = useChatStore((s) => s.setApiKeys);
@@ -184,6 +259,49 @@ export default function App() {
     [wwxIndex.products],
   );
 
+  useEffect(() => {
+    const next: Record<string, BatchSummary["status"]> = {};
+    for (const batch of wwxIndex.batches) {
+      next[batch.id] = batch.status;
+    }
+
+    if (!batchStatusBootedRef.current) {
+      batchStatusRef.current = next;
+      batchStatusBootedRef.current = true;
+      return;
+    }
+
+    for (const batch of wwxIndex.batches) {
+      const previous = batchStatusRef.current[batch.id];
+      if (!previous || previous === batch.status) continue;
+      if (!["complete", "review", "blocked", "running"].includes(batch.status)) continue;
+      const product = productForBatch(batch);
+      const tone =
+        batch.status === "blocked"
+          ? "error"
+          : batch.status === "review"
+            ? "warning"
+            : "success";
+      const label =
+        batch.status === "complete"
+          ? "Batch complete"
+          : batch.status === "running"
+            ? "Batch running"
+            : batch.status === "review"
+              ? "Batch needs review"
+              : "Batch blocked";
+      pushNotification({
+        productId: product?.id ?? batch.productId ?? "",
+        batchId: batch.id,
+        tone,
+        title: label,
+        body: batch.workflowState?.headline ?? batch.name,
+      });
+    }
+
+    batchStatusRef.current = next;
+  }, [productForBatch, pushNotification, wwxIndex.batches]);
+
   const selectBatch = useCallback((batchId: string) => {
     setSelectedBatchId(batchId);
     setSelectedArtifactPath(null);
@@ -219,9 +337,9 @@ export default function App() {
       active: true,
       createdAt: Date.now(),
       seedPrompt: [
-        "Start a new WWX LFS intake.",
-        "Ask me to paste product facts, audience research, mechanism truth, offer details, swipes, and target ad count.",
-        "When I provide enough evidence, use create_product_from_intake to readiness-check it and create the first batch only if it can proceed.",
+        "Start a new product setup intake.",
+        "Ask me only for the brand-brief facts needed to produce a valid config.json.",
+        "When I provide enough truth, structure it into config JSON and use create_product_from_config. Do not create research or a batch yet.",
       ].join(" "),
     };
     setAgentWindows((current) => [
@@ -253,7 +371,8 @@ export default function App() {
       const fallbackProductId = batch.productPath?.startsWith("app://wwx/products/")
         ? batch.productPath.slice("app://wwx/products/".length)
         : batch.productCode ?? "legacy";
-      const sessionId = useChatStore.getState().newSession();
+      const sessionId = stableBatchSessionId(batch.id);
+      useChatStore.getState().ensureSession(sessionId, batch.name);
       const next: AgentWindow = {
         id: `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
         productId: product?.id ?? fallbackProductId,
@@ -262,6 +381,7 @@ export default function App() {
         batchPath: batch.path,
         sessionId,
         active: true,
+        autonomous: batch.autonomous,
         createdAt: Date.now(),
         seedPrompt,
       };
@@ -319,10 +439,10 @@ export default function App() {
   );
 
   const continueBatchInAgent = useCallback(
-    (batch: BatchSummary) => {
+    (batch: BatchSummary, prompt?: string) => {
       ensureAgentWindowForBatch(
         batch,
-        `Continue this workflow for ${batch.id} from the current checkpoint.`,
+        prompt ?? `Continue this workflow for ${batch.id} from the current checkpoint.`,
       );
     },
     [ensureAgentWindowForBatch],
@@ -334,10 +454,6 @@ export default function App() {
         workspaceRoot: effectiveWorkspaceRoot,
         productFolder: draft.productFolder,
         config: draft.config,
-        research: draft.research,
-        sourceBundle: draft.sourceBundle,
-        packageArtifacts: draft.packageArtifacts,
-        approveForProduction: draft.approveForProduction,
       });
       const product: ProductSummary = {
         id: created.productId,
@@ -357,53 +473,13 @@ export default function App() {
         },
         batches: [],
       };
-      if (draft.packageArtifacts && draft.approveForProduction) {
-        const createdBatch = await createWwxBatch({
-          workspaceRoot: effectiveWorkspaceRoot,
-          productFolder: created.productId,
-          batchName: draft.packageArtifacts.batchId,
-        });
-        await seedWwxBatchFromPackage({
-          productId: created.productId,
-          batchId: createdBatch.batchId,
-          packageArtifacts: draft.packageArtifacts,
-        });
-        const batch: BatchSummary = {
-          id: createdBatch.batchId,
-          name: draft.packageArtifacts.batchId,
-          path: createdBatch.batchPath,
-          product: product.name,
-          productCode: product.code,
-          productPath: product.path,
-          status: "draft",
-          batchMetaPath: createdBatch.metaPath,
-          nextAction: "Review the concept matrix, then approve generation.",
-          artifacts: [],
-          runs: [],
-          alerts: [],
-        };
-        setSelectedBatchId(createdBatch.batchId);
-        ensureAgentWindowForBatch(
-          batch,
-          [
-            "A new product package was created from raw evidence.",
-            "First, read the concept matrix and readiness artifacts, then present the strategy for approval in plain language.",
-            "Do not start generation until I approve the concept matrix.",
-            "Once approved, run the full LFS workflow hands-off and return the ads first.",
-          ].join(" "),
-        );
-        firstBatchProductRef.current = null;
-        return;
-      }
-      firstBatchProductRef.current = product;
-      setBatchDialogProduct(product);
-      setBatchDialogTitle("Create Your First Batch");
+      setResearchDialogProduct(product);
     },
-    [effectiveWorkspaceRoot, ensureAgentWindowForBatch],
+    [effectiveWorkspaceRoot],
   );
 
   const handleCreateBatch = useCallback(
-    async (batchName: string) => {
+    async ({ batchName, autonomous }: { batchName: string; autonomous: boolean }) => {
       const product = batchDialogProduct;
       if (!product) return;
       const created = await createWwxBatch({
@@ -413,6 +489,7 @@ export default function App() {
       });
       const batch: BatchSummary = {
         id: created.batchId,
+        productId: product.id,
         name: batchName,
         path: created.batchPath,
         product: product.name,
@@ -432,13 +509,31 @@ export default function App() {
         ],
         runs: [],
         alerts: [],
+        autonomous,
       };
+      await writeWwxArtifact({
+        productId: product.id,
+        batchId: created.batchId,
+        kind: "json",
+        label: "Batch Control",
+        filename: "batch-control.json",
+        mimeType: "application/json",
+        contentText: JSON.stringify({ autonomous }, null, 2),
+        source: "desktop",
+        public: true,
+      });
       setSelectedBatchId(created.batchId);
       ensureAgentWindowForBatch(
         batch,
-        `Start the guided workflow for ${created.batchId}. This agent window is tied to that batch.`,
+        [
+          `Start the drive-aligned workflow for ${created.batchId}.`,
+          "This batch already inherits product truth; ask only for owner-authored creative direction:",
+          "which ARCs, which A/B combinations, which mechanisms, which LFS formats, how many ads, and optional source swipes/notes.",
+          autonomous
+            ? "Autonomous mode is on: once the strategy plan validates, continue through strategy build and LFS execution until blocked."
+            : "Autonomous mode is off: preview the creative direction and wait for me to run it.",
+        ].join(" "),
       );
-      firstBatchProductRef.current = null;
     },
     [batchDialogProduct, effectiveWorkspaceRoot, ensureAgentWindowForBatch],
   );
@@ -447,6 +542,184 @@ export default function App() {
     setBatchDialogProduct(product);
     setBatchDialogTitle("Create Batch");
   }, []);
+
+  const openResearchDialog = useCallback((product: ProductSummary) => {
+    setResearchDialogProduct(product);
+  }, []);
+
+  const openResearchPreview = useCallback((product: ProductSummary) => {
+    setResearchPreviewProduct(product);
+    setNotifications((current) =>
+      current.filter((item) => item.productId !== product.id || item.batchId),
+    );
+  }, []);
+
+  const handleRunResearch = useCallback(
+    async ({ topic }: ResearchDraft) => {
+      const product = researchDialogProduct;
+      if (!product) return;
+      if (researchJobs[product.id]?.status === "running") return;
+
+      const startedAt = Date.now();
+      setResearchJobs((current) => ({
+        ...current,
+        [product.id]: {
+          productId: product.id,
+          topic,
+          status: "running",
+          startedAt,
+        },
+      }));
+      pushNotification({
+        productId: product.id,
+        tone: "success",
+        title: "Research started",
+        body: `${product.name} is running in the background.`,
+      });
+
+      void (async () => {
+        try {
+          const result = await invoke<{
+            ok: boolean;
+            productId: string;
+            productCode: string;
+            runFolder: string;
+            artifacts: unknown[];
+          }>("wwx_run_research_pipeline", {
+            input: {
+              productId: product.id,
+              topic,
+              anthropicApiKey: await getKey("anthropic"),
+            },
+          });
+          if (!result.ok) throw new Error("Research pipeline failed.");
+          setResearchJobs((current) => ({
+            ...current,
+            [product.id]: {
+              productId: product.id,
+              topic,
+              status: "complete",
+              startedAt,
+              finishedAt: Date.now(),
+            },
+          }));
+          pushNotification({
+            productId: product.id,
+            tone: "success",
+            title: "Research complete",
+            body: `${product.name} research is ready. Click to preview.`,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setResearchJobs((current) => ({
+            ...current,
+            [product.id]: {
+              productId: product.id,
+              topic,
+              status: "blocked",
+              startedAt,
+              finishedAt: Date.now(),
+              error: message,
+            },
+          }));
+          pushNotification({
+            productId: product.id,
+            tone: "error",
+            title: "Research blocked",
+            body: message,
+          });
+        }
+      })();
+    },
+    [pushNotification, researchDialogProduct, researchJobs],
+  );
+
+  const handleRunBatch = useCallback(async (batch: BatchSummary) => {
+    const product = productForBatch(batch);
+    if (!product) return;
+    await invoke("wwx_start_lfs_job", {
+      input: {
+        productId: product.id,
+        batchId: batch.id,
+        runMode: "full",
+        anthropicApiKey: await getKey("anthropic"),
+      },
+    });
+  }, [productForBatch]);
+
+  const handleAdvanceBatch = useCallback(async (batch: BatchSummary) => {
+    const product = productForBatch(batch);
+    if (!product) return;
+    await invoke("wwx_advance_lfs_job", {
+      input: {
+        productId: product.id,
+        batchId: batch.id,
+        runMode: "review",
+        anthropicApiKey: await getKey("anthropic"),
+      },
+    });
+  }, [productForBatch]);
+
+  const handleBuildStrategy = useCallback(async (batch: BatchSummary) => {
+    const product = productForBatch(batch);
+    if (!product) return;
+    const planArtifact = batch.artifacts.find(
+      (artifact) => artifact.filename === "strategy-plan.json",
+    );
+    if (!planArtifact) {
+      throw new Error("Upload or save strategy-plan.json before building strategy.json.");
+    }
+    const plan = await readWwxArtifact(planArtifact.id);
+    await invoke("wwx_build_strategy", {
+      input: {
+        productId: product.id,
+        batchId: batch.id,
+        strategyPlanJson: plan.contentText ?? "",
+      },
+    });
+  }, [productForBatch]);
+
+  const setBatchAutonomous = useCallback(
+    async (batch: Pick<BatchSummary, "id" | "productId">, autonomous: boolean) => {
+      if (!batch.productId) return;
+      await writeWwxArtifact({
+        productId: batch.productId,
+        batchId: batch.id,
+        kind: "json",
+        label: "Batch Control",
+        filename: "batch-control.json",
+        mimeType: "application/json",
+        contentText: JSON.stringify({ autonomous }, null, 2),
+        source: "desktop",
+        public: true,
+      });
+      setAgentWindows((current) =>
+        current.map((item) =>
+          item.batchId === batch.id ? { ...item, autonomous } : item,
+        ),
+      );
+    },
+    [],
+  );
+
+  const setWindowAutonomous = useCallback(
+    async (windowId: string, autonomous: boolean) => {
+      const window = agentWindows.find((item) => item.id === windowId);
+      if (!window?.batchId || !window.productId) return;
+      await setBatchAutonomous(
+        { id: window.batchId, productId: window.productId },
+        autonomous,
+      );
+    },
+    [agentWindows, setBatchAutonomous],
+  );
+
+  useGlobalShortcuts({
+    "lfs.toggleAutonomy": () => {
+      if (!activeWindow?.batchId) return;
+      void setWindowAutonomous(activeWindow.id, !activeWindow.autonomous);
+    },
+  });
 
   useEffect(() => {
     setLive({
@@ -486,7 +759,6 @@ export default function App() {
             activeWindows={agentWindows.length}
             onToggleSidebar={() => togglePanel(sidebarRef)}
             onToggleInspector={() => togglePanel(inspectorRef)}
-            onOpenIntake={ensureIntakeAgentWindow}
             onOpenSettings={() => void openSettingsWindow()}
           />
 
@@ -511,7 +783,9 @@ export default function App() {
                   onSelectBatch={selectBatch}
                   onCreateProduct={() => setCreateProductOpen(true)}
                   onCreateBatch={openBatchDialog}
+                  onOpenResearchPreview={openResearchPreview}
                   onOpenBatchAgent={ensureAgentWindowForBatch}
+                  researchJobs={researchJobs}
                 />
               </ResizablePanel>
               <ResizableHandle withHandle className="bg-white/15" />
@@ -528,6 +802,13 @@ export default function App() {
                   onOpenIntake={ensureIntakeAgentWindow}
                   onFocus={focusAgentWindow}
                   onClose={closeAgentWindow}
+                  onOpenDiagnostics={(batch) => {
+                    setSelectedBatchId(batch.id);
+                    inspectorRef.current?.expand();
+                  }}
+                  onToggleAutonomy={(window) =>
+                    void setWindowAutonomous(window.id, !window.autonomous)
+                  }
                   onAddApiKey={() => void openSettingsWindow("models")}
                 />
               </ResizablePanel>
@@ -548,6 +829,12 @@ export default function App() {
                   selectedBatch={selectedBatch}
                   selectedArtifactPath={selectedArtifactPath}
                   onContinueInAgent={continueBatchInAgent}
+                  onBuildStrategy={(batch) => void handleBuildStrategy(batch)}
+                  onRunBatch={(batch) => void handleRunBatch(batch)}
+                  onAdvanceBatch={(batch) => void handleAdvanceBatch(batch)}
+                  onToggleAutonomy={(batch) =>
+                    void setBatchAutonomous(batch, !batch.autonomous)
+                  }
                 />
               </ResizablePanel>
             </ResizablePanelGroup>
@@ -563,13 +850,119 @@ export default function App() {
             product={batchDialogProduct}
             title={batchDialogTitle}
             onOpenChange={(open) => {
-              if (!open) {
-                setBatchDialogProduct(null);
-                firstBatchProductRef.current = null;
-              }
+              if (!open) setBatchDialogProduct(null);
             }}
             onCreate={handleCreateBatch}
           />
+          <RunResearchDialog
+            open={Boolean(currentResearchDialogProduct)}
+            product={currentResearchDialogProduct}
+            running={Boolean(
+              currentResearchDialogProduct &&
+                researchJobs[currentResearchDialogProduct.id]?.status === "running",
+            )}
+            onOpenChange={(open) => {
+              if (!open) setResearchDialogProduct(null);
+            }}
+            onRun={handleRunResearch}
+          />
+          <ResearchPreviewDialog
+            open={Boolean(currentResearchPreviewProduct)}
+            product={currentResearchPreviewProduct}
+            onOpenChange={(open) => {
+              if (!open) setResearchPreviewProduct(null);
+            }}
+            onRunResearch={openResearchDialog}
+          />
+          {notifications.length ? (
+            <div className="fixed right-4 top-4 z-50 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col gap-2">
+              {notifications.slice(0, 4).map((notification) => (
+                <div
+                  key={notification.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    if (notification.batchId) {
+                      setSelectedBatchId(notification.batchId);
+                      setSelectedArtifactPath(null);
+                      inspectorRef.current?.expand();
+                      setNotifications((current) =>
+                        current.filter((item) => item.id !== notification.id),
+                      );
+                      return;
+                    }
+                    const product = wwxIndex.products.find(
+                      (item) => item.id === notification.productId,
+                    );
+                    if (product) openResearchPreview(product);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.currentTarget.click();
+                    }
+                  }}
+                  className={cn(
+                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border bg-[#f8fafc] px-3.5 py-2.5 text-left text-slate-900 shadow-xl outline-none ring-0",
+                    notification.tone === "error"
+                      ? "border-red-200"
+                      : notification.tone === "warning"
+                        ? "border-amber-200"
+                        : "border-slate-200",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={
+                      notification.tone === "error"
+                        ? Alert02Icon
+                        : CheckmarkCircle02Icon
+                    }
+                    size={20}
+                    strokeWidth={2}
+                    className={cn(
+                      "mt-0.5 shrink-0",
+                      notification.tone === "error"
+                        ? "text-red-600"
+                        : notification.tone === "warning"
+                          ? "text-amber-600"
+                          : "text-emerald-600",
+                    )}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">
+                      {notification.body}
+                    </span>
+                    <span
+                      className={cn(
+                        "mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
+                        notification.tone === "error"
+                          ? "bg-red-100 text-red-700"
+                          : notification.tone === "warning"
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-emerald-100 text-emerald-700",
+                      )}
+                    >
+                      {notification.title.replace(/^Research /, "").replace(/^Batch /, "")}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-md p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setNotifications((current) =>
+                        current.filter((item) => item.id !== notification.id),
+                      );
+                    }}
+                    aria-label="Dismiss notification"
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={2} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <MatrixRainIntro />
         </div>
       </TooltipProvider>
     </ThemeProvider>
@@ -578,19 +971,21 @@ export default function App() {
   return <AiComposerProvider>{shell}</AiComposerProvider>;
 }
 
+function stableBatchSessionId(batchId: string): string {
+  return `wwx-batch:${batchId}`;
+}
+
 function WwxHeader({
   selectedBatch,
   activeWindows,
   onToggleSidebar,
   onToggleInspector,
-  onOpenIntake,
   onOpenSettings,
 }: {
   selectedBatch: BatchSummary | null;
   activeWindows: number;
   onToggleSidebar: () => void;
   onToggleInspector: () => void;
-  onOpenIntake: () => void;
   onOpenSettings: () => void;
 }) {
   return (
@@ -601,7 +996,7 @@ function WwxHeader({
       <Button
         variant="ghost"
         size="icon-sm"
-        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        className="rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
         onClick={onToggleSidebar}
         title="Toggle products"
       >
@@ -619,18 +1014,8 @@ function WwxHeader({
       </div>
       <Button
         variant="ghost"
-        size="xs"
-        className="rounded-none text-slate-300 hover:bg-white/10 hover:text-slate-100"
-        onClick={onOpenIntake}
-        title="Start chat-first LFS intake"
-      >
-        <HugeiconsIcon icon={AiMagicIcon} size={13} strokeWidth={1.8} />
-        New intake
-      </Button>
-      <Button
-        variant="ghost"
         size="icon-sm"
-        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        className="rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
         onClick={onOpenSettings}
         title="Settings"
       >
@@ -639,7 +1024,7 @@ function WwxHeader({
       <Button
         variant="ghost"
         size="icon-sm"
-        className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+        className="rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
         onClick={onToggleInspector}
         title="Toggle details"
       >
@@ -661,6 +1046,8 @@ function AgentCanvas({
   onOpenIntake,
   onFocus,
   onClose,
+  onOpenDiagnostics,
+  onToggleAutonomy,
   onAddApiKey,
 }: {
   windows: AgentWindow[];
@@ -669,6 +1056,8 @@ function AgentCanvas({
   onOpenIntake: () => void;
   onFocus: (windowId: string) => void;
   onClose: (windowId: string) => void;
+  onOpenDiagnostics: (batch: BatchSummary) => void;
+  onToggleAutonomy: (window: AgentWindow) => void;
   onAddApiKey: () => void;
 }) {
   const [maximizedWindowId, setMaximizedWindowId] = useState<string | null>(null);
@@ -688,17 +1077,17 @@ function AgentCanvas({
         <div className="max-w-md border border-dashed border-white/20 bg-[#202126] p-6 text-center">
           <div className="text-sm font-medium">No LFS agent is open</div>
           <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            Start a chat-first intake, or open an existing batch from the
+            Start product setup, or open an existing batch from the
             product sidebar.
           </p>
           <Button
             variant="secondary"
             size="sm"
-            className="mt-4 rounded-none"
+            className="mt-4 rounded-md"
             onClick={onOpenIntake}
           >
             <HugeiconsIcon icon={AiMagicIcon} size={14} strokeWidth={1.8} />
-            New intake
+            New product setup
           </Button>
         </div>
       </div>
@@ -708,17 +1097,19 @@ function AgentCanvas({
   const visibleWindows = maximizedWindowId
     ? windows.filter((window) => window.id === maximizedWindowId)
     : windows;
+  const gridStyle = maximizedWindowId
+    ? undefined
+    : agentCanvasGridStyle(visibleWindows.length);
 
   return (
     <div
       className={cn(
-        "h-full min-h-0 overflow-hidden bg-[#17181b]",
-        maximizedWindowId
-          ? "grid grid-cols-1"
-          : agentCanvasGridClass(visibleWindows.length),
+        "grid h-full min-h-0 overflow-hidden bg-[#17181b]",
+        maximizedWindowId ? "grid-cols-1" : "gap-px",
       )}
+      style={gridStyle}
     >
-      {visibleWindows.map((window, index) => {
+      {visibleWindows.map((window) => {
         const batch = window.batchPath
           ? batches.find((item) => item.path === window.batchPath)
           : null;
@@ -729,51 +1120,80 @@ function AgentCanvas({
             className={cn(
               "relative flex min-h-0 min-w-0 flex-col overflow-hidden border border-white/15 bg-[#1f2024] shadow-[0_0_0_1px_rgba(0,0,0,0.32)]",
               maximizedWindowId && "h-full min-h-0",
-              visibleWindows.length !== 1 && !maximizedWindowId && "min-h-[300px]",
-              visibleWindows.length === 3 && !maximizedWindowId && index === 0 && "xl:row-span-2",
+              visibleWindows.length > 1 &&
+                visibleWindows.length <= 4 &&
+                !maximizedWindowId &&
+                "min-h-[240px]",
               window.active && !maximizedWindowId && "border-white/20 bg-[#222328]",
             )}
           >
             {window.active ? (
               <div className="absolute left-0 top-0 h-0 w-0 border-r-[12px] border-t-[12px] border-r-transparent border-t-[#9ca3af]" />
             ) : null}
-            <div className="relative flex h-8 shrink-0 items-center justify-end gap-1 border-b border-white/15 bg-[#111216] px-2">
-              <div className="pointer-events-none absolute inset-x-12 text-center text-[11px] text-slate-400">
-                <span className="block truncate leading-none">
+            <div className="grid h-8 shrink-0 grid-cols-[104px_minmax(0,1fr)_104px] items-center border-b border-white/15 bg-[#111216] px-2">
+              <div className="z-10 min-w-0">
+                {batch ? (
+                  <WorkflowStatusPill
+                    batch={batch}
+                    onClick={() => onOpenDiagnostics(batch)}
+                  />
+                ) : null}
+              </div>
+              <div className="pointer-events-none min-w-0 text-center text-[11px] text-slate-400">
+                <span className="block min-w-0 truncate leading-none">
                   {batch?.name ?? window.batchId ?? "New product intake"}
                 </span>
               </div>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="rounded-none text-slate-500 hover:bg-white/10 hover:text-slate-200"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setMaximizedWindowId((current) =>
-                    current === window.id ? null : window.id,
-                  );
-                }}
-                title={maximizedWindowId === window.id ? "Restore terminal" : "Maximize terminal"}
-              >
-                <HugeiconsIcon
-                  icon={maximizedWindowId === window.id ? Copy01Icon : SquareIcon}
-                  size={12}
-                  strokeWidth={2}
-                />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="rounded-none text-slate-500 hover:bg-white/10 hover:text-slate-200"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (maximizedWindowId === window.id) setMaximizedWindowId(null);
-                  onClose(window.id);
-                }}
-                title="Close agent"
-              >
-                <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
-              </Button>
+              <div className="relative z-10 flex shrink-0 items-center justify-end gap-1">
+                {window.batchId ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className={cn(
+                      "rounded-md hover:bg-white/10",
+                      window.autonomous ? "text-emerald-300" : "text-slate-500 hover:text-slate-200",
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleAutonomy(window);
+                    }}
+                    title={`Autonomous mode ${window.autonomous ? "on" : "off"} (⌘⇧A / Ctrl+Shift+A)`}
+                  >
+                    <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={2} />
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="rounded-md text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setMaximizedWindowId((current) =>
+                      current === window.id ? null : window.id,
+                    );
+                  }}
+                  title={maximizedWindowId === window.id ? "Restore terminal" : "Maximize terminal"}
+                >
+                  <HugeiconsIcon
+                    icon={maximizedWindowId === window.id ? Copy01Icon : SquareIcon}
+                    size={12}
+                    strokeWidth={2}
+                  />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="rounded-md text-slate-500 hover:bg-white/10 hover:text-slate-200"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (maximizedWindowId === window.id) setMaximizedWindowId(null);
+                    onClose(window.id);
+                  }}
+                  title="Close agent"
+                >
+                  <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
+                </Button>
+              </div>
             </div>
             <div className="min-h-0 flex-1">
               <AgentTerminal
@@ -792,11 +1212,108 @@ function AgentCanvas({
   );
 }
 
-function agentCanvasGridClass(count: number): string {
-  if (count <= 1) return "grid grid-cols-1 grid-rows-1 gap-px";
-  if (count === 2) return "grid grid-cols-1 grid-rows-2 gap-px xl:grid-cols-2 xl:grid-rows-1";
-  if (count === 3) {
-    return "grid grid-cols-1 auto-rows-fr gap-px xl:grid-cols-2 xl:grid-rows-2";
+function WorkflowStatusPill({
+  batch,
+  onClick,
+}: {
+  batch: BatchSummary;
+  onClick: () => void;
+}) {
+  const latest = batch.runs[0];
+  const workflow = batch.workflowState;
+  const state =
+    workflow?.tone === "success" || batch.finalScripts?.length
+      ? "final complete"
+      : workflow?.tone === "danger" || batch.status === "blocked"
+        ? "blocked"
+        : workflow?.tone === "running" || batch.status === "running"
+          ? "running"
+          : workflow?.tone === "warning" || batch.status === "review"
+            ? "needs review"
+            : workflow?.primaryAction?.kind === "run_batch"
+              ? "ready to run"
+              : workflow?.primaryAction?.kind === "build_strategy"
+                ? "strategy"
+                : "pending";
+  const tone = {
+    pending: "border-slate-500/40 bg-transparent text-slate-300",
+    running: "border-sky-400/40 bg-transparent text-sky-200",
+    strategy: "border-emerald-400/40 bg-transparent text-emerald-200",
+    "needs review": "border-amber-400/40 bg-transparent text-amber-200",
+    blocked: "border-red-400/40 bg-transparent text-red-200",
+    "ready to run": "border-sky-400/40 bg-transparent text-sky-100",
+    "final complete": "border-emerald-300/50 bg-transparent text-emerald-100",
+  }[state];
+  const label =
+    state === "pending"
+      ? "Input"
+      : state === "running"
+        ? workflow?.stageLabel ?? (latest?.stage ? latest.stage.split(/[/:]/)[0] : "Run")
+        : state === "strategy"
+          ? "Plan"
+          : state === "needs review"
+            ? "Review"
+            : state === "blocked"
+              ? "Blocked"
+              : state === "ready to run"
+                ? "Ready"
+                : "Done";
+  const icon =
+    state === "blocked"
+        ? Cancel01Icon
+        : state === "needs review"
+          ? Alert02Icon
+          : state === "pending"
+            ? null
+            : CheckmarkCircle02Icon;
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={cn("flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px]", tone)}
+      title="Open batch diagnostics"
+    >
+      {state === "running" ? (
+        <DotmCircular3
+          size={13}
+          dotSize={2}
+          color="currentColor"
+          ariaLabel="Workflow running"
+        />
+      ) : (
+        icon ? (
+          <HugeiconsIcon icon={icon} size={11} strokeWidth={2} />
+        ) : (
+          <UploadArrowOutlineIcon size={11} className="shrink-0" />
+        )
+      )}
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+function agentCanvasGridStyle(count: number): CSSProperties {
+  if (count <= 1) {
+    return {
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gridTemplateRows: "minmax(0, 1fr)",
+    };
   }
-  return "grid grid-cols-1 auto-rows-fr gap-px xl:grid-cols-2";
+
+  const viewportWide =
+    typeof window !== "undefined" ? window.innerWidth >= 1280 : true;
+  const columns = viewportWide
+    ? Math.max(2, Math.ceil(Math.sqrt(count)))
+    : count <= 3
+      ? 1
+      : 2;
+  const rows = Math.ceil(count / columns);
+
+  return {
+    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+    gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+  };
 }

@@ -9,19 +9,22 @@ import {
   MessageContent,
   MessageResponse,
 } from "@/components/ai-elements/message";
+import { Tool as RichTool } from "@/components/ai-elements/tool";
 import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from "@/components/ai-elements/reasoning";
-import { Tool } from "@/components/ai-elements/tool";
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtStep,
+  ChainOfThoughtTrigger,
+} from "@/components/ui/chain-of-thought";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SLASH_COMMANDS, TERAX_CMD_RE } from "../lib/slashCommands";
 import {
   hasSuccessfulWwxToolResult,
   isRecoverableWwxFollowupError,
 } from "../lib/wwxToolResult";
-import { Spinner } from "@/components/ui/spinner";
+import { DotMatrixLoader } from "@/components/ui/dot-matrix-loader";
+import { ThinkingBar } from "@/components/ui/thinking-bar";
+import { Tool as PromptKitTool } from "@/components/ui/tool";
 import type {
   ChatStatus,
   DynamicToolUIPart,
@@ -61,6 +64,28 @@ function CommandSnippet({ name }: { name: string }) {
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 type AnyPart = UIMessagePart<Record<string, never>, Record<string, never>>;
+const WWX_TOOL_NAMES = new Set([
+  "create_product_from_config",
+  "run_product_research",
+  "save_strategy_plan",
+  "build_strategy_json",
+  "set_autonomous_mode",
+  "get_lfs_plan",
+  "submit_lfs_job",
+  "advance_lfs_job",
+  "resume_lfs_job",
+  "get_lfs_job",
+  "list_lfs_artifacts",
+  "read_lfs_artifact",
+  "edit_lfs_artifact",
+  "rerun_lfs_checks",
+  "retry_lfs_failures",
+  "export_lfs",
+  "cancel_lfs_job",
+  "get_product_readiness",
+  "enqueue_lfs_job",
+  "list_lfs_queue",
+]);
 
 type ApprovalArg = {
   id: string;
@@ -83,6 +108,7 @@ export function AiChatView({
   error,
   clearError,
   addToolApprovalResponse,
+  stop,
 }: Props) {
   const isBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages[messages.length - 1];
@@ -112,13 +138,20 @@ export function AiChatView({
   return (
     <Conversation>
       <ConversationContent className="gap-5 p-3">
+        {isBusy ? (
+          <ThinkingBar
+            text="Working"
+            onStop={() => void stop()}
+            stopLabel="Stop"
+            className="sticky top-0 z-10 rounded-full border border-white/10 bg-[#17181b]/90 px-3 py-1.5 text-[11px] backdrop-blur"
+          />
+        ) : null}
         {messages.map((m) => (
           <RenderedMessage key={m.id} message={m} onApproval={onApproval} />
         ))}
         {showSpinner && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Spinner />
-            Thinking…
+            <DotMatrixLoader label="Thinking" />
           </div>
         )}
         {error && !recoverableWwxError && (
@@ -207,12 +240,16 @@ const RenderedPart = memo(function RenderedPart({
 
   if (part.type === "reasoning") {
     return (
-      <Reasoning>
-        <ReasoningTrigger />
-        <ReasoningContent>
-          {(part as unknown as { text: string }).text}
-        </ReasoningContent>
-      </Reasoning>
+      <ChainOfThought>
+        <ChainOfThoughtStep defaultOpen>
+          <ChainOfThoughtTrigger className="text-[11px]">
+            Reasoning
+          </ChainOfThoughtTrigger>
+          <ChainOfThoughtContent className="pl-1 text-[11.5px] leading-relaxed text-slate-400">
+            <MessageResponse>{(part as unknown as { text: string }).text}</MessageResponse>
+          </ChainOfThoughtContent>
+        </ChainOfThoughtStep>
+      </ChainOfThought>
     );
   }
 
@@ -253,8 +290,32 @@ const RenderedTool = memo(function RenderedTool({
     );
   }
 
+  if (
+    !WWX_TOOL_NAMES.has(toolName) &&
+    (
+      part.state === "input-streaming" ||
+      part.state === "input-available" ||
+      part.state === "output-available" ||
+      part.state === "output-error"
+    )
+  ) {
+    return (
+      <PromptKitTool
+        className="border-white/10 bg-[#17181b]/70"
+        defaultOpen={part.state === "output-error"}
+        toolPart={{
+          type: toolName,
+          state: part.state,
+          input: part.input as Record<string, unknown> | undefined,
+          output: "output" in part ? (part.output as Record<string, unknown> | undefined) : undefined,
+          errorText: "errorText" in part ? part.errorText : undefined,
+        }}
+      />
+    );
+  }
+
   return (
-    <Tool
+    <RichTool
       toolName={toolName}
       state={part.state}
       input={part.input}

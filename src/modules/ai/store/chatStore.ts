@@ -138,6 +138,7 @@ type StoreState = {
   activeSessionId: string | null;
   hydrateSessions: () => Promise<void>;
   newSession: () => string;
+  ensureSession: (id: string, title?: string) => string;
   switchSession: (id: string) => void;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
@@ -403,6 +404,26 @@ export const useChatStore = create<StoreState>((set, get) => ({
     return id;
   },
 
+  ensureSession: (id, title = "New chat") => {
+    const existing = get().sessions.find((session) => session.id === id);
+    if (existing) {
+      set({ activeSessionId: id, agentMeta: IDLE_META });
+      void saveActiveId(id);
+      return id;
+    }
+    const meta: SessionMeta = {
+      id,
+      title,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const next = [meta, ...get().sessions];
+    set({ sessions: next, activeSessionId: id, agentMeta: IDLE_META });
+    void saveSessionsList(next);
+    void saveActiveId(id);
+    return id;
+  },
+
   switchSession: (id) => {
     if (get().activeSessionId === id) return;
     if (!get().sessions.some((s) => s.id === id)) return;
@@ -518,6 +539,14 @@ export function getOrCreateChat(sessionId: string): Chat<UIMessage> {
   const c = makeChat(sessionId);
   touchChat(sessionId, c);
   return c;
+}
+
+export async function ensureChatSeeded(sessionId: string): Promise<void> {
+  if (chats.has(sessionId) || seedMessages.has(sessionId)) return;
+  const messages = await loadMessages(sessionId);
+  if (messages && messages.length > 0 && !chats.has(sessionId)) {
+    seedMessages.set(sessionId, messages);
+  }
 }
 
 export function getChat(sessionId?: string): Chat<UIMessage> | undefined {

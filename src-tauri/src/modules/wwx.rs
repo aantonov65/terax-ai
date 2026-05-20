@@ -74,6 +74,8 @@ pub struct WwxStageSummary {
     status: String,
     approved: bool,
     artifact_count: i64,
+    label: String,
+    summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +105,8 @@ pub struct WwxBatch {
     decision_counts: DecisionCounts,
     stage_timeline: Vec<WwxStageSummary>,
     final_scripts: Vec<WwxFinalScript>,
+    autonomous: bool,
+    workflow_state: WwxWorkflowState,
 }
 
 #[derive(Debug, Default, Serialize, Clone)]
@@ -111,6 +115,34 @@ pub struct DecisionCounts {
     ship: i64,
     review: i64,
     fail: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WwxWorkflowAction {
+    kind: String,
+    label: String,
+    prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WwxWorkflowState {
+    status: String,
+    status_label: String,
+    stage: Option<String>,
+    stage_label: Option<String>,
+    headline: String,
+    summary: String,
+    tone: String,
+    operator_needed: bool,
+    retryable: bool,
+    failure_kind: Option<String>,
+    reason: Option<String>,
+    primary_action: Option<WwxWorkflowAction>,
+    secondary_action: Option<WwxWorkflowAction>,
+    important_artifact_ids: Vec<String>,
+    diagnostic_artifact_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,6 +155,8 @@ pub struct WwxProduct {
     created_at: i64,
     updated_at: i64,
     revision: i64,
+    research_artifact_count: i64,
+    research_artifact_updated_at: Option<i64>,
     batches: Vec<WwxBatch>,
 }
 
@@ -199,6 +233,53 @@ pub struct GenerateProductPackageInput {
     documents: Vec<SourceBundleDocumentInput>,
     batch_request: Option<Value>,
     anthropic_api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResearchPipelineInput {
+    product_id: String,
+    topic: String,
+    anthropic_api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResearchPipelineResult {
+    ok: bool,
+    product_id: String,
+    product_code: String,
+    run_folder: String,
+    artifacts: Vec<WwxArtifact>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildStrategyInput {
+    product_id: String,
+    batch_id: String,
+    strategy_plan_json: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildStrategyResult {
+    ok: bool,
+    product_id: String,
+    batch_id: String,
+    strategy_json: String,
+    artifacts: Vec<WwxArtifact>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateStrategyResult {
+    ok: bool,
+    product_id: String,
+    batch_id: String,
+    strategy_json: Option<String>,
+    error: Option<String>,
+    artifacts: Vec<WwxArtifact>,
 }
 
 #[derive(Debug, Serialize)]
@@ -799,6 +880,290 @@ fn manifest_decision_counts(conn: &Connection, batch_id: &str) -> Result<Decisio
     })
 }
 
+fn stage_label(stage: &str) -> String {
+    match stage {
+        "compile_input" => "Preparing batch",
+        "research_cards" => "Checking research",
+        "lfs_brief" => "Building briefs",
+        "lfs_outline" => "Writing outlines",
+        "preflight_v41" => "Checking readiness",
+        "batch_generation" => "Generating scripts",
+        "materialize_v41_candidates" => "Preparing candidates",
+        "objective_finish_pre_semantic" => "Checking structure",
+        "semantic_launchable" => "Checking launchability",
+        "objective_finish_final" => "Final structure check",
+        "semantic_final_check" => "Final quality check",
+        "manifest_overview" => "Preparing final ads",
+        "strategy_plan" => "Creative direction",
+        "strategy" => "Strategy",
+        "resume" => "Continuing batch",
+        value => return value.replace('_', " ").replace('-', " "),
+    }
+    .into()
+}
+
+fn stage_summary(stage: &str) -> String {
+    match stage {
+        "compile_input" => "The batch input is being normalized.",
+        "research_cards" => "Product research is being checked before ad work starts.",
+        "lfs_brief" => "The system is turning direction into briefs for the batch.",
+        "lfs_outline" => "The system is shaping the ad outlines.",
+        "preflight_v41" => "The batch is being checked before script generation.",
+        "batch_generation" => "Scripts are being generated.",
+        "materialize_v41_candidates" => "Generated scripts are being prepared for review.",
+        "objective_finish_pre_semantic" => "Scripts are being checked for structure and required pieces.",
+        "semantic_launchable" => "Scripts are being checked for launchability.",
+        "objective_finish_final" => "The final script set is being checked.",
+        "semantic_final_check" => "The final script set is getting a last quality pass.",
+        "manifest_overview" => "The final ad decisions are being prepared.",
+        _ => "The workflow is ready for the next step.",
+    }
+    .into()
+}
+
+fn artifact_is_important(filename: &str) -> bool {
+    let clean = filename.trim_start_matches('/');
+    clean.starts_with("output-v41/")
+        || clean.starts_with("output/")
+        || matches!(
+            clean,
+            "strategy-plan.json"
+                | "strategy-plan-validation.json"
+                | "strategy.json"
+                | "lfs-v41-manifest.json"
+                | "lfs-v41-report.json"
+                | "source-angle.md"
+                | "angles.md"
+        )
+}
+
+fn workflow_action(kind: &str, label: &str, prompt: Option<&str>) -> WwxWorkflowAction {
+    WwxWorkflowAction {
+        kind: kind.into(),
+        label: label.into(),
+        prompt: prompt.map(str::to_string),
+    }
+}
+
+fn latest_repair_failure(conn: &Connection, batch_id: &str) -> Result<Option<Value>, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content_text FROM artifacts WHERE batch_id = ?1 AND filename = 'repair-history.json' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(parsed
+        .get("failures")
+        .and_then(Value::as_array)
+        .and_then(|items| items.last())
+        .cloned())
+}
+
+fn batch_workflow_state(
+    conn: &Connection,
+    batch: &WwxBatch,
+) -> Result<WwxWorkflowState, String> {
+    let stage = batch.current_stage.clone();
+    let stage_label_value = stage.as_deref().map(stage_label);
+    let important_artifact_ids = batch
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact_is_important(&artifact.filename))
+        .map(|artifact| artifact.id.clone())
+        .collect::<Vec<_>>();
+    let diagnostic_artifact_ids = batch
+        .artifacts
+        .iter()
+        .filter(|artifact| !artifact_is_important(&artifact.filename))
+        .map(|artifact| artifact.id.clone())
+        .collect::<Vec<_>>();
+    let has_strategy_plan = batch
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.filename == "strategy-plan.json");
+    let has_strategy = batch
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.filename == "strategy.json");
+    let has_final = !batch.final_scripts.is_empty()
+        || batch
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.filename.starts_with("output-v41/"));
+    let failure = latest_repair_failure(conn, &batch.id)?;
+    let failure_kind = failure
+        .as_ref()
+        .and_then(|item| item.get("kind"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let reason = failure
+        .as_ref()
+        .and_then(|item| item.get("reason"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let failure_operator_needed = failure
+        .as_ref()
+        .and_then(|item| item.get("operator_needed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let status_label = match batch.status.as_str() {
+        "review" => "needs review",
+        "blocked" => "blocked",
+        "complete" => "complete",
+        "running" => "running",
+        "ready" => "ready",
+        "draft" => "draft",
+        _ => "unknown",
+    }
+    .to_string();
+    let mut state = WwxWorkflowState {
+        status: batch.status.clone(),
+        status_label,
+        stage: stage.clone(),
+        stage_label: stage_label_value.clone(),
+        headline: "Creative direction needed".into(),
+        summary: "Add the ARC, A/B, mechanism, format, count, and any swipes or notes.".into(),
+        tone: "neutral".into(),
+        operator_needed: false,
+        retryable: false,
+        failure_kind,
+        reason,
+        primary_action: Some(workflow_action(
+            "add_direction",
+            "Add creative direction",
+            Some("Help me structure creative direction for this batch."),
+        )),
+        secondary_action: None,
+        important_artifact_ids,
+        diagnostic_artifact_ids,
+    };
+
+    if batch.status == "complete" || has_final {
+        state.headline = "Final ads are ready".into();
+        state.summary = "Review the ship, review, and fail decisions before upload.".into();
+        state.tone = "success".into();
+        state.primary_action = Some(workflow_action(
+            "review_final",
+            "Review final ads",
+            Some("Show me the final ads and call out what is ship-ready versus needs review."),
+        ));
+        state.secondary_action = Some(workflow_action(
+            "export",
+            "Export ship-ready ads",
+            Some("Export the ship-ready scripts for handoff."),
+        ));
+        return Ok(state);
+    }
+
+    if batch.status == "review" {
+        let label = stage_label_value.unwrap_or_else(|| "Checkpoint".into());
+        state.headline = format!("{label} is ready. Continue to next stage?");
+        state.summary = "Skim the checkpoint, then continue when it looks right.".into();
+        state.tone = "warning".into();
+        state.primary_action = Some(workflow_action(
+            "continue",
+            "Continue to next stage",
+            Some("Continue to the next LFS stage for this batch."),
+        ));
+        state.secondary_action = Some(workflow_action(
+            "open_agent",
+            "Ask / Hold",
+            Some("I want to ask a question before continuing this batch."),
+        ));
+        return Ok(state);
+    }
+
+    if batch.status == "blocked" {
+        let system_repairable = !failure_operator_needed && failure.is_some();
+        state.headline = if system_repairable {
+            "Repair is available".into()
+        } else {
+            "Batch needs operator input".into()
+        };
+        state.summary = state
+            .reason
+            .clone()
+            .unwrap_or_else(|| "Open the Creative Strategist to see the exact blocker.".into());
+        state.tone = "danger".into();
+        state.operator_needed = !system_repairable;
+        state.retryable = system_repairable;
+        state.primary_action = Some(if system_repairable {
+            workflow_action(
+                "repair",
+                "Repair and continue",
+                Some("Repair the current batch issue and continue from the earliest safe stage."),
+            )
+        } else {
+            workflow_action(
+                "provide_input",
+                "Provide missing input",
+                Some("Tell me exactly what input is missing for this batch."),
+            )
+        });
+        state.secondary_action = Some(workflow_action(
+            "open_agent",
+            "Open agent",
+            Some("Open this batch in the Creative Strategist agent."),
+        ));
+        return Ok(state);
+    }
+
+    if batch.status == "running" {
+        let label = stage_label_value.unwrap_or_else(|| "Workflow".into());
+        state.headline = format!("{label} is running");
+        state.summary = stage.as_deref().map(stage_summary).unwrap_or_else(|| "The workflow is running.".into());
+        state.tone = "running".into();
+        state.primary_action = Some(workflow_action("wait", "Running", None));
+        return Ok(state);
+    }
+
+    if has_strategy {
+        state.headline = "Strategy is ready".into();
+        state.summary = "Run the LFS batch when you are ready for generation.".into();
+        state.primary_action = Some(workflow_action("run_batch", "Run Batch", None));
+        return Ok(state);
+    }
+    if has_strategy_plan {
+        state.headline = "Creative direction is saved".into();
+        state.summary = "Build the strategy before running the LFS batch.".into();
+        state.primary_action = Some(workflow_action("build_strategy", "Build Strategy", None));
+    }
+    Ok(state)
+}
+
+fn empty_workflow_state(status: &str, current_stage: Option<String>) -> WwxWorkflowState {
+    let stage_label_value = current_stage.as_deref().map(stage_label);
+    WwxWorkflowState {
+        status: status.into(),
+        status_label: status.into(),
+        stage: current_stage,
+        stage_label: stage_label_value,
+        headline: "Creative direction needed".into(),
+        summary: "Add the ARC, A/B, mechanism, format, count, and any swipes or notes.".into(),
+        tone: "neutral".into(),
+        operator_needed: false,
+        retryable: false,
+        failure_kind: None,
+        reason: None,
+        primary_action: Some(workflow_action(
+            "add_direction",
+            "Add creative direction",
+            Some("Help me structure creative direction for this batch."),
+        )),
+        secondary_action: None,
+        important_artifact_ids: vec![],
+        diagnostic_artifact_ids: vec![],
+    }
+}
+
 fn agent_stage_timeline(conn: &Connection, batch_id: &str) -> Result<Vec<WwxStageSummary>, String> {
     let text: Option<String> = conn
         .query_row(
@@ -848,6 +1213,18 @@ fn agent_stage_timeline(conn: &Connection, batch_id: &str) -> Result<Vec<WwxStag
                     .and_then(Value::as_array)
                     .map(|items| items.len() as i64)
                     .unwrap_or(0),
+                label: entry
+                    .get("public_ui")
+                    .and_then(|ui| ui.get("stage_label"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| stage_label(stage)),
+                summary: entry
+                    .get("public_ui")
+                    .and_then(|ui| ui.get("summary"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| stage_summary(stage)),
             })
         })
         .collect())
@@ -892,12 +1269,57 @@ fn manifest_final_scripts(
         .unwrap_or_default())
 }
 
+fn batch_autonomous(conn: &Connection, batch_id: &str) -> Result<bool, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content_text FROM artifacts WHERE batch_id = ?1 AND filename = 'batch-control.json' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    Ok(text
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| value.get("autonomous").and_then(Value::as_bool))
+        .unwrap_or(false))
+}
+
 #[tauri::command]
 pub fn wwx_list_products(app: AppHandle) -> Result<WwxIndex, String> {
     let conn = open_db(&app)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, product_code, name, config_json, created_at, updated_at, revision FROM products WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+            r#"
+            SELECT
+              p.id,
+              p.product_code,
+              p.name,
+              p.config_json,
+              p.created_at,
+              p.updated_at,
+              p.revision,
+              (
+                SELECT COUNT(*)
+                FROM artifacts a
+                WHERE a.product_id = p.id
+                  AND a.batch_id = p.id
+                  AND a.deleted_at IS NULL
+                  AND (a.filename LIKE 'research/%' OR a.filename LIKE 'research-runs/%')
+              ) AS research_artifact_count,
+              (
+                SELECT MAX(a.updated_at)
+                FROM artifacts a
+                WHERE a.product_id = p.id
+                  AND a.batch_id = p.id
+                  AND a.deleted_at IS NULL
+                  AND (a.filename LIKE 'research/%' OR a.filename LIKE 'research-runs/%')
+              ) AS research_artifact_updated_at
+            FROM products p
+            WHERE p.deleted_at IS NULL
+            ORDER BY p.updated_at DESC
+            "#,
         )
         .map_err(|e| e.to_string())?;
     let products_iter = stmt
@@ -910,6 +1332,8 @@ pub fn wwx_list_products(app: AppHandle) -> Result<WwxIndex, String> {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
                 revision: row.get(6)?,
+                research_artifact_count: row.get(7)?,
+                research_artifact_updated_at: row.get(8)?,
                 batches: vec![],
             })
         })
@@ -961,6 +1385,11 @@ fn list_batches_for_product(
                 decision_counts: DecisionCounts::default(),
                 stage_timeline: vec![],
                 final_scripts: vec![],
+                autonomous: false,
+                workflow_state: empty_workflow_state(
+                    &row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -973,6 +1402,8 @@ fn list_batches_for_product(
         batch.decision_counts = manifest_decision_counts(conn, &batch.id)?;
         batch.stage_timeline = agent_stage_timeline(conn, &batch.id)?;
         batch.final_scripts = manifest_final_scripts(conn, &batch.id)?;
+        batch.autonomous = batch_autonomous(conn, &batch.id)?;
+        batch.workflow_state = batch_workflow_state(conn, batch)?;
     }
     Ok(batches)
 }
@@ -994,8 +1425,10 @@ pub fn wwx_list_batches(app: AppHandle, product_id: String) -> Result<Vec<WwxBat
 pub fn wwx_read_product_package(
     app: AppHandle,
     product_id: String,
+    include_content: Option<bool>,
 ) -> Result<WwxProductPackage, String> {
     let conn = open_db(&app)?;
+    let include_content = include_content.unwrap_or(false);
     let (product_code, name, config_json): (String, String, String) = conn
         .query_row(
             "SELECT product_code, name, config_json FROM products WHERE id = ?1 AND deleted_at IS NULL",
@@ -1013,6 +1446,7 @@ pub fn wwx_read_product_package(
               AND (
                 filename IN ('source-bundle.json', 'product-readiness.json')
                 OR filename LIKE 'research/%'
+                OR filename LIKE 'research-runs/%'
                 OR filename LIKE 'package/%'
               )
             ORDER BY filename ASC
@@ -1037,8 +1471,8 @@ pub fn wwx_read_product_package(
                     updated_at: row.get(11)?,
                     revision: row.get(12)?,
                 },
-                content_text: row.get(13)?,
-                content_blob: row.get(14)?,
+                content_text: if include_content { row.get(13)? } else { None },
+                content_blob: if include_content { row.get(14)? } else { None },
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1089,6 +1523,8 @@ pub fn wwx_create_product(app: AppHandle, input: CreateProductInput) -> Result<W
         created_at: now,
         updated_at: now,
         revision: 1,
+        research_artifact_count: 0,
+        research_artifact_updated_at: None,
         batches: vec![],
     })
 }
@@ -1159,6 +1595,8 @@ pub fn wwx_create_batch(app: AppHandle, input: CreateBatchInput) -> Result<WwxBa
         decision_counts: DecisionCounts::default(),
         stage_timeline: vec![],
         final_scripts: vec![],
+        autonomous: false,
+        workflow_state: empty_workflow_state("draft", None),
     })
 }
 
@@ -1325,6 +1763,421 @@ fn generate_product_package(
     Ok(result)
 }
 
+#[tauri::command]
+pub async fn wwx_run_research_pipeline(
+    app: AppHandle,
+    input: RunResearchPipelineInput,
+) -> Result<RunResearchPipelineResult, String> {
+    tauri::async_runtime::spawn_blocking(move || run_research_pipeline(app, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_research_pipeline(
+    app: AppHandle,
+    input: RunResearchPipelineInput,
+) -> Result<RunResearchPipelineResult, String> {
+    let conn = open_db(&app)?;
+    let (product_code, config_json): (String, String) = conn
+        .query_row(
+            "SELECT product_code, config_json FROM products WHERE id = ?1 AND deleted_at IS NULL",
+            params![input.product_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    if input.topic.trim().is_empty() {
+        return Err("research topic is required".into());
+    }
+
+    let root = runner_root(&runner_cache_root(&app)?, &id("research"))?;
+    let product_dir = root.join("products").join(&product_code);
+    fs::create_dir_all(product_dir.join("research")).map_err(|e| e.to_string())?;
+    fs::write(product_dir.join("config.json"), config_json).map_err(|e| e.to_string())?;
+
+    run_ww(
+        &[
+            "research".into(),
+            product_code.clone(),
+            "--topic".into(),
+            input.topic.trim().into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        input.anthropic_api_key.as_deref(),
+    )?;
+
+    let research_root = product_dir.join("research");
+    let latest_run = fs::read_dir(&research_root)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ww-research-"))
+        })
+        .max_by_key(|path| fs::metadata(path).and_then(|meta| meta.modified()).ok());
+    let run_dir = latest_run.ok_or_else(|| "research run folder was not created".to_string())?;
+
+    run_ww(
+        &[
+            "research".into(),
+            "synthesize".into(),
+            product_code.clone(),
+            "--from".into(),
+            run_dir.to_string_lossy().into_owned(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        input.anthropic_api_key.as_deref(),
+    )?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--force".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        input.anthropic_api_key.as_deref(),
+    )?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--verify".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        input.anthropic_api_key.as_deref(),
+    )?;
+
+    let mut artifacts = vec![];
+    for name in [
+        "archetypes.md",
+        "hotwords.md",
+        "mechanisms.md",
+        "cards-report.json",
+    ] {
+        let path = research_root.join(name);
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            artifacts.push(upsert_artifact(
+                &conn,
+                &input.product_id,
+                &input.product_id,
+                &format!("research/{name}"),
+                name,
+                &bytes,
+                "research",
+                false,
+            )?);
+        }
+    }
+    for name in [
+        "README.md",
+        "queries.json",
+        "filtered_threads.json",
+        "filtered-corpus.md",
+        "opus-analysis.md",
+        "opus-usage.txt",
+        "summary.json",
+    ] {
+        let path = run_dir.join(name);
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            artifacts.push(upsert_artifact(
+                &conn,
+                &input.product_id,
+                &input.product_id,
+                &format!(
+                    "research-runs/{}/{}",
+                    run_dir
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("latest"),
+                    name
+                ),
+                name,
+                &bytes,
+                "research",
+                false,
+            )?);
+        }
+    }
+
+    let now = now_ms();
+    let mut config: Value = serde_json::from_str(
+        &conn
+            .query_row(
+                "SELECT config_json FROM products WHERE id = ?1",
+                params![input.product_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "wwx_readiness".into(),
+            serde_json::json!({
+                "status": "production_ready",
+                "approved": true,
+                "gaps": [],
+            }),
+        );
+    }
+    conn.execute(
+        "UPDATE products SET config_json = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?1",
+        params![input.product_id, serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let run_folder = run_dir.to_string_lossy().into_owned();
+    let _ = fs::remove_dir_all(&root);
+    Ok(RunResearchPipelineResult {
+        ok: true,
+        product_id: input.product_id,
+        product_code,
+        run_folder,
+        artifacts,
+    })
+}
+
+#[tauri::command]
+pub async fn wwx_build_strategy(
+    app: AppHandle,
+    input: BuildStrategyInput,
+) -> Result<BuildStrategyResult, String> {
+    tauri::async_runtime::spawn_blocking(move || build_strategy(app, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn wwx_validate_strategy_plan(
+    app: AppHandle,
+    input: BuildStrategyInput,
+) -> Result<ValidateStrategyResult, String> {
+    tauri::async_runtime::spawn_blocking(move || validate_strategy_plan(app, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn validate_strategy_plan(
+    app: AppHandle,
+    input: BuildStrategyInput,
+) -> Result<ValidateStrategyResult, String> {
+    let conn = open_db(&app)?;
+    let run_id = id("strategy-validate");
+    let (root, product_code, batch_id, batch_dir) = materialize_runner(
+        &runner_cache_root(&app)?,
+        &conn,
+        &run_id,
+        &input.product_id,
+        &input.batch_id,
+    )?;
+    let plan_path = batch_dir.join("strategy-plan.json");
+    fs::write(&plan_path, &input.strategy_plan_json).map_err(|e| e.to_string())?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--force".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--verify".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+
+    let output = Command::new(Path::new(ENGINE_ROOT).join("tools").join("ww"))
+        .current_dir(ENGINE_ROOT)
+        .env("WW_BASE_PATH", &root)
+        .arg("strategy")
+        .arg("build")
+        .arg("--product")
+        .arg(&product_code)
+        .arg("--batch-id")
+        .arg(&batch_id)
+        .arg("--plan")
+        .arg(&plan_path)
+        .arg("--dry-run")
+        .arg("--base-path")
+        .arg(&root)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let ok = output.status.success();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let error = (!ok).then_some(if stderr.is_empty() {
+        stdout.clone()
+    } else {
+        stderr.clone()
+    });
+    let validation_json = serde_json::to_string_pretty(&serde_json::json!({
+        "ok": ok,
+        "error": error,
+    }))
+    .map_err(|e| e.to_string())?;
+    let artifact = upsert_artifact(
+        &conn,
+        &input.product_id,
+        &input.batch_id,
+        "strategy-plan-validation.json",
+        "strategy-plan-validation.json",
+        validation_json.as_bytes(),
+        "strategy-validate",
+        true,
+    )?;
+    conn.execute(
+        "UPDATE batches SET status = ?2, current_stage = 'strategy_plan', updated_at = ?3, revision = revision + 1 WHERE id = ?1",
+        params![input.batch_id, if ok { "draft" } else { "review" }, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = fs::remove_dir_all(&root);
+    Ok(ValidateStrategyResult {
+        ok,
+        product_id: input.product_id,
+        batch_id: input.batch_id,
+        strategy_json: ok.then_some(stdout),
+        error,
+        artifacts: vec![artifact],
+    })
+}
+
+fn build_strategy(
+    app: AppHandle,
+    input: BuildStrategyInput,
+) -> Result<BuildStrategyResult, String> {
+    let conn = open_db(&app)?;
+    let run_id = id("strategy");
+    let (root, product_code, batch_id, batch_dir) = materialize_runner(
+        &runner_cache_root(&app)?,
+        &conn,
+        &run_id,
+        &input.product_id,
+        &input.batch_id,
+    )?;
+    let plan_path = batch_dir.join("strategy-plan.json");
+    fs::write(&plan_path, &input.strategy_plan_json).map_err(|e| e.to_string())?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--force".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+    run_ww(
+        &[
+            "research-cards".into(),
+            product_code.clone(),
+            "--verify".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+    run_ww(
+        &[
+            "strategy".into(),
+            "build".into(),
+            "--product".into(),
+            product_code,
+            "--batch-id".into(),
+            batch_id,
+            "--plan".into(),
+            plan_path.to_string_lossy().into_owned(),
+            "--force".into(),
+            "--base-path".into(),
+            root.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+    let strategy_path = batch_dir.join("strategy.json");
+    let strategy_json = read_required_text(&strategy_path)?;
+    let artifacts = vec![
+        upsert_artifact(
+            &conn,
+            &input.product_id,
+            &input.batch_id,
+            "strategy-plan.json",
+            "strategy-plan.json",
+            input.strategy_plan_json.as_bytes(),
+            "strategy-build",
+            true,
+        )?,
+        upsert_artifact(
+            &conn,
+            &input.product_id,
+            &input.batch_id,
+            "strategy.json",
+            "strategy.json",
+            strategy_json.as_bytes(),
+            "strategy-build",
+            true,
+        )?,
+    ];
+    conn.execute(
+        "UPDATE batches SET status = 'ready', current_stage = 'strategy', updated_at = ?2, revision = revision + 1 WHERE id = ?1",
+        params![input.batch_id, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = fs::remove_dir_all(&root);
+    Ok(BuildStrategyResult {
+        ok: true,
+        product_id: input.product_id,
+        batch_id: input.batch_id,
+        strategy_json,
+        artifacts,
+    })
+}
+
+fn run_ww(args: &[String], anthropic_api_key: Option<&str>) -> Result<(), String> {
+    let script = Path::new(ENGINE_ROOT).join("tools").join("ww");
+    let mut cmd = Command::new(script);
+    cmd.current_dir(ENGINE_ROOT);
+    if let Some(base_path) = args
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--base-path").then(|| pair[1].clone()))
+    {
+        cmd.env("WW_BASE_PATH", base_path);
+    }
+    for arg in args {
+        cmd.arg(arg);
+    }
+    if let Some(key) = anthropic_api_key.filter(|value| !value.is_empty()) {
+        cmd.env("ANTHROPIC_API_KEY", key);
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "ww command failed: {}{}",
+        String::from_utf8_lossy(&output.stderr).trim(),
+        if output.stdout.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", String::from_utf8_lossy(&output.stdout).trim())
+        }
+    ))
+}
+
 fn read_required_text(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))
 }
@@ -1387,7 +2240,10 @@ fn reset_batch_for_new_submission(conn: &Connection, batch_id: &str) -> Result<(
            AND filename NOT IN (
              'source-angle.md',
              'angles.md',
+             'strategy-plan.json',
+             'strategy-plan-validation.json',
              'strategy.json',
+             'batch-control.json',
              'operator-input.json',
              'readiness-assessment.json',
              'concept-matrix.json',
@@ -1795,7 +2651,10 @@ fn ingest_runner(
     let root_files = [
         "source-angle.md",
         "angles.md",
+        "strategy-plan.json",
+        "strategy-plan-validation.json",
         "strategy.json",
+        "batch-control.json",
         "operator-input.json",
         "readiness-assessment.json",
         "concept-matrix.json",
@@ -1857,7 +2716,10 @@ fn is_public_root_artifact(name: &str) -> bool {
         name,
         "source-angle.md"
             | "angles.md"
+            | "strategy-plan.json"
+            | "strategy-plan-validation.json"
             | "strategy.json"
+            | "batch-control.json"
             | "operator-input.json"
             | "readiness-assessment.json"
             | "concept-matrix.json"
@@ -1985,6 +2847,7 @@ fn run_lfs_with_context(
         }
     }
     let input_angles = batch_dir.join("angles.md");
+    let input_strategy = batch_dir.join("strategy.json");
     let script = Path::new(ENGINE_ROOT).join("tools").join("lfs_agent.py");
     let python = Path::new(ENGINE_ROOT)
         .join(".venv")
@@ -2000,6 +2863,8 @@ fn run_lfs_with_context(
     cmd.arg(script);
     if resume {
         cmd.arg("--resume").arg(&batch_id);
+    } else if input_strategy.exists() && !input_angles.exists() {
+        cmd.arg(&input_strategy);
     } else {
         cmd.arg(&input_angles);
     }
@@ -2240,6 +3105,28 @@ mod tests {
             &conn,
             "prod_NR",
             "batch_NR_demo",
+            "strategy-plan.json",
+            "Strategy Plan",
+            b"{}",
+            "desktop",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "batch-control.json",
+            "Batch Control",
+            br#"{"autonomous":true}"#,
+            "desktop",
+            true,
+        )
+        .unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
             "strategy.json",
             "Strategy",
             b"{}",
@@ -2287,9 +3174,123 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(active_artifacts, 3);
+        assert_eq!(active_artifacts, 5);
         assert_eq!(status, "draft");
         assert_eq!(current_stage, None);
+    }
+
+    #[test]
+    fn batch_autonomous_reads_batch_control_artifact() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "batch-control.json",
+            "Batch Control",
+            br#"{"autonomous":true}"#,
+            "desktop",
+            true,
+        )
+        .unwrap();
+
+        assert!(batch_autonomous(&conn, "batch_NR_demo").unwrap());
+    }
+
+    #[test]
+    fn agent_stage_timeline_uses_operator_public_ui_labels() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "agent-run.json",
+            "agent-run.json",
+            br#"{
+              "stages": {
+                "lfs_brief": {
+                  "status": "ok",
+                  "approved": false,
+                  "artifacts": ["prompts/task.md"],
+                  "public_ui": {
+                    "stage_label": "Building briefs",
+                    "summary": "Briefs are ready for review."
+                  }
+                }
+              }
+            }"#,
+            "runner",
+            false,
+        )
+        .unwrap();
+
+        let timeline = agent_stage_timeline(&conn, "batch_NR_demo").unwrap();
+        let brief = timeline
+            .iter()
+            .find(|stage| stage.stage == "lfs_brief")
+            .unwrap();
+
+        assert_eq!(brief.label, "Building briefs");
+        assert_eq!(brief.summary, "Briefs are ready for review.");
+        assert_eq!(brief.artifact_count, 1);
+    }
+
+    #[test]
+    fn batch_workflow_state_prioritizes_final_outputs_and_hides_diagnostics() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let final_artifact = upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "output-v41/task.md",
+            "output-v41/task.md",
+            b"final",
+            "runner",
+            true,
+        )
+        .unwrap();
+        let diagnostic = upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "repair-history.json",
+            "repair-history.json",
+            br#"{"failures":[]}"#,
+            "repair-history",
+            true,
+        )
+        .unwrap();
+        let final_id = final_artifact.id.clone();
+        let diagnostic_id = diagnostic.id.clone();
+        let batch = WwxBatch {
+            id: "batch_NR_demo".into(),
+            product_id: "prod_NR".into(),
+            product_code: "NR".into(),
+            name: "demo".into(),
+            batch_id: "demo".into(),
+            status: "complete".into(),
+            current_stage: Some("manifest_overview".into()),
+            created_at: 1,
+            updated_at: 1,
+            revision: 1,
+            artifacts: vec![final_artifact, diagnostic],
+            runs: vec![],
+            decision_counts: DecisionCounts::default(),
+            stage_timeline: vec![],
+            final_scripts: vec![],
+            autonomous: true,
+            workflow_state: empty_workflow_state("complete", Some("manifest_overview".into())),
+        };
+
+        let state = batch_workflow_state(&conn, &batch).unwrap();
+
+        assert_eq!(state.headline, "Final ads are ready");
+        assert_eq!(state.primary_action.unwrap().kind, "review_final");
+        assert!(state.important_artifact_ids.contains(&final_id));
+        assert!(state.diagnostic_artifact_ids.contains(&diagnostic_id));
     }
 
     #[test]

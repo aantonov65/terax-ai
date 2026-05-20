@@ -1,6 +1,18 @@
 export { WwxInspector } from "./WwxInspector";
 export { WwxSidebar } from "./WwxSidebar";
 export {
+  actionForKind,
+  artifactAudience,
+  deriveWorkflowState,
+  diagnosticArtifactIds,
+  friendlyStageLabel,
+  groupArtifacts,
+  importantArtifactIds,
+  stageSummary,
+  statusLabel,
+  workflowToneClass,
+} from "./workflow";
+export {
   createBatchInStore,
   createProductInStore,
   readWwxArtifact,
@@ -15,8 +27,11 @@ export type {
   CommandRecipe,
   DraftBatchMetadata,
   ProductConfigSummary,
+  ProductResearchJob,
   ProductSummary,
   RunSummary,
+  WorkflowAction,
+  WorkflowState,
   WorkspaceSummary,
   WwxIndexState,
 } from "./types";

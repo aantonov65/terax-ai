@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 *.tsbuildinfo
+
+# Local Tauri runtime data
+src-tauri/*.db

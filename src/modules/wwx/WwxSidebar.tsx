@@ -1,4 +1,7 @@
 import { Button } from "@/components/ui/button";
+import { DotmCircular3 } from "@/components/ui/dotm-circular-3";
+import { DotmSquare11 } from "@/components/ui/dotm-square-11";
+import { UploadArrowOutlineIcon } from "@/components/ui/upload-arrow-outline-icon";
 import {
   Collapsible,
   CollapsibleContent,
@@ -21,7 +24,11 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ArrowRight01Icon,
+  Cancel01Icon,
+  CheckmarkCircle02Icon,
+  File01Icon,
   PlusSignIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -30,6 +37,7 @@ import { useMemo, useState } from "react";
 import type {
   BatchStatus,
   BatchSummary,
+  ProductResearchJob,
   ProductSummary,
   WwxIndexState,
 } from "./types";
@@ -40,7 +48,9 @@ type Props = {
   onSelectBatch: (batchId: string) => void;
   onCreateProduct: () => void;
   onCreateBatch: (product: ProductSummary) => void;
+  onOpenResearchPreview: (product: ProductSummary) => void;
   onOpenBatchAgent: (batch: BatchSummary) => void;
+  researchJobs?: Record<string, ProductResearchJob>;
 };
 
 const STATUS_FILTERS: Array<BatchStatus | "all"> = [
@@ -53,17 +63,20 @@ const STATUS_FILTERS: Array<BatchStatus | "all"> = [
   "blocked",
 ];
 
-function statusTone(status: BatchStatus): string {
-  if (status === "complete") return "bg-emerald-300";
-  if (status === "running") return "bg-sky-300";
-  if (status === "review") return "bg-amber-300";
-  if (status === "blocked") return "bg-red-300";
-  return "bg-slate-400";
+function batchStatusIcon(status: BatchStatus) {
+  if (status === "blocked") return Cancel01Icon;
+  if (status === "review") return Alert02Icon;
+  if (status === "draft") return null;
+  return CheckmarkCircle02Icon;
 }
 
-function batchSubtitle(batch: BatchSummary): string {
-  if (batch.status === "draft") return "draft batch";
-  return batch.format ?? (batch.legacy ? "legacy batch" : "WWX batch");
+function batchStatusTone(status: BatchStatus): string {
+  if (status === "complete") return "text-emerald-300";
+  if (status === "ready") return "text-violet-300";
+  if (status === "running") return "text-sky-200";
+  if (status === "review") return "text-amber-300";
+  if (status === "blocked") return "text-red-300";
+  return "text-slate-400";
 }
 
 function BatchRow({
@@ -77,6 +90,7 @@ function BatchRow({
   onSelect: () => void;
   onOpenAgent: () => void;
 }) {
+  const StatusIcon = batchStatusIcon(batch.status);
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -84,28 +98,46 @@ function BatchRow({
           type="button"
           onClick={onSelect}
           className={cn(
-            "flex min-h-11 w-full min-w-0 items-center gap-3 border-b border-white/10 bg-[#191a1e] px-3 py-2 text-left outline-none transition-colors",
+            "grid min-h-10 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2.5 overflow-hidden border-b border-white/10 bg-[#191a1e] py-2 pl-5 pr-6 text-left outline-none transition-colors",
             "focus-visible:ring-0",
             active
               ? "bg-[#262832] text-slate-100"
               : "text-slate-300 hover:bg-[#202126] hover:text-slate-100",
           )}
         >
-          <span
-            className={cn("mt-0.5 size-1.5 shrink-0", statusTone(batch.status))}
-            aria-hidden
-          />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-medium">
+          {batch.status === "running" ? (
+            <DotmCircular3
+              size={14}
+              dotSize={2}
+              color="#38bdf8"
+              className="shrink-0"
+              ariaLabel="Batch running"
+            />
+          ) : (
+            <>
+              {StatusIcon ? (
+                <HugeiconsIcon
+                  icon={StatusIcon}
+                  size={13}
+                  strokeWidth={2}
+                  className={cn("shrink-0", batchStatusTone(batch.status))}
+                />
+              ) : (
+                <UploadArrowOutlineIcon
+                  size={13}
+                  className={cn("shrink-0", batchStatusTone(batch.status))}
+                />
+              )}
+            </>
+          )}
+          <span className="min-w-0 flex-1 overflow-hidden">
+            <span className="block w-full truncate text-xs font-medium">
               {batch.name}
-            </span>
-            <span className="block truncate text-[10.5px] leading-snug">
-              {batchSubtitle(batch)}
             </span>
           </span>
         </button>
       </ContextMenuTrigger>
-      <ContextMenuContent className="min-w-44 rounded-none border-white/15 bg-[#17181b] text-slate-100">
+      <ContextMenuContent className="min-w-44 rounded-md border-white/15 bg-[#17181b] text-slate-100">
         <ContextMenuItem onSelect={onOpenAgent}>
           <HugeiconsIcon icon={ArrowRight01Icon} size={14} strokeWidth={1.8} />
           Open in Agent
@@ -121,7 +153,9 @@ export function WwxSidebar({
   onSelectBatch,
   onCreateProduct,
   onCreateBatch,
+  onOpenResearchPreview,
   onOpenBatchAgent,
+  researchJobs = {},
 }: Props) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<BatchStatus | "all">("all");
@@ -161,7 +195,7 @@ export function WwxSidebar({
           <Button
             variant="ghost"
             size="icon-xs"
-            className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+            className="rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
             onClick={onCreateProduct}
             aria-label="Create product"
             title="Create product"
@@ -170,7 +204,7 @@ export function WwxSidebar({
           </Button>
         </div>
 
-        <div className="mt-3 grid grid-cols-[minmax(0,1fr)_108px] gap-2">
+        <div className="mt-3 grid gap-2">
           <div className="relative min-w-0">
             <HugeiconsIcon
               icon={Search01Icon}
@@ -182,16 +216,24 @@ export function WwxSidebar({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search"
-              className="h-9 rounded-none border-white/15 bg-[#1b1c20] pl-7 text-xs text-slate-100 placeholder:text-slate-500 focus-visible:border-white/25"
+              className="h-9 rounded-md border-white/15 bg-[#1b1c20] pl-7 text-xs text-slate-100 placeholder:text-slate-500 focus-visible:border-white/25"
             />
           </div>
-          <Select value={status} onValueChange={(value) => setStatus(value as BatchStatus | "all")}>
-            <SelectTrigger className="h-9 w-full rounded-none border-white/15 bg-[#1b1c20] px-2 text-xs leading-none text-slate-100 focus:border-white/25 [&>span]:leading-none">
+          <Select
+            value={status}
+            onValueChange={(value) => setStatus(value as BatchStatus | "all")}
+          >
+            <SelectTrigger className="h-9 w-full rounded-md border-white/15 bg-[#1b1c20] px-2 text-xs leading-none text-slate-100 focus:border-white/25 [&>span]:leading-none">
               <SelectValue className="leading-none" />
             </SelectTrigger>
-            <SelectContent className="rounded-none border-white/15 bg-[#17181b] text-slate-100">
+            <SelectContent
+              position="popper"
+              align="start"
+              sideOffset={4}
+              className="w-(--radix-select-trigger-width) rounded-md border-white/15 bg-[#17181b] text-slate-100"
+            >
               {STATUS_FILTERS.map((item) => (
-                <SelectItem key={item} value={item} className="rounded-none text-xs">
+                <SelectItem key={item} value={item} className="rounded-md text-xs">
                   {item}
                 </SelectItem>
               ))}
@@ -207,6 +249,15 @@ export function WwxSidebar({
               const selectedInProduct = product.batches.some(
                 (batch) => batch.id === selectedBatchId,
               );
+              const researchJob = researchJobs[product.id];
+              const hasPersistedResearch = Boolean(product.researchArtifactCount && product.researchArtifactCount > 0);
+              const researchReady =
+                product.config?.readiness?.status === "production_ready" ||
+                researchJob?.status === "complete" ||
+                hasPersistedResearch;
+              const researchRunning = researchJob?.status === "running";
+              const researchBlocked = researchJob?.status === "blocked";
+              const hasVisibleBatches = product.batches.length > 0;
               const open =
                 (openProducts[product.id] ?? selectedInProduct) || products.length <= 4;
               return (
@@ -218,11 +269,11 @@ export function WwxSidebar({
                   }
                 >
                   <div className="min-w-0 border-b border-white/10">
-                    <div className="flex min-w-0 items-center bg-[#15161a]">
+                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_64px] items-center overflow-hidden bg-[#15161a]">
                       <CollapsibleTrigger asChild>
                         <button
                           type="button"
-                          className="flex min-h-10 min-w-0 flex-1 items-center gap-3 bg-transparent px-3 py-2 text-left outline-none focus-visible:ring-0"
+                          className="flex min-h-10 w-full min-w-0 items-center gap-2 overflow-hidden bg-transparent px-3 py-2 pr-1 text-left outline-none focus-visible:ring-0"
                         >
                           <HugeiconsIcon
                             icon={ArrowRight01Icon}
@@ -233,27 +284,73 @@ export function WwxSidebar({
                               open && "rotate-90",
                             )}
                           />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-100">
+                          <span className="min-w-0 flex-1 overflow-hidden">
+                            <span className="block w-full truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-100">
                               {product.name}
                             </span>
+                            {researchBlocked ? (
+                              <span className={cn(
+                                "block truncate text-[10px]",
+                                "text-red-300",
+                              )}>
+                                research blocked
+                              </span>
+                            ) : null}
                           </span>
                         </button>
                       </CollapsibleTrigger>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="mr-3 rounded-none bg-transparent text-slate-500 opacity-80 hover:bg-transparent hover:text-slate-200 hover:opacity-100"
-                        onClick={() => onCreateBatch(product)}
-                        title={`Create batch for ${product.name}`}
-                      >
-                        <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
-                      </Button>
+                      <div className="z-10 flex w-16 shrink-0 items-center justify-end gap-1 bg-[#15161a] pr-3">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className={cn(
+                            "size-5 rounded-md bg-transparent opacity-90 hover:bg-white/10 hover:text-slate-100 hover:opacity-100",
+                            researchRunning
+                              ? "text-sky-200"
+                              : researchReady
+                                ? "text-emerald-300"
+                                : researchBlocked
+                                  ? "text-red-300"
+                                  : "text-slate-500",
+                          )}
+                          onClick={() => onOpenResearchPreview(product)}
+                          title={
+                            researchRunning
+                              ? `Research running: ${researchJob?.topic ?? product.name}`
+                              : researchBlocked
+                                ? `Research blocked: ${researchJob?.error ?? "unknown error"}`
+                                : researchReady
+                                  ? `Open research preview for ${product.name}`
+                                  : "No completed research yet"
+                          }
+                          aria-label={`Open research preview for ${product.name}`}
+                        >
+                          {researchRunning ? (
+                            <DotmSquare11
+                              size={15}
+                              dotSize={2}
+                              color="currentColor"
+                              ariaLabel="Research running"
+                            />
+                          ) : (
+                            <HugeiconsIcon icon={File01Icon} size={13} strokeWidth={1.8} />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="size-5 rounded-md bg-transparent text-slate-500 opacity-80 hover:bg-white/10 hover:text-slate-100 hover:opacity-100"
+                          onClick={() => onCreateBatch(product)}
+                          title={`Create batch for ${product.name}`}
+                        >
+                          <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
+                        </Button>
+                      </div>
                     </div>
+                    {hasVisibleBatches ? (
                     <CollapsibleContent>
                       <div className="border-t border-white/10 bg-[#101114]">
-                        {product.batches.length ? (
-                          product.batches.map((batch) => (
+                        {product.batches.map((batch) => (
                             <BatchRow
                               key={batch.path}
                               batch={batch}
@@ -261,14 +358,10 @@ export function WwxSidebar({
                               onSelect={() => onSelectBatch(batch.id)}
                               onOpenAgent={() => onOpenBatchAgent(batch)}
                             />
-                          ))
-                        ) : (
-                          <div className="px-3 py-2 text-[11px] text-muted-foreground">
-                            No batches match this filter.
-                          </div>
-                        )}
+                          ))}
                       </div>
                     </CollapsibleContent>
+                    ) : null}
                   </div>
                 </Collapsible>
               );

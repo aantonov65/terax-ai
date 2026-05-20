@@ -1,11 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
-import {
-  createWwxBatch,
-  createWwxProduct,
-  seedWwxBatchFromPackage,
-} from "@/modules/wwx/mutations";
+import { createWwxProduct } from "@/modules/wwx/mutations";
+import { artifactAudience, friendlyStageLabel } from "@/modules/wwx/workflow";
 import { getKey } from "../lib/keyring";
 import { native } from "../lib/native";
 import { resolvePath, type ToolContext } from "./context";
@@ -41,14 +38,6 @@ type NativeProductRecord = {
   configJson: string;
 };
 
-type NativeProductPackage = {
-  productId: string;
-  productCode: string;
-  name: string;
-  configJson: string;
-  artifacts: NativeArtifactContent[];
-};
-
 type NativeQueuedJob = {
   id: string;
   productId: string;
@@ -64,23 +53,6 @@ type NativeQueuedJob = {
 
 type NativeIndexRecord = {
   products: NativeProductRecord[];
-};
-
-type GeneratedProductPackage = {
-  productCode: string;
-  batchId: string;
-  configJson: string;
-  archetypes: string;
-  hotwords: string;
-  mechanisms: string;
-  sourceAngle: string;
-  angles: string;
-  strategyJson: string;
-  operatorInputJson: string;
-  readinessAssessmentJson: string;
-  conceptMatrixJson: string;
-  reportJson: string;
-  sourceBundleJson: string;
 };
 
 type NativeJobResult = {
@@ -106,9 +78,9 @@ type Manifest = {
 };
 
 type BatchPlan = {
-  readiness?: Record<string, unknown> | null;
-  conceptMatrix?: Record<string, unknown> | null;
-  approval?: Record<string, unknown> | null;
+  strategyPlan?: Record<string, unknown> | null;
+  strategy?: Record<string, unknown> | null;
+  autonomy?: Record<string, unknown> | null;
 };
 
 function requireBinding(ctx: ToolContext): WwxBinding {
@@ -239,81 +211,9 @@ function publicArtifacts(artifacts: NativeArtifact[]) {
       label: artifact.label || artifact.filename,
       filename: artifact.filename,
       kind: artifact.kind,
+      audience: artifactAudience(artifact),
       size: artifact.size,
     }));
-}
-
-function safeSegment(value: string): string {
-  return (
-    value
-      .trim()
-      .replace(/[^A-Za-z0-9_.-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "PRODUCT"
-  );
-}
-
-function inferProductCode(input: {
-  productCode?: string;
-  documents: Array<{ label: string; content: string }>;
-  batchGoal?: string;
-}): string {
-  if (input.productCode?.trim()) return input.productCode;
-  const text = [
-    input.batchGoal ?? "",
-    ...input.documents.flatMap((doc) => [doc.label, doc.content.slice(0, 240)]),
-  ].join("\n");
-  const match =
-    text.match(/\b(?:product|brand|name)\s*[:=-]\s*([A-Za-z][A-Za-z0-9 -]{1,40})/i) ??
-    text.match(/\b([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,2})\b/);
-  return match?.[1] ?? "PRODUCT";
-}
-
-function packageArtifacts(generated: GeneratedProductPackage) {
-  return {
-    batchId: generated.batchId,
-    sourceAngle: generated.sourceAngle,
-    angles: generated.angles,
-    strategyJson: generated.strategyJson,
-    operatorInputJson: generated.operatorInputJson,
-    readinessAssessmentJson: generated.readinessAssessmentJson,
-    conceptMatrixJson: generated.conceptMatrixJson,
-    reportJson: generated.reportJson,
-  };
-}
-
-function packageCanProceed(readiness: Record<string, unknown>): boolean {
-  if (readiness.can_proceed === false) return false;
-  return String(readiness.status ?? "").toLowerCase() !== "red";
-}
-
-function productPackageDocument(pkg: NativeProductPackage, filename: string): string | null {
-  const direct = pkg.artifacts.find((item) => item.artifact.filename === filename);
-  if (direct?.contentText?.trim()) return direct.contentText;
-  const packaged = pkg.artifacts.find((item) => item.artifact.filename === `package/${filename}`);
-  return packaged?.contentText?.trim() || null;
-}
-
-function documentsFromProductPackage(pkg: NativeProductPackage, batchRequest: Record<string, unknown>) {
-  const docs = [
-    { label: "config.json", content: pkg.configJson },
-  ];
-  for (const filename of [
-    "research/archetypes.md",
-    "research/hotwords.md",
-    "research/mechanisms.md",
-    "source-bundle.json",
-    "product-readiness.json",
-    "package/operator-input.json",
-    "package/concept-matrix.json",
-  ]) {
-    const text = productPackageDocument(pkg, filename);
-    if (text) docs.push({ label: filename, content: text });
-  }
-  docs.push({
-    label: "new-batch-request.json",
-    content: JSON.stringify({ schema: "existing-product-batch-request/v1", ...batchRequest }, null, 2),
-  });
-  return docs;
 }
 
 function artifactByFilename(artifacts: NativeArtifact[], filename: string): NativeArtifact | undefined {
@@ -344,6 +244,9 @@ function classifyFailure(result: NativeJobResult): {
 } | null {
   if (result.ok) return null;
   const text = `${result.reason ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`.toLowerCase();
+  if (/preflight|non-canonical prices|forbidden phrases in prompt|forbidden|cta|native lfs|format contract|objective/.test(text)) {
+    return { kind: "deterministic_compliance_issue", operatorNeeded: false, resumeFrom: "lfs_brief" };
+  }
   if (/not production-ready|missing research|pricing_rules|guarantee|product_name|target_demographic|mechanism/.test(text)) {
     return { kind: "missing_truth", operatorNeeded: true, resumeFrom: "research_cards" };
   }
@@ -352,9 +255,6 @@ function classifyFailure(result: NativeJobResult): {
   }
   if (/semantic/.test(text)) {
     return { kind: "weak_creative_artifact", operatorNeeded: false, resumeFrom: "semantic_launchable" };
-  }
-  if (/preflight|forbidden|cta|native lfs|format contract|objective/.test(text)) {
-    return { kind: "deterministic_compliance_issue", operatorNeeded: false, resumeFrom: "preflight_v41" };
   }
   if (/timeout|rate limit|temporar|network|connection reset|fetch failed/.test(text)) {
     return { kind: "transient_runtime_issue", operatorNeeded: false };
@@ -376,6 +276,21 @@ function jobResult(workflow: string, result: NativeJobResult) {
   const missingResearch = isResearchMissing(result);
   const retryable = missingResearch ? false : result.retryable;
   const failure = classifyFailure(result);
+  const stageLabel = friendlyStageLabel(result.currentStage ?? result.status);
+  const primaryAction = result.ok
+    ? result.awaitingReview
+      ? { kind: "continue", label: "Continue to next stage", prompt: "Continue to the next LFS stage for this batch." }
+      : finalArtifactCount > 0 || result.status === "complete"
+        ? { kind: "review_final", label: "Review final ads", prompt: "Show me the final ads and call out what is ship-ready versus needs review." }
+        : { kind: "wait", label: "Running" }
+    : missingResearch || failure?.operatorNeeded
+      ? { kind: "provide_input", label: "Provide missing input", prompt: "Tell me exactly what input is missing for this batch." }
+      : { kind: "repair", label: "Repair and continue", prompt: "Repair the current batch issue and continue from the earliest safe stage." };
+  const secondaryAction = result.ok && result.awaitingReview
+    ? { kind: "open_agent", label: "Ask / Hold", prompt: "I want to ask a question before continuing this batch." }
+    : result.ok && (finalArtifactCount > 0 || result.status === "complete")
+      ? { kind: "export", label: "Export ship-ready ads", prompt: "Export the ship-ready scripts for handoff." }
+      : undefined;
   const diagnostics = result.ok
     ? undefined
     : {
@@ -418,6 +333,58 @@ function jobResult(workflow: string, result: NativeJobResult) {
     artifacts_truncated: artifactCount > ARTIFACT_LIMIT,
     diagnostics,
     exit_code: result.exitCode,
+    ui: {
+      headline: result.ok
+        ? finalArtifactCount > 0 || result.status === "complete"
+          ? "Final ads are ready"
+          : result.awaitingReview
+            ? `${stageLabel} is ready. Continue to next stage?`
+            : `${stageLabel} finished`
+        : missingResearch || failure?.operatorNeeded
+          ? "Batch needs operator input"
+          : "Repair is available",
+      stage_label: stageLabel,
+      summary: result.ok
+        ? finalArtifactCount > 0 || result.status === "complete"
+          ? "Review the ship, review, and fail decisions before upload."
+          : result.awaitingReview
+            ? "Skim the checkpoint, then continue when it looks right."
+            : "The workflow is continuing."
+        : missingResearch
+          ? "Product research is missing or incomplete."
+          : reason ?? "The batch hit a repairable issue.",
+      tone: result.ok
+        ? finalArtifactCount > 0 || result.status === "complete"
+          ? "success"
+          : result.awaitingReview
+            ? "warning"
+            : "running"
+        : missingResearch || failure?.operatorNeeded
+          ? "danger"
+          : "warning",
+      operator_needed: missingResearch || failure?.operatorNeeded === true,
+      retryable,
+      primary_action: primaryAction,
+      secondary_action: secondaryAction,
+      important_artifacts: artifacts.filter((artifact) => artifact.audience !== "technical").slice(0, 8),
+      diagnostic_count: artifacts.filter((artifact) => artifact.audience === "technical").length,
+    },
+  };
+}
+
+function simpleUi(
+  headline: string,
+  summary: string,
+  tone: "neutral" | "running" | "success" | "warning" | "danger" = "neutral",
+  primaryAction?: { kind: string; label: string; prompt?: string },
+) {
+  return {
+    headline,
+    summary,
+    tone,
+    operator_needed: tone === "danger",
+    retryable: false,
+    primary_action: primaryAction,
   };
 }
 
@@ -548,236 +515,227 @@ async function runNativeJob(
 
 export function buildWwxTools(ctx: ToolContext) {
   return {
-    create_product_from_intake: tool({
+    create_product_from_config: tool({
       description:
-        "Chat-first WWX intake: generate a production package from messy product evidence, readiness-check it, create the Product and first Batch only if it can proceed, then seed strategy artifacts for approval.",
+        "Create a new product from a drive-aligned config.json object after the operator has provided enough brand-brief truth.",
       inputSchema: z.object({
-        product_code: z.string().optional().describe("Short uppercase-safe product code, if the operator supplied one."),
-        documents: z.array(z.object({
-          label: z.string().min(1),
-          content: z.string().min(1),
-        })).min(1).describe("Raw product evidence, research notes, swipes, URLs copied as text, offer facts, or operator notes."),
-        batch_goal: z.string().optional().describe("What this ad batch should accomplish."),
-        target_ad_count: z.number().int().min(1).max(100).optional().describe("Requested number of ads."),
-        preferred_formats: z.array(z.string()).optional().describe("Optional LFS formats, e.g. confession, expose, listicle, warning."),
-        approval_note: z.string().optional().describe("Human approval note for creating the product/batch if the package is ready."),
+        product_folder: z.string().optional(),
+        config: z.record(z.string(), z.unknown()),
       }),
       needsApproval: true,
-      execute: async ({ product_code, documents, batch_goal, target_ad_count, preferred_formats, approval_note }) => {
+      execute: async ({ product_folder, config }) => {
         try {
           if (ctx.getWwxBinding?.()) {
-            throw new Error("This intake tool creates a new Product and Batch. Open a New intake agent first.");
+            throw new Error("Create products only from an unbound intake agent.");
           }
-          const anthropicApiKey = await getKey("anthropic");
-          const productCode = safeSegment(inferProductCode({
-            productCode: product_code,
-            documents,
-            batchGoal: batch_goal,
-          })).toUpperCase();
-          const generated = await invoke<GeneratedProductPackage>("wwx_generate_product_package", {
-            input: {
-              productCode,
-              documents,
-              batchRequest: {
-                goal: batch_goal?.trim() ?? "",
-                target_ad_count: target_ad_count ?? 10,
-                preferred_formats: preferred_formats ?? [],
-              },
-              anthropicApiKey,
-            },
-          });
-          const readiness = safeJson(generated.readinessAssessmentJson);
-          const conceptMatrix = safeJson(generated.conceptMatrixJson);
-          const operatorInput = safeJson(generated.operatorInputJson);
-          if (!packageCanProceed(readiness)) {
-            return {
-              ok: true,
-              workflow: "create_product_from_intake",
-              created: false,
-              blocked: true,
-              product_code: generated.productCode,
-              batch_id: generated.batchId,
-              readiness,
-              concept_matrix: conceptMatrix,
-              operator_input: operatorInput,
-              next_actions: [
-                "Ask the operator for the missing truth or stronger research named in readiness.missing_truth and readiness.weak_research.",
-                "Run create_product_from_intake again with the added evidence.",
-              ],
-            };
-          }
-
-          const config = safeJson(generated.configJson);
-          const sourceBundle = safeJson(generated.sourceBundleJson);
-          const artifacts = packageArtifacts(generated);
-          const createdProduct = await createWwxProduct({
+          const created = await createWwxProduct({
             workspaceRoot: ctx.getWorkspaceRoot() ?? "",
-            productFolder: generated.productCode,
+            productFolder: product_folder,
             config,
-            research: {
-              archetypes: generated.archetypes,
-              hotwords: generated.hotwords,
-              mechanisms: generated.mechanisms,
-            },
-            sourceBundle,
-            packageArtifacts: artifacts,
-            approveForProduction: true,
-          });
-          const createdBatch = await createWwxBatch({
-            workspaceRoot: ctx.getWorkspaceRoot() ?? "",
-            productFolder: createdProduct.productId,
-            batchName: generated.batchId,
-          });
-          await seedWwxBatchFromPackage({
-            productId: createdProduct.productId,
-            batchId: createdBatch.batchId,
-            packageArtifacts: artifacts,
-          });
-          ctx.onWwxBatchCreated?.({
-            productId: createdProduct.productId,
-            productCode: createdProduct.productCode,
-            batchId: createdBatch.batchId,
-            batchPath: createdBatch.batchPath,
-            seedPrompt: [
-              "A new product and batch were created from chat intake.",
-              "Read the readiness and concept matrix, then explain the proposed strategy in plain language.",
-              "Do not start generation until the operator approves the concept matrix.",
-            ].join(" "),
           });
           return {
             ok: true,
-            workflow: "create_product_from_intake",
-            created: true,
-            product: createdProduct.productId,
-            product_code: createdProduct.productCode,
-            batch_id: createdBatch.batchId,
-            batch_path: createdBatch.batchPath,
-            readiness,
-            concept_matrix: conceptMatrix,
-            operator_input: operatorInput,
-            approval_note: approval_note ?? null,
+            workflow: "create_product_from_config",
+            product: created.productId,
+            product_code: created.productCode,
+            ui: simpleUi(
+              "Product setup is saved",
+              "Run research before creating production batches.",
+              "success",
+              { kind: "provide_input", label: "Run product research" },
+            ),
             next_actions: [
-              "Present the concept matrix for approval.",
-              "After approval, call approve_concept_matrix, then submit_lfs_job with run_mode full.",
+              "Run product research from the product row before creating production batches.",
+              "After research exists, create a batch and provide owner-authored creative direction.",
             ],
           };
         } catch (error) {
-          return { ok: false, workflow: "create_product_from_intake", error: String(error), retryable: false };
+          return { ok: false, workflow: "create_product_from_config", error: String(error), retryable: false };
         }
       },
     }),
 
-    create_batch_plan_from_product: tool({
+    run_product_research: tool({
       description:
-        "Create a new LFS batch plan for an existing product by reusing stored product truth/research, feasibility-checking the requested count, and seeding a fresh concept matrix for approval.",
+        "Run the proven Reddit research pipeline for an existing product: raw scrape, canonical synthesis, and research-card verification.",
       inputSchema: z.object({
-        product_id: z.string().optional().describe("Existing app product id. Defaults to the currently bound product when present."),
-        product_code: z.string().optional().describe("Existing product code if product_id is unknown."),
-        batch_name: z.string().optional().describe("Human-readable batch name/id. Defaults to PRODUCT_LFS_BATCH."),
-        batch_goal: z.string().optional().describe("What this new ad batch should accomplish."),
-        target_ad_count: z.number().int().min(1).max(100).optional().describe("Requested number of ads."),
-        preferred_formats: z.array(z.string()).optional().describe("Optional LFS formats, e.g. confession, expose, listicle, warning."),
+        product_id: z.string().optional(),
+        topic: z.string().min(1),
       }),
       needsApproval: true,
-      execute: async ({ product_id, product_code, batch_name, batch_goal, target_ad_count, preferred_formats }) => {
+      execute: async ({ product_id, topic }) => {
         try {
           const binding = ctx.getWwxBinding?.() ?? null;
-          let productId = product_id?.trim() || binding?.productId || "";
-          if (!productId && product_code?.trim()) {
-            const index = await invoke<NativeIndexRecord>("wwx_list_products");
-            const code = product_code.trim().toUpperCase();
-            const match = index.products.find((product) =>
-              product.productCode?.toUpperCase() === code ||
-              String(safeJson(product.configJson).product_code ?? "").toUpperCase() === code,
-            );
-            productId = match?.id ?? "";
-          }
-          if (!productId) throw new Error("No existing product resolved. Provide product_id/product_code or open a bound product batch.");
-
-          const pkg = await invoke<NativeProductPackage>("wwx_read_product_package", { productId });
-          const batchRequest = {
-            goal: batch_goal?.trim() ?? "",
-            target_ad_count: target_ad_count ?? 10,
-            preferred_formats: preferred_formats ?? [],
-          };
-          const generated = await invoke<GeneratedProductPackage>("wwx_generate_product_package", {
+          const productId = product_id?.trim() || binding?.productId;
+          if (!productId) throw new Error("Provide product_id or run from a bound product batch.");
+          const result = await invoke<Record<string, unknown>>("wwx_run_research_pipeline", {
             input: {
-              productCode: pkg.productCode,
-              batchId: batch_name?.trim() || `${pkg.productCode}_LFS_BATCH`,
-              documents: documentsFromProductPackage(pkg, batchRequest),
-              batchRequest,
+              productId,
+              topic,
               anthropicApiKey: await getKey("anthropic"),
             },
           });
-          const readiness = safeJson(generated.readinessAssessmentJson);
-          const conceptMatrix = safeJson(generated.conceptMatrixJson);
-          const operatorInput = safeJson(generated.operatorInputJson);
-          if (!packageCanProceed(readiness)) {
-            return {
-              ok: true,
-              workflow: "create_batch_plan_from_product",
-              created: false,
-              blocked: true,
-              product: productId,
-              product_code: pkg.productCode,
-              batch_id: generated.batchId,
-              readiness,
-              concept_matrix: conceptMatrix,
-              operator_input: operatorInput,
-              next_actions: [
-                "Reduce target_ad_count or provide the missing/weak research named in readiness.",
-                "Run create_batch_plan_from_product again after adding evidence.",
-              ],
-            };
-          }
-
-          const artifacts = packageArtifacts(generated);
-          const createdBatch = await createWwxBatch({
-            workspaceRoot: ctx.getWorkspaceRoot() ?? "",
-            productFolder: productId,
-            batchName: generated.batchId,
-          });
-          await seedWwxBatchFromPackage({
-            productId,
-            batchId: createdBatch.batchId,
-            packageArtifacts: artifacts,
-          });
-          ctx.onWwxBatchCreated?.({
-            productId,
-            productCode: pkg.productCode,
-            batchId: createdBatch.batchId,
-            batchPath: createdBatch.batchPath,
-            seedPrompt: [
-              "A new batch plan was created from existing product research.",
-              "Read the readiness and concept matrix, then explain the proposed strategy in plain language.",
-              "Do not start generation until the operator approves the concept matrix.",
-            ].join(" "),
-          });
           return {
-            ok: true,
-            workflow: "create_batch_plan_from_product",
-            created: true,
-            product: productId,
-            product_code: pkg.productCode,
-            batch_id: createdBatch.batchId,
-            batch_path: createdBatch.batchPath,
-            readiness,
-            concept_matrix: conceptMatrix,
-            operator_input: operatorInput,
-            next_actions: [
-              "Present the concept matrix for approval.",
-              "After approval, call approve_concept_matrix, then submit_lfs_job with run_mode full.",
-            ],
+            ...result,
+            workflow: "run_product_research",
+            ui: simpleUi(
+              "Research is ready",
+              "The product can now support production LFS batches.",
+              "success",
+              { kind: "add_direction", label: "Create batch", prompt: "Create a new LFS batch from this research." },
+            ),
           };
         } catch (error) {
-          return { ok: false, workflow: "create_batch_plan_from_product", error: String(error), retryable: false };
+          return { ok: false, workflow: "run_product_research", error: String(error), retryable: true };
         }
       },
     }),
 
+    save_strategy_plan: tool({
+      description:
+        "Save owner-authored creative direction for the bound batch as strategy-plan.json. Use this after structuring the strategist's input; do not invent the ad set.",
+      inputSchema: z.object({
+        date: z.string().optional(),
+        description: z.string().optional(),
+        ads: z.array(z.object({
+          archetype: z.string(),
+          a_point: z.string(),
+          b_point: z.string(),
+          mechanism: z.string(),
+          format: z.string(),
+          angle: z.string(),
+          tag: z.string().optional(),
+          source_swipe: z.string().optional(),
+          edge_to_preserve: z.string().optional(),
+          failed_solutions: z.array(z.string()).optional(),
+          proof_focus: z.string().optional(),
+          must_not_say: z.array(z.string()).optional(),
+          notes: z.string().optional(),
+        })).min(1),
+      }),
+      needsApproval: true,
+      execute: async (plan) => {
+        try {
+          const binding = requireBinding(ctx);
+          const artifact = await invoke<NativeArtifact>("wwx_write_artifact", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              kind: "json",
+              label: "strategy-plan.json",
+              filename: "strategy-plan.json",
+              mimeType: "application/json",
+              contentText: JSON.stringify(plan, null, 2),
+              source: "strategy-plan",
+              public: true,
+            },
+          });
+          const validation = await invoke("wwx_validate_strategy_plan", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              strategyPlanJson: JSON.stringify(plan, null, 2),
+            },
+          });
+          return {
+            ok: true,
+            workflow: "save_strategy_plan",
+            batch_id: binding.batchId,
+            artifact_path: `app://wwx/artifacts/${artifact.id}`,
+            strategy_plan: plan,
+            validation,
+            ui: simpleUi(
+              "Creative direction is saved",
+              "Build the strategy before running the LFS batch.",
+              "success",
+              { kind: "build_strategy", label: "Build Strategy", prompt: "Build the strategy for this batch." },
+            ),
+          };
+        } catch (error) {
+          return { ok: false, workflow: "save_strategy_plan", error: String(error), retryable: false };
+        }
+      },
+    }),
+
+    build_strategy_json: tool({
+      description:
+        "Validate the bound batch strategy-plan.json against research cards and format templates, then deterministically build strategy.json.",
+      inputSchema: z.object({}),
+      needsApproval: true,
+      execute: async () => {
+        try {
+          const binding = requireBinding(ctx);
+          const artifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
+          const planArtifact = artifactByFilename(artifacts, "strategy-plan.json");
+          if (!planArtifact) throw new Error("Save a strategy plan before building strategy.json.");
+          const plan = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: planArtifact.id });
+          const result = await invoke<Record<string, unknown>>("wwx_build_strategy", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              strategyPlanJson: plan.contentText ?? "",
+            },
+          });
+          return {
+            ...result,
+            workflow: "build_strategy_json",
+            ui: simpleUi(
+              "Strategy is ready",
+              "Run the LFS batch when you are ready for generation.",
+              "success",
+              { kind: "run_batch", label: "Run Batch", prompt: "Run this LFS batch now." },
+            ),
+          };
+        } catch (error) {
+          return { ok: false, workflow: "build_strategy_json", error: String(error), retryable: false };
+        }
+      },
+    }),
+
+    set_autonomous_mode: tool({
+      description: "Enable or disable autonomous execution for the bound batch.",
+      inputSchema: z.object({ enabled: z.boolean() }),
+      needsApproval: true,
+      execute: async ({ enabled }) => {
+        try {
+          const binding = requireBinding(ctx);
+          const artifact = await invoke<NativeArtifact>("wwx_write_artifact", {
+            input: {
+              productId: binding.productId,
+              batchId: binding.batchId,
+              kind: "json",
+              label: "Batch Control",
+              filename: "batch-control.json",
+              mimeType: "application/json",
+              contentText: JSON.stringify({ autonomous: enabled }, null, 2),
+              source: "desktop",
+              public: true,
+            },
+          });
+          return {
+            ok: true,
+            workflow: "set_autonomous_mode",
+            batch_id: binding.batchId,
+            autonomous: enabled,
+            artifact_path: `app://wwx/artifacts/${artifact.id}`,
+            ui: simpleUi(
+              enabled ? "Autonomous mode is on" : "Autonomous mode is off",
+              enabled
+                ? "The batch can continue through repairable steps without checkpoint prompts."
+                : "The batch will pause at review checkpoints.",
+              "success",
+            ),
+          };
+        } catch (error) {
+          return { ok: false, workflow: "set_autonomous_mode", error: String(error), retryable: false };
+        }
+      },
+    }),
+
+
     submit_lfs_job: tool({
       description:
-        "Submit angle.md content to the bound batch, canonicalize product/task IDs deterministically, and run the first guided LFS checkpoint.",
+        "Run the bound LFS batch from built strategy.json, or from legacy angle.md input when explicitly provided.",
       inputSchema: z.object({
         angles_markdown: z.string().optional().describe("Full attached angle.md text."),
         angles_path: z.string().optional().describe("Path to angle.md if already on disk."),
@@ -791,12 +749,6 @@ export function buildWwxTools(ctx: ToolContext) {
         try {
           const binding = requireBinding(ctx);
           const batchArtifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
-          if (
-            artifactByFilename(batchArtifacts, "concept-matrix.json") &&
-            !artifactByFilename(batchArtifacts, "concept-matrix-approval.json")
-          ) {
-            throw new Error("Concept matrix approval is required before generation.");
-          }
           let markdown = angles_markdown?.trim() || "";
           if (!markdown && angles_path) {
             if (angles_path.startsWith("app://wwx/artifacts/")) {
@@ -817,10 +769,13 @@ export function buildWwxTools(ctx: ToolContext) {
               markdown = file.contentText?.trim() || "";
             }
           }
-          if (!markdown) throw new Error("Attach angle.md or provide angles_markdown.");
-          const hydrated = await hydrateArtifactReferences(markdown);
+          const strategy = artifactByFilename(batchArtifacts, "strategy.json");
+          if (!markdown && !strategy) {
+            throw new Error("Build strategy.json or attach angle.md before generation.");
+          }
+          const hydrated = markdown ? await hydrateArtifactReferences(markdown) : "";
           const result = await runNativeJob("wwx_start_lfs_job", binding, {
-            anglesMarkdown: canonicalizeAngles(hydrated, binding),
+            anglesMarkdown: hydrated ? canonicalizeAngles(hydrated, binding) : undefined,
             runMode: run_mode ?? "full",
             workers,
             generationWorkers: generation_workers,
@@ -886,6 +841,11 @@ export function buildWwxTools(ctx: ToolContext) {
             batch_id: binding.batchId,
             product: binding.productId,
             artifacts: publicArtifacts(artifacts),
+            ui: simpleUi(
+              "Batch progress checked",
+              "Important outputs are shown first. Technical files stay in details.",
+              "neutral",
+            ),
           };
         } catch (error) {
           return { ok: false, workflow: "get_lfs_job", error: String(error) };
@@ -894,7 +854,7 @@ export function buildWwxTools(ctx: ToolContext) {
     }),
 
     get_lfs_plan: tool({
-      description: "Read the public readiness, concept-matrix, and approval state for the bound batch.",
+      description: "Read the public strategy-plan preview, built strategy, and autonomous-mode state for the bound batch.",
       inputSchema: z.object({ batch_id: z.string().optional() }),
       execute: async () => {
         try {
@@ -902,9 +862,9 @@ export function buildWwxTools(ctx: ToolContext) {
           const artifacts = await invoke<NativeArtifact[]>("wwx_list_artifacts", { batchId: binding.batchId });
           const result: BatchPlan = {};
           for (const [filename, key] of [
-            ["readiness-assessment.json", "readiness"],
-            ["concept-matrix.json", "conceptMatrix"],
-            ["concept-matrix-approval.json", "approval"],
+            ["strategy-plan.json", "strategyPlan"],
+            ["strategy.json", "strategy"],
+            ["batch-control.json", "autonomy"],
           ] as const) {
             const artifact = artifactByFilename(artifacts, filename);
             if (!artifact) {
@@ -920,6 +880,24 @@ export function buildWwxTools(ctx: ToolContext) {
             batch_id: binding.batchId,
             product: binding.productId,
             ...result,
+            ui: simpleUi(
+              result.strategy
+                ? "Strategy is ready"
+                : result.strategyPlan
+                  ? "Creative direction is saved"
+                  : "Creative direction needed",
+              result.strategy
+                ? "Run the LFS batch when you are ready for generation."
+                : result.strategyPlan
+                  ? "Build the strategy before running the LFS batch."
+                  : "Add the ARC, A/B, mechanism, format, count, and any swipes or notes.",
+              "neutral",
+              result.strategy
+                ? { kind: "run_batch", label: "Run Batch", prompt: "Run this LFS batch now." }
+                : result.strategyPlan
+                  ? { kind: "build_strategy", label: "Build Strategy", prompt: "Build the strategy for this batch." }
+                  : { kind: "add_direction", label: "Add creative direction", prompt: "Help me structure creative direction for this batch." },
+            ),
           };
         } catch (error) {
           return { ok: false, workflow: "get_lfs_plan", error: String(error) };
@@ -939,6 +917,11 @@ export function buildWwxTools(ctx: ToolContext) {
             workflow: "list_lfs_artifacts",
             batch_id: binding.batchId,
             artifacts: publicArtifacts(artifacts),
+            ui: simpleUi(
+              "Outputs are available",
+              "Final ads, strategy, and run summary are prioritized above technical details.",
+              "neutral",
+            ),
           };
         } catch (error) {
           return { ok: false, workflow: "list_lfs_artifacts", error: String(error) };
@@ -958,6 +941,11 @@ export function buildWwxTools(ctx: ToolContext) {
             batch_id: result.artifact.batchId,
             artifact_path: `app://wwx/artifacts/${result.artifact.id}`,
             content: shortOutput(result.contentText ?? "") ?? "",
+            ui: simpleUi(
+              "Output opened",
+              result.artifact.filename,
+              "neutral",
+            ),
           };
         } catch (error) {
           return { ok: false, workflow: "read_lfs_artifact", error: String(error) };
@@ -995,6 +983,12 @@ export function buildWwxTools(ctx: ToolContext) {
             workflow: "edit_lfs_artifact",
             batch_id: artifact.batchId,
             artifact_path: `app://wwx/artifacts/${artifact.id}`,
+            ui: simpleUi(
+              "Output updated",
+              "Rerun checks if downstream outputs need to refresh.",
+              "success",
+              { kind: "repair", label: "Rerun checks", prompt: "Rerun the relevant checks for this batch." },
+            ),
             next_actions: ["Run rerun_lfs_checks or resume_lfs_job if downstream artifacts need refresh."],
           };
         } catch (error) {
@@ -1075,7 +1069,18 @@ export function buildWwxTools(ctx: ToolContext) {
             const content = await invoke<NativeArtifactContent>("wwx_read_artifact", { artifactId: artifact.id });
             scripts.push({ name: artifact.filename, task_id: taskId, decision, content: shortOutput(content.contentText ?? "") ?? "" });
           }
-          return { ok: true, workflow: "export_lfs", batch_id: binding.batchId, filter, scripts };
+          return {
+            ok: true,
+            workflow: "export_lfs",
+            batch_id: binding.batchId,
+            filter,
+            scripts,
+            ui: simpleUi(
+              "Export is ready",
+              `${scripts.length} script${scripts.length === 1 ? "" : "s"} matched ${filter === "ship_only" ? "ship-ready" : "all"} output.`,
+              "success",
+            ),
+          };
         } catch (error) {
           return { ok: false, workflow: "export_lfs", error: String(error) };
         }
@@ -1090,7 +1095,13 @@ export function buildWwxTools(ctx: ToolContext) {
         try {
           const binding = requireBinding(ctx);
           const run = await invoke("wwx_cancel_lfs_job", { batchId: binding.batchId, reason });
-          return { ok: true, workflow: "cancel_lfs_job", batch_id: binding.batchId, run };
+          return {
+            ok: true,
+            workflow: "cancel_lfs_job",
+            batch_id: binding.batchId,
+            run,
+            ui: simpleUi("Batch canceled", "The run is marked blocked in app storage.", "warning"),
+          };
         } catch (error) {
           return { ok: false, workflow: "cancel_lfs_job", error: String(error) };
         }
@@ -1118,81 +1129,6 @@ export function buildWwxTools(ctx: ToolContext) {
       },
     }),
 
-    approve_product_package: tool({
-      description: "Explicitly approve the current bound product package for production LFS use after human review.",
-      inputSchema: z.object({
-        approval_note: z.string().min(1),
-      }),
-      needsApproval: true,
-      execute: async ({ approval_note }) => {
-        try {
-          const binding = requireBinding(ctx);
-          const index = await invoke<NativeIndexRecord>("wwx_list_products");
-          const product = index.products.find((item) => item.id === binding.productId);
-          if (!product) throw new Error("Bound product was not found.");
-          const config = safeJson(product.configJson);
-          const current = isRecord(config.wwx_readiness) ? config.wwx_readiness : {};
-          config.wwx_readiness = {
-            ...current,
-            status: "production_ready",
-            approved: true,
-            gaps: [],
-            approval_note,
-            approved_at: new Date().toISOString(),
-          };
-          await invoke("wwx_update_product", { productId: binding.productId, config });
-          return {
-            ok: true,
-            workflow: "approve_product_package",
-            product: binding.productId,
-            readiness: config.wwx_readiness,
-          };
-        } catch (error) {
-          return { ok: false, workflow: "approve_product_package", error: String(error) };
-        }
-      },
-    }),
-
-    approve_concept_matrix: tool({
-      description: "Record explicit human approval for the bound batch concept matrix before generation.",
-      inputSchema: z.object({
-        approval_note: z.string().min(1),
-      }),
-      needsApproval: true,
-      execute: async ({ approval_note }) => {
-        try {
-          const binding = requireBinding(ctx);
-          const payload = {
-            schema: "concept-matrix-approval/v1",
-            approved: true,
-            approval_note,
-            approved_at: new Date().toISOString(),
-          };
-          const artifact = await invoke<NativeArtifact>("wwx_write_artifact", {
-            input: {
-              productId: binding.productId,
-              batchId: binding.batchId,
-              kind: "json",
-              label: "concept-matrix-approval.json",
-              filename: "concept-matrix-approval.json",
-              mimeType: "application/json",
-              contentText: JSON.stringify(payload, null, 2),
-              source: "concept-matrix-approval",
-              public: true,
-            },
-          });
-          return {
-            ok: true,
-            workflow: "approve_concept_matrix",
-            batch_id: binding.batchId,
-            artifact_path: `app://wwx/artifacts/${artifact.id}`,
-            approval: payload,
-          };
-        } catch (error) {
-          return { ok: false, workflow: "approve_concept_matrix", error: String(error) };
-        }
-      },
-    }),
 
     enqueue_lfs_job: tool({
       description: "Queue a production LFS run for the bound batch so the desktop scheduler can execute multiple batches concurrently.",
@@ -1262,9 +1198,7 @@ function safeJson(text: string): Record<string, unknown> {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+
 
 function manifestDecisions(manifest: Manifest | null): Record<string, "ship" | "review" | "fail"> {
   if (!manifest) return {};

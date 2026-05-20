@@ -5,10 +5,8 @@ import {
   type CreatedBatch,
 } from "./store";
 import {
-  assessProductReadiness,
-  completeProductConfig,
-  completeResearchDraft,
-  validateResearchDraft,
+  validateProductConfig,
+  type ProductConfigValidation,
   type ProductResearchDraft,
 } from "./research";
 
@@ -18,6 +16,8 @@ export type CreateProductInput = {
   workspaceRoot: string;
   productFolder?: string;
   config: Record<string, unknown>;
+  // Legacy product-package fields are accepted so older internal callers do not
+  // explode while the new drive-aligned path becomes primary. They are ignored.
   research?: Partial<ProductResearchDraft>;
   sourceBundle?: Record<string, unknown>;
   packageArtifacts?: {
@@ -42,10 +42,6 @@ export type CreateBatchInput = {
 export async function createWwxProduct({
   productFolder,
   config,
-  research,
-  sourceBundle,
-  packageArtifacts,
-  approveForProduction = false,
 }: CreateProductInput): Promise<{ productFolder: string; productPath: string; productCode: string; productId: string }> {
   const folder = safeSegment(
     productFolder ||
@@ -55,43 +51,18 @@ export async function createWwxProduct({
       "product",
   );
   const normalized = normalizeConfig(config, folder);
-  const completedResearch = completeResearchDraft(research, normalized, folder);
-  const validation = validateResearchDraft(completedResearch);
-  if (!validation.ok) {
-    throw new Error(`Generated product research is invalid: ${validation.missing.join("; ")}`);
-  }
-  const readiness = assessProductReadiness(normalized, completedResearch, approveForProduction);
-  normalized.wwx_readiness = readiness;
+  const validation = validateProductConfig(normalized);
+  if (!validation.ok) throw productValidationError(validation);
+  normalized.wwx_readiness = {
+    status: "draft",
+    approved: false,
+    gaps: ["research has not been run yet"],
+  };
   const created = await createProductInStore({ productFolder: folder, config: normalized });
-  await Promise.all([
-    persistResearchFile(created.productId, "archetypes", completedResearch.archetypes),
-    persistResearchFile(created.productId, "hotwords", completedResearch.hotwords),
-    persistResearchFile(created.productId, "mechanisms", completedResearch.mechanisms),
-    persistJsonArtifact(created.productId, "source-bundle.json", sourceBundle ?? {
-      schema: "wwx-source-bundle/v1",
-      documents: [
-        { label: "config.json", content: JSON.stringify(config, null, 2) },
-        { label: "research/archetypes.md", content: completedResearch.archetypes },
-        { label: "research/hotwords.md", content: completedResearch.hotwords },
-        { label: "research/mechanisms.md", content: completedResearch.mechanisms },
-      ],
-    }),
-    persistJsonArtifact(created.productId, "product-readiness.json", {
-      schema: "wwx-product-readiness/v1",
-      ...readiness,
-    }),
-  ]);
-  if (packageArtifacts) {
-    await Promise.all([
-      persistPackageFile(created.productId, "source-angle.md", "text/markdown", packageArtifacts.sourceAngle),
-      persistPackageFile(created.productId, "angles.md", "text/markdown", packageArtifacts.angles),
-      persistPackageFile(created.productId, "strategy.json", "application/json", packageArtifacts.strategyJson),
-      persistPackageFile(created.productId, "operator-input.json", "application/json", packageArtifacts.operatorInputJson),
-      persistPackageFile(created.productId, "readiness-assessment.json", "application/json", packageArtifacts.readinessAssessmentJson),
-      persistPackageFile(created.productId, "concept-matrix.json", "application/json", packageArtifacts.conceptMatrixJson),
-      persistPackageFile(created.productId, "product-package-report.json", "application/json", packageArtifacts.reportJson),
-    ]);
-  }
+  await persistJsonArtifact(created.productId, "product-config-validation.json", {
+    schema: "wwx-product-config-validation/v1",
+    ...validation,
+  });
   return created;
 }
 
@@ -112,10 +83,6 @@ export async function seedWwxBatchFromPackage(input: {
     persistBatchFile(productId, batchId, "source-angle.md", "text/markdown", packageArtifacts.sourceAngle),
     persistBatchFile(productId, batchId, "angles.md", "text/markdown", packageArtifacts.angles),
     persistBatchFile(productId, batchId, "strategy.json", "application/json", packageArtifacts.strategyJson),
-    persistBatchFile(productId, batchId, "operator-input.json", "application/json", packageArtifacts.operatorInputJson),
-    persistBatchFile(productId, batchId, "readiness-assessment.json", "application/json", packageArtifacts.readinessAssessmentJson),
-    persistBatchFile(productId, batchId, "concept-matrix.json", "application/json", packageArtifacts.conceptMatrixJson),
-    persistBatchFile(productId, batchId, "product-package-report.json", "application/json", packageArtifacts.reportJson),
   ]);
 }
 
@@ -135,7 +102,7 @@ function normalizeConfig(
     next.product_name =
       stringValue(next.name) || stringValue(next.brand) || productFolder;
   }
-  return completeProductConfig(next, productFolder);
+  return next;
 }
 
 export function safeSegment(value: string): string {
@@ -156,24 +123,6 @@ function productCodeFromFolder(folder: string): string {
   return compact || "PRODUCT";
 }
 
-async function persistResearchFile(
-  productId: string,
-  name: keyof ProductResearchDraft,
-  contentText: string,
-): Promise<void> {
-  await writeWwxArtifact({
-    productId,
-    batchId: productId,
-    kind: "research",
-    label: `${name}.md`,
-    filename: `research/${name}.md`,
-    mimeType: "text/markdown",
-    contentText,
-    source: "product-create",
-    public: false,
-  });
-}
-
 async function persistJsonArtifact(
   productId: string,
   filename: string,
@@ -192,23 +141,8 @@ async function persistJsonArtifact(
   });
 }
 
-async function persistPackageFile(
-  productId: string,
-  filename: string,
-  mimeType: string,
-  contentText: string,
-): Promise<void> {
-  await writeWwxArtifact({
-    productId,
-    batchId: productId,
-    kind: filename.endsWith(".md") ? "markdown" : "json",
-    label: filename,
-    filename: `package/${filename}`,
-    mimeType,
-    contentText,
-    source: "product-package",
-    public: false,
-  });
+function productValidationError(validation: ProductConfigValidation): Error {
+  return new Error(`Product config is invalid: ${validation.missing.join("; ")}`);
 }
 
 async function persistBatchFile(
@@ -226,7 +160,7 @@ async function persistBatchFile(
     filename,
     mimeType,
     contentText,
-    source: "product-package",
+    source: "legacy-product-package",
     public: true,
   });
 }

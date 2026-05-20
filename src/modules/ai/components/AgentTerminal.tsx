@@ -1,5 +1,10 @@
 import { Button } from "@/components/ui/button";
 import {
+  FileUpload,
+  FileUploadContent,
+  FileUploadTrigger,
+} from "@/components/ui/file-upload";
+import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -13,10 +18,24 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Cancel01Icon,
   File01Icon,
+  Link02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { getOrCreateChat, useChatStore } from "../store/chatStore";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  ensureChatSeeded,
+  flushPersist,
+  getOrCreateChat,
+  useChatStore,
+} from "../store/chatStore";
 import { AiChatView } from "./AiChat";
 import { AiInputBarConnect } from "./AiInputBar";
 
@@ -223,15 +242,65 @@ function AgentTerminalSession({
   initialPrompt?: string;
   batchPath?: string | null;
 }) {
+  const [seedReady, setSeedReady] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setSeedReady(false);
+    void ensureChatSeeded(sessionId).finally(() => {
+      if (alive) setSeedReady(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
+
+  if (!seedReady) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+        Loading chat history...
+      </div>
+    );
+  }
+
+  return (
+    <AgentTerminalChat
+      sessionId={sessionId}
+      initialPrompt={initialPrompt}
+      batchPath={batchPath}
+    />
+  );
+}
+
+function AgentTerminalChat({
+  sessionId,
+  initialPrompt,
+  batchPath,
+}: {
+  sessionId: string;
+  initialPrompt?: string;
+  batchPath?: string | null;
+}) {
   const chat = useMemo(() => getOrCreateChat(sessionId), [sessionId]);
   const helpers = useChat<UIMessage>({ chat });
+  const persistMessages = useChatStore((s) => s.persistMessages);
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<UploadedTextFile[]>([]);
-  const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const isBusy =
     helpers.status === "submitted" || helpers.status === "streaming";
+
+  const resizeInput = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const shellHeight = shellRef.current?.clientHeight ?? window.innerHeight;
+    const maxHeight = Math.max(72, Math.min(260, Math.floor(shellHeight * 0.38)));
+    input.style.height = "0px";
+    const nextHeight = Math.min(input.scrollHeight, maxHeight);
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
 
   const submit = () => {
     const text = value.trim();
@@ -252,7 +321,7 @@ function AgentTerminalSession({
     >[0]);
   };
 
-  const addFiles = async (list: FileList | null) => {
+  const addFiles = async (list: FileList | File[] | null) => {
     if (!list) return;
     const next: UploadedTextFile[] = [];
     for (const file of Array.from(list)) {
@@ -280,6 +349,29 @@ function AgentTerminalSession({
     inputRef.current?.focus();
   }, [sessionId]);
 
+  useLayoutEffect(() => {
+    resizeInput();
+  }, [files.length, resizeInput, value]);
+
+  useEffect(() => {
+    window.addEventListener("resize", resizeInput);
+    return () => window.removeEventListener("resize", resizeInput);
+  }, [resizeInput]);
+
+  useEffect(() => {
+    persistMessages(sessionId, helpers.messages);
+  }, [sessionId, helpers.messages, persistMessages]);
+
+  useEffect(() => {
+    if (helpers.status !== "submitted" && helpers.status !== "streaming") {
+      flushPersist(sessionId);
+    }
+  }, [sessionId, helpers.status]);
+
+  useEffect(() => {
+    return () => flushPersist(sessionId);
+  }, [sessionId]);
+
   const appliedInitialPrompt = useRef<string | null>(null);
   useEffect(() => {
     if (!initialPrompt || appliedInitialPrompt.current === initialPrompt) return;
@@ -290,9 +382,9 @@ function AgentTerminalSession({
 
   return (
     <div
+      ref={shellRef}
       className={cn(
         "relative flex h-full min-h-0 flex-col overflow-hidden bg-[#1f2024] text-slate-100",
-        dragging && "ring-2 ring-emerald-300/70",
       )}
       onMouseDownCapture={(event) => {
         const target = event.target as HTMLElement | null;
@@ -302,24 +394,6 @@ function AgentTerminalSession({
           return;
         }
         requestAnimationFrame(() => inputRef.current?.focus());
-      }}
-      onDragEnter={(event) => {
-        event.preventDefault();
-        setDragging(true);
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null))
-          return;
-        setDragging(false);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDragging(false);
-        void addFiles(event.dataTransfer.files);
       }}
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1f2024] text-foreground [&_.text-sm]:text-[12px]">
@@ -337,79 +411,79 @@ function AgentTerminalSession({
         ) : null}
       </div>
 
-      <div className="shrink-0 border-t border-white/15 bg-[#191a1e] px-3 py-2">
-        <div className="px-0 py-0.5">
-          {files.length ? (
-            <div className="mb-1.5 flex flex-wrap gap-1">
-              {files.map((file) => (
-                <div
-                  key={file.id}
-                  className="group flex items-center gap-1 border border-white/15 bg-[#202126] px-1.5 py-0.5 text-[11px]"
-                  title={`${file.name} · ${file.path ?? `${file.size} bytes`}`}
+      <div className="shrink-0 border-t border-white/15 bg-[#17181b] px-3 py-2 focus-within:border-white/25">
+        {files.length ? (
+          <div className="mb-1.5 flex flex-wrap gap-1">
+            {files.map((file) => (
+              <div
+                key={file.id}
+                className="group flex items-center gap-1 rounded-md border border-white/15 bg-[#202126] px-1.5 py-0.5 text-[11px]"
+                title={`${file.name} · ${file.path ?? `${file.size} bytes`}`}
+              >
+                <HugeiconsIcon
+                  icon={File01Icon}
+                  size={11}
+                  strokeWidth={1.8}
+                  className="text-slate-400"
+                />
+                <span className="max-w-40 truncate">{file.name}</span>
+                <button
+                  type="button"
+                  className="text-slate-500 opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={() =>
+                    setFiles((prev) => prev.filter((f) => f.id !== file.id))
+                  }
+                  aria-label={`Remove ${file.name}`}
                 >
                   <HugeiconsIcon
-                    icon={File01Icon}
-                    size={11}
-                    strokeWidth={1.8}
-                    className="text-slate-400"
+                    icon={Cancel01Icon}
+                    size={10}
+                    strokeWidth={2}
                   />
-                  <span className="max-w-40 truncate">{file.name}</span>
-                  <button
-                    type="button"
-                    className="text-slate-500 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={() =>
-                      setFiles((prev) => prev.filter((f) => f.id !== file.id))
-                    }
-                    aria-label={`Remove ${file.name}`}
-                  >
-                    <HugeiconsIcon
-                      icon={Cancel01Icon}
-                      size={10}
-                      strokeWidth={2}
-                    />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".md,.txt,.json,text/*,application/json"
-            className="hidden"
-            onChange={(event) => {
-              void addFiles(event.target.files);
-              event.currentTarget.value = "";
-            }}
-          />
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            className="rounded-none text-slate-300 hover:bg-white/10 hover:text-slate-50"
-            disabled={isBusy}
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach angle.md"
-          >
-            <HugeiconsIcon icon={File01Icon} size={16} strokeWidth={1.8} />
-          </Button>
-          <textarea
-            ref={inputRef}
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-            rows={1}
-            disabled={isBusy}
-            placeholder="Create"
-            className="max-h-28 min-h-8 flex-1 resize-none bg-transparent py-1 text-[13px] leading-relaxed text-slate-100 outline-none placeholder:text-slate-500"
-          />
+                </button>
+              </div>
+            ))}
           </div>
-        </div>
+        ) : null}
+        <FileUpload
+          onFilesAdded={(nextFiles) => void addFiles(nextFiles)}
+          accept=".md,.txt,.json,text/*,application/json"
+          disabled={isBusy}
+        >
+          <FileUploadContent className="bg-[#101114]/75">
+            <div className="rounded-xl border border-white/15 bg-[#17181b] px-5 py-4 text-sm text-slate-200">
+              Drop files to attach
+            </div>
+          </FileUploadContent>
+          <div className="flex items-start gap-3">
+            <FileUploadTrigger asChild>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="mt-0.5 rounded-none bg-transparent text-slate-300 transition-colors hover:bg-transparent hover:text-slate-50 focus-visible:ring-0"
+                disabled={isBusy}
+                title="Attach file"
+              >
+                <HugeiconsIcon icon={Link02Icon} size={20} strokeWidth={1.8} />
+              </Button>
+            </FileUploadTrigger>
+            <textarea
+              ref={inputRef}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+              rows={1}
+              disabled={isBusy}
+              placeholder="Create"
+              className="min-h-9 flex-1 resize-none bg-transparent pt-1.5 text-[13px] leading-6 text-slate-100 outline-none placeholder:text-slate-500"
+            />
+          </div>
+        </FileUpload>
       </div>
     </div>
   );

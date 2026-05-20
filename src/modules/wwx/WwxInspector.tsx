@@ -16,8 +16,16 @@ import {
   Image01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
-import { readWwxArtifact } from "./store";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { WwxArtifactViewer } from "./WwxArtifactViewer";
+import { readWwxArtifact, writeWwxArtifact } from "./store";
+import {
+  deriveWorkflowState,
+  friendlyStageLabel,
+  groupArtifacts,
+  workflowToneClass,
+} from "./workflow";
 import type {
   ArtifactKind,
   ArtifactSummary,
@@ -26,6 +34,8 @@ import type {
   RunSummary,
   StageSummary,
   WwxIndexState,
+  WorkflowAction,
+  WorkflowState,
 } from "./types";
 
 type Props = {
@@ -33,35 +43,12 @@ type Props = {
   index: WwxIndexState;
   selectedBatch: BatchSummary | null;
   selectedArtifactPath?: string | null;
-  onContinueInAgent: (batch: BatchSummary) => void;
+  onContinueInAgent: (batch: BatchSummary, prompt?: string) => void;
+  onRunBatch: (batch: BatchSummary) => void;
+  onBuildStrategy: (batch: BatchSummary) => void;
+  onAdvanceBatch: (batch: BatchSummary) => void;
+  onToggleAutonomy: (batch: BatchSummary) => void;
 };
-
-const TEXT_KINDS = new Set<ArtifactKind>([
-  "angles",
-  "strategy",
-  "manifest",
-  "report",
-  "heartbeat",
-  "log",
-  "markdown",
-  "json",
-  "csv",
-  "upload",
-]);
-
-const previewCache = new Map<
-  string,
-  {
-    status: "ready" | "unsupported" | "error";
-    content: string;
-    dataUrl?: string;
-  }
->();
-
-function statusLabel(batch: BatchSummary): string {
-  if (batch.status === "review") return "needs review";
-  return batch.status;
-}
 
 function statusClass(status: BatchSummary["status"]): string {
   void status;
@@ -79,100 +66,50 @@ function latestRun(runs: RunSummary[]): RunSummary | null {
   return [...runs].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0];
 }
 
+function CreativeDirectionPreview({ plan }: { plan: Record<string, unknown> }) {
+  const ads = Array.isArray(plan.ads)
+    ? plan.ads.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  if (!ads.length) {
+    return (
+      <div className="rounded-md border border-white/15 bg-[#191a1e] p-2.5 text-[11px] text-slate-500">
+        No ads are defined in the saved strategy plan.
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-md border border-white/15 bg-[#191a1e]">
+      <div className="grid grid-cols-[36px_54px_64px_52px_minmax(0,1fr)] gap-2 border-b border-white/10 px-2 py-1.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+        <span>#</span>
+        <span>ARC</span>
+        <span>A/B</span>
+        <span>M</span>
+        <span>Format / Angle</span>
+      </div>
+      <div className="max-h-48 overflow-y-auto">
+        {ads.map((ad, index) => (
+          <div
+            key={`${String(ad.archetype ?? "ARC")}-${index}`}
+            className="grid grid-cols-[36px_54px_64px_52px_minmax(0,1fr)] gap-2 border-b border-white/10 px-2 py-2 text-[11px] text-slate-300 last:border-b-0"
+          >
+            <span className="text-slate-500">{index + 1}</span>
+            <span>{String(ad.archetype ?? "—")}</span>
+            <span>{`${String(ad.a_point ?? "—")}/${String(ad.b_point ?? "—")}`}</span>
+            <span>{String(ad.mechanism ?? "—")}</span>
+            <span className="min-w-0">
+              <span className="block text-slate-200">{String(ad.format ?? "—")}</span>
+              <span className="block truncate text-slate-500">{String(ad.angle ?? "")}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : path;
-}
-
-function useTextPreview(artifact: ArtifactSummary | null): {
-  status: "idle" | "loading" | "ready" | "unsupported" | "error";
-  content: string;
-  dataUrl?: string;
-} {
-  const [state, setState] = useState<{
-    status: "idle" | "loading" | "ready" | "unsupported" | "error";
-    content: string;
-    dataUrl?: string;
-  }>({ status: "idle", content: "" });
-
-  useEffect(() => {
-    let cancelled = false;
-    const artifactId = artifact?.id ?? null;
-
-    if (!artifact || !TEXT_KINDS.has(artifact.kind)) {
-      setState({ status: artifact ? "unsupported" : "idle", content: "" });
-      return;
-    }
-
-    if (artifactId) {
-      const cached = previewCache.get(artifactId);
-      if (cached) {
-        setState(cached);
-        return;
-      }
-    }
-
-    if (artifact.content !== undefined) {
-      const excerpt = artifact.content.split("\n").slice(0, 80).join("\n");
-      const nextState = {
-        status: "ready",
-        content: excerpt.length > 5000 ? `${excerpt.slice(0, 5000)}\n...` : excerpt,
-      } as const;
-      if (artifactId) previewCache.set(artifactId, nextState);
-      setState(nextState);
-      return;
-    }
-
-    setState({ status: "loading", content: "" });
-    void readWwxArtifact(artifact.id)
-      .then((result) => {
-        if (cancelled) return;
-        if (result.contentText !== undefined && result.contentText !== null) {
-          const excerpt = result.contentText.split("\n").slice(0, 80).join("\n");
-          const nextState = {
-            status: "ready",
-            content: excerpt.length > 5000 ? `${excerpt.slice(0, 5000)}\n...` : excerpt,
-          } as const;
-          if (artifactId) previewCache.set(artifactId, nextState);
-          setState(nextState);
-          return;
-        }
-        if (result.contentBlob?.length && artifact.kind === "image") {
-          const bytes = new Uint8Array(result.contentBlob);
-          let binary = "";
-          for (const byte of bytes) binary += String.fromCharCode(byte);
-          const mime = artifact.label.endsWith(".webp")
-            ? "image/webp"
-            : artifact.label.endsWith(".jpg") || artifact.label.endsWith(".jpeg")
-              ? "image/jpeg"
-              : "image/png";
-          const nextState = {
-            status: "ready",
-            content: "",
-            dataUrl: `data:${mime};base64,${window.btoa(binary)}`,
-          } as const;
-          if (artifactId) previewCache.set(artifactId, nextState);
-          setState(nextState);
-          return;
-        }
-        const nextState = { status: "unsupported", content: "" } as const;
-        if (artifactId) previewCache.set(artifactId, nextState);
-        setState(nextState);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          const nextState = { status: "error", content: "" } as const;
-          if (artifactId) previewCache.set(artifactId, nextState);
-          setState(nextState);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [artifact?.content, artifact?.id, artifact?.kind, artifact?.label]);
-
-  return state;
 }
 
 function EmptyInspector({
@@ -202,13 +139,13 @@ function DecisionStrip({ batch }: { batch: BatchSummary }) {
   if (!counts) return null;
   return (
     <div className="flex min-w-0 flex-wrap gap-1.5 text-[10.5px]">
-      <span className="border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
+      <span className="rounded-md border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
         <span className="font-medium text-slate-100">{counts.ship}</span> ship
       </span>
-      <span className="border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
+      <span className="rounded-md border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
         <span className="font-medium text-slate-100">{counts.review}</span> review
       </span>
-      <span className="border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
+      <span className="rounded-md border border-white/15 bg-[#191a1e] px-2 py-1 text-slate-400">
         <span className="font-medium text-slate-100">{counts.fail}</span> fail
       </span>
     </div>
@@ -218,17 +155,17 @@ function DecisionStrip({ batch }: { batch: BatchSummary }) {
 function RunLine({ run }: { run: RunSummary | null }) {
   if (!run) {
     return (
-      <div className="min-w-0 border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
+      <div className="min-w-0 rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
         No heartbeat or report run is visible yet.
       </div>
     );
   }
 
   return (
-    <div className="min-w-0 border border-white/15 bg-[#191a1e] px-2.5 py-2">
+    <div className="min-w-0 rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="min-w-0 truncate text-xs font-medium text-slate-100">{run.label}</div>
-        <Badge variant="outline" className="h-5 rounded-none px-1.5 text-[9.5px]">
+        <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[9.5px]">
           {run.status}
         </Badge>
       </div>
@@ -239,44 +176,115 @@ function RunLine({ run }: { run: RunSummary | null }) {
   );
 }
 
-function stageTone(status: string): string {
-  if (status === "complete" || status === "ok") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
-  if (status === "blocked" || status === "failed") return "border-rose-400/30 bg-rose-400/10 text-rose-200";
-  if (status === "awaiting_review" || status === "review") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
-  if (status === "running") return "border-sky-400/30 bg-sky-400/10 text-sky-200";
-  return "border-white/15 bg-white/10 text-slate-300";
-}
-
 function StageTimeline({ stages }: { stages: StageSummary[] }) {
   if (!stages.length) {
     return (
-      <div className="border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
+      <div className="rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
         No stage history is visible yet.
       </div>
     );
   }
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5 py-1">
       {stages.map((stage, index) => (
-        <div
-          key={`${stage.stage}-${index}`}
-          className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2 border border-white/15 bg-[#191a1e] px-2.5 py-2"
-        >
-          <div className="min-w-0">
-            <div className="truncate text-[11.5px] font-medium text-slate-100">
-              {stage.stage}
-            </div>
+        <div key={`${stage.stage}-${index}`} className="grid grid-cols-[18px_minmax(0,1fr)_auto] gap-2 text-[11.5px] text-slate-300">
+          <div className="relative flex justify-center">
+            <span className={cn("mt-1.5 size-2 rounded-full", stage.status === "complete" || stage.status === "ok" ? "bg-emerald-300" : stage.status === "blocked" || stage.status === "failed" ? "bg-red-300" : stage.status === "running" ? "bg-sky-300" : "bg-slate-500")} />
+            {index < stages.length - 1 ? <span className="absolute top-5 h-[calc(100%-4px)] w-px bg-white/18" /> : null}
+          </div>
+          <div className="min-w-0 pb-3">
+            <div className="truncate text-slate-200">{stage.label ?? friendlyStageLabel(stage.stage)}</div>
             <div className="text-[10px] text-slate-500">
-              {stage.artifactCount} artifacts{stage.approved ? " · approved" : ""}
+              {stage.summary ?? `${stage.artifactCount} outputs`}{stage.approved ? " · approved" : ""}
             </div>
           </div>
-          <span className={cn("border px-1.5 py-1 text-[9.5px]", stageTone(stage.status))}>
-            {stage.status.replace(/_/g, " ")}
-          </span>
+          <HugeiconsIcon
+            icon={ArrowUp01Icon}
+            size={12}
+            strokeWidth={1.8}
+            className="mt-0.5 rotate-180 text-slate-500"
+          />
         </div>
       ))}
     </div>
+  );
+}
+
+function ActionPanel({
+  workflow,
+  batch,
+  onContinueInAgent,
+  onRunBatch,
+  onBuildStrategy,
+  onAdvanceBatch,
+}: {
+  workflow: WorkflowState;
+  batch: BatchSummary;
+  onContinueInAgent: (batch: BatchSummary, prompt?: string) => void;
+  onRunBatch: (batch: BatchSummary) => void;
+  onBuildStrategy: (batch: BatchSummary) => void;
+  onAdvanceBatch: (batch: BatchSummary) => void;
+}) {
+  const runAction = (action?: WorkflowAction) => {
+    if (!action) return;
+    if (action.kind === "build_strategy") {
+      onBuildStrategy(batch);
+      return;
+    }
+    if (action.kind === "run_batch") {
+      onRunBatch(batch);
+      return;
+    }
+    if (action.kind === "continue") {
+      onAdvanceBatch(batch);
+      return;
+    }
+    onContinueInAgent(batch, action.prompt);
+  };
+
+  return (
+    <section className={cn("space-y-2 rounded-md border px-2.5 py-2", workflowToneClass(workflow.tone))}>
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[12px] font-semibold">{workflow.headline}</div>
+          {workflow.stageLabel ? (
+            <div className="mt-0.5 text-[9.5px] uppercase tracking-[0.12em] opacity-65">
+              {workflow.stageLabel}
+            </div>
+          ) : null}
+        </div>
+        <Badge className="h-5 shrink-0 rounded-md border border-white/15 bg-black/10 px-1.5 text-[9.5px] text-current">
+          {workflow.statusLabel}
+        </Badge>
+      </div>
+      <p className="text-[11px] leading-snug opacity-80">{workflow.summary}</p>
+      {workflow.primaryAction || workflow.secondaryAction ? (
+        <div className="flex flex-wrap gap-1.5">
+          {workflow.primaryAction ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 rounded-md px-2 text-[10.5px]"
+              onClick={() => runAction(workflow.primaryAction)}
+              disabled={workflow.primaryAction.kind === "wait"}
+            >
+              {workflow.primaryAction.label}
+            </Button>
+          ) : null}
+          {workflow.secondaryAction ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 rounded-md px-2 text-[10.5px]"
+              onClick={() => runAction(workflow.secondaryAction)}
+            >
+              {workflow.secondaryAction.label}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -296,7 +304,7 @@ function FinalReview({
 }) {
   if (!scripts.length) {
     return (
-      <div className="border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
+      <div className="rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] text-slate-400">
         Final manifest decisions are not available yet.
       </div>
     );
@@ -309,7 +317,7 @@ function FinalReview({
           key={script.taskId}
           type="button"
           onClick={() => onOpenScript(script)}
-          className="grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 border border-white/15 bg-[#191a1e] px-2.5 py-2 text-left hover:bg-[#202126]"
+          className="grid w-full min-w-0 grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2 text-left hover:bg-[#202126]"
         >
           <span className="min-w-0">
             <span className="block truncate text-[11.5px] font-medium text-slate-100">
@@ -361,79 +369,49 @@ function ArtifactRow({
   );
 }
 
-function ArtifactPreview({
-  artifact,
-}: {
-  artifact: ArtifactSummary | null;
-}) {
-  const text = useTextPreview(artifact);
-
-  if (!artifact) {
-    return (
-      <div className="flex min-h-[320px] min-w-0 flex-1 items-center justify-center border border-dashed border-white/15 bg-[#15161a] p-3 text-[11px] text-slate-400">
-        Select an artifact to preview it here.
-      </div>
-    );
-  }
-
-  return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-white/15 bg-[#191a1e]">
-      <div className="min-w-0 overflow-hidden border-b border-white/10 bg-[#15161a] px-2 py-1.5">
-        <div className="truncate text-[10px] font-medium text-slate-400" title={artifact.path}>
-          {basename(artifact.label)}
-        </div>
-      </div>
-
-      {artifact.kind === "image" ? (
-        <div className="flex min-h-[320px] min-w-0 flex-1 items-center justify-center overflow-hidden bg-[#1c1d21]">
-          <img
-            src={text.dataUrl ?? artifact.dataUrl ?? ""}
-            alt={artifact.label}
-            className="block h-full max-h-[520px] w-full max-w-full object-contain"
-            loading="lazy"
-          />
-        </div>
-      ) : artifact.kind === "directory" ? (
-        <div className="flex min-h-[220px] min-w-0 flex-1 bg-[#1c1d21] p-3 text-[11px] leading-relaxed text-slate-400">
-          {artifact.description ?? "Generated files are inside this folder."}
-        </div>
-      ) : (
-        <div className="min-h-[320px] min-w-0 flex-1 overflow-hidden bg-[#1c1d21]">
-          <ScrollArea className="h-full min-w-0 [&_[data-slot=scroll-area-viewport]]:overflow-x-hidden">
-            <pre className="max-w-full whitespace-pre-wrap break-words px-3 py-2 font-mono text-[10px] leading-relaxed text-slate-200">
-              {text.status === "loading"
-                ? "Loading..."
-                : text.status === "ready"
-                  ? text.content || "(empty file)"
-                  : "Preview unavailable for this file."}
-            </pre>
-          </ScrollArea>
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function WwxInspector({
   cwd,
   index,
   selectedBatch,
   selectedArtifactPath,
   onContinueInAgent,
+  onRunBatch,
+  onBuildStrategy,
+  onAdvanceBatch,
+  onToggleAutonomy,
 }: Props) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [detailsView, setDetailsView] = useState(false);
   const [artifactsOpen, setArtifactsOpen] = useState(true);
+  const [artifactExpanded, setArtifactExpanded] = useState(false);
   const run = useMemo(
     () => latestRun(selectedBatch?.runs ?? []),
     [selectedBatch?.runs],
   );
   const finalScripts = selectedBatch?.finalScripts ?? [];
+  const workflow = useMemo(
+    () =>
+      selectedBatch
+        ? deriveWorkflowState({
+            ...selectedBatch,
+            currentStage: selectedBatch.currentStage,
+          })
+        : null,
+    [selectedBatch],
+  );
+  const artifactGroups = useMemo(
+    () => groupArtifacts(selectedBatch?.artifacts ?? []),
+    [selectedBatch?.artifacts],
+  );
+  const [strategyPlan, setStrategyPlan] = useState<Record<string, unknown> | null>(null);
+  const [planImportError, setPlanImportError] = useState<string | null>(null);
+  const strategyPlanFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!selectedBatch) {
       setSelectedArtifactId(null);
       setDetailsView(false);
+      setArtifactExpanded(false);
       return;
     }
     if (selectedArtifactPath) {
@@ -447,8 +425,17 @@ export function WwxInspector({
     }
     const current = selectedBatch.artifacts.find((artifact) => artifact.id === selectedArtifactId);
     if (current) return;
-    setSelectedArtifactId(selectedBatch.artifacts[0]?.id ?? null);
-  }, [selectedBatch, selectedArtifactId, selectedArtifactPath]);
+    const firstImportant =
+      artifactGroups.find((group) => group.key !== "technical")?.artifacts[0] ??
+      artifactGroups[0]?.artifacts[0] ??
+      selectedBatch.artifacts[0];
+    setSelectedArtifactId(firstImportant?.id ?? null);
+  }, [artifactGroups, selectedBatch, selectedArtifactId, selectedArtifactPath]);
+
+  useEffect(() => {
+    setPlanImportError(null);
+    setArtifactExpanded(false);
+  }, [selectedBatch?.id]);
 
   useEffect(() => {
     if (!selectedBatch || !finalScripts.length) return;
@@ -464,6 +451,28 @@ export function WwxInspector({
     if (firstFinal) setSelectedArtifactId(firstFinal.id);
   }, [finalScripts.length, selectedBatch?.id]);
 
+  useEffect(() => {
+    let alive = true;
+    const artifact = selectedBatch?.artifacts.find(
+      (item) => item.filename === "strategy-plan.json",
+    );
+    if (!artifact) {
+      setStrategyPlan(null);
+      return;
+    }
+    void readWwxArtifact(artifact.id).then((result) => {
+      if (!alive) return;
+      try {
+        setStrategyPlan(JSON.parse(result.contentText ?? "{}") as Record<string, unknown>);
+      } catch {
+        setStrategyPlan(null);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [selectedBatch?.artifacts, selectedBatch?.id]);
+
   const selectedArtifact =
     selectedBatch?.artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
   const openFinalScript = (script: FinalScriptSummary) => {
@@ -475,6 +484,37 @@ export function WwxInspector({
       setDetailsView(false);
     }
   };
+  const importStrategyPlan = async (file: File | undefined) => {
+    if (!file || !selectedBatch?.productId) return;
+    setPlanImportError(null);
+    try {
+      const content = await file.text();
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      await writeWwxArtifact({
+        productId: selectedBatch.productId,
+        batchId: selectedBatch.id,
+        kind: "json",
+        label: "strategy-plan.json",
+        filename: "strategy-plan.json",
+        mimeType: "application/json",
+        contentText: JSON.stringify(parsed, null, 2),
+        source: "strategy-plan-import",
+        public: true,
+      });
+      const validation = await invoke<{ ok: boolean; error?: string | null }>("wwx_validate_strategy_plan", {
+        input: {
+          productId: selectedBatch.productId,
+          batchId: selectedBatch.id,
+          strategyPlanJson: JSON.stringify(parsed, null, 2),
+        },
+      });
+      if (!validation.ok) {
+        setPlanImportError(validation.error ?? "The imported plan is invalid.");
+      }
+    } catch (error) {
+      setPlanImportError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#101114] text-slate-100">
@@ -483,13 +523,20 @@ export function WwxInspector({
           <EmptyInspector cwd={cwd} index={index} />
         ) : (
           <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 p-3">
-            {detailsView ? (
+            {artifactExpanded ? (
+              <WwxArtifactViewer
+                artifact={selectedArtifact}
+                expanded
+                onExpandedChange={setArtifactExpanded}
+                className="min-h-0 flex-1"
+              />
+            ) : detailsView ? (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
                 <section className="flex min-w-0 items-center gap-2 border-b border-white/15 pb-3">
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    className="rounded-none text-slate-400 hover:bg-white/10 hover:text-slate-100"
+                    className="rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
                     onClick={() => setDetailsView(false)}
                     title="Back"
                   >
@@ -510,33 +557,30 @@ export function WwxInspector({
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <Badge
                         className={cn(
-                          "h-5 max-w-24 shrink-0 truncate rounded-none border px-1.5 text-[9.5px]",
+                          "h-5 max-w-24 shrink-0 truncate rounded-md border px-1.5 text-[9.5px]",
                           statusClass(selectedBatch.status),
                         )}
                       >
-                        {statusLabel(selectedBatch)}
+                        {workflow?.statusLabel ?? selectedBatch.status}
                       </Badge>
                       <DecisionStrip batch={selectedBatch} />
                     </div>
 
                     <section className="min-w-0 space-y-2 overflow-hidden">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                        Run
+                        Next Action
                       </div>
-                      <RunLine run={run} />
-                      <div className="border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] leading-snug text-slate-400">
-                        {selectedBatch.nextAction ?? "Open the agent to continue this batch."}
-                      </div>
-                      {selectedBatch.status !== "complete" ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full justify-start rounded-none"
-                          onClick={() => onContinueInAgent(selectedBatch)}
-                        >
-                          Continue in agent
-                        </Button>
+                      {workflow ? (
+                        <ActionPanel
+                          workflow={workflow}
+                          batch={selectedBatch}
+                          onContinueInAgent={onContinueInAgent}
+                          onRunBatch={onRunBatch}
+                          onBuildStrategy={onBuildStrategy}
+                          onAdvanceBatch={onAdvanceBatch}
+                        />
                       ) : null}
+                      <RunLine run={run} />
                     </section>
 
                     <section className="min-w-0 space-y-2 overflow-hidden">
@@ -565,7 +609,7 @@ export function WwxInspector({
                           {selectedBatch.alerts.map((alert) => (
                             <div
                               key={alert}
-                              className="flex min-w-0 gap-1.5 border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] leading-snug text-slate-400"
+                              className="flex min-w-0 gap-1.5 rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2 text-[11px] leading-snug text-slate-400"
                             >
                               <HugeiconsIcon
                                 icon={Alert02Icon}
@@ -597,13 +641,24 @@ export function WwxInspector({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-7 shrink-0 rounded-none px-2 text-[10px]"
+                      className="h-7 shrink-0 rounded-md px-2 text-[10px]"
                       onClick={() => setDetailsView(true)}
                     >
                       Details
                     </Button>
                   </div>
                 </section>
+
+                {workflow ? (
+                  <ActionPanel
+                    workflow={workflow}
+                    batch={selectedBatch}
+                    onContinueInAgent={onContinueInAgent}
+                    onRunBatch={onRunBatch}
+                    onBuildStrategy={onBuildStrategy}
+                    onAdvanceBatch={onAdvanceBatch}
+                  />
+                ) : null}
 
                 {finalScripts.length ? (
                   <section className="min-w-0 space-y-2 overflow-hidden">
@@ -614,10 +669,71 @@ export function WwxInspector({
                   </section>
                 ) : null}
 
+                {strategyPlan ? (
+                  <section className="min-w-0 space-y-2 overflow-hidden">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Strategy Plan
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          ref={strategyPlanFileRef}
+                          type="file"
+                          accept="application/json,.json"
+                          className="hidden"
+                          onChange={(event) => void importStrategyPlan(event.target.files?.[0])}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 rounded-md px-2 text-[10px]"
+                          onClick={() => strategyPlanFileRef.current?.click()}
+                        >
+                          Replace
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 rounded-md px-2 text-[10px]"
+                          onClick={() => onToggleAutonomy(selectedBatch)}
+                          title="Toggle autonomous mode for this batch"
+                        >
+                          Auto {selectedBatch.autonomous ? "on" : "off"}
+                        </Button>
+                        {selectedBatch.strategyPath ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 rounded-md px-2 text-[10px]"
+                            onClick={() => onRunBatch(selectedBatch)}
+                          >
+                            Run LFS4.1
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 rounded-md px-2 text-[10px]"
+                            onClick={() => onBuildStrategy(selectedBatch)}
+                          >
+                            Build strategy
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <CreativeDirectionPreview plan={strategyPlan} />
+                    {planImportError ? (
+                      <div className="border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 text-[11px] leading-snug text-amber-200">
+                        {planImportError}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+
                 <Collapsible
                   open={artifactsOpen}
                   onOpenChange={setArtifactsOpen}
-                  className="min-w-0 overflow-hidden border border-white/15 bg-[#191a1e]"
+                  className="min-w-0 overflow-hidden rounded-md border border-white/15 bg-[#191a1e]"
                 >
                   <div className="flex min-w-0 items-center justify-between px-2 py-1.5">
                     <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -628,7 +744,7 @@ export function WwxInspector({
                         {selectedBatch.artifacts.length}
                       </span>
                       <CollapsibleTrigger asChild>
-                        <Button variant="ghost" size="icon-xs" className="rounded-none text-slate-500 hover:bg-white/10 hover:text-slate-200">
+                        <Button variant="ghost" size="icon-xs" className="rounded-md text-slate-500 hover:bg-white/10 hover:text-slate-200">
                           <HugeiconsIcon
                             icon={ArrowUp01Icon}
                             size={12}
@@ -642,16 +758,21 @@ export function WwxInspector({
                   <CollapsibleContent>
                     {selectedBatch.artifacts.length ? (
                       <div className="max-h-[min(24rem,calc(100dvh-360px))] overflow-y-auto overflow-x-hidden border-t border-white/10">
-                        <div>
-                          {selectedBatch.artifacts.map((artifact) => (
-                            <ArtifactRow
-                              key={artifact.id}
-                              artifact={artifact}
-                              active={artifact.id === selectedArtifactId}
-                              onSelect={() => setSelectedArtifactId(artifact.id)}
-                            />
-                          ))}
-                        </div>
+                        {artifactGroups.map((group) => (
+                          <div key={group.key} className={cn(group.key === "technical" && "opacity-80")}>
+                            <div className="border-b border-white/10 bg-[#15161a] px-2 py-1 text-[9.5px] font-semibold uppercase tracking-[0.1em] text-slate-500">
+                              {group.label}
+                            </div>
+                            {group.artifacts.map((artifact) => (
+                              <ArtifactRow
+                                key={artifact.id}
+                                artifact={artifact}
+                                active={artifact.id === selectedArtifactId}
+                                onSelect={() => setSelectedArtifactId(artifact.id)}
+                              />
+                            ))}
+                          </div>
+                        ))}
                       </div>
                     ) : (
                       <div className="border-t border-white/10 p-3 text-[11px] text-slate-500">
@@ -661,7 +782,12 @@ export function WwxInspector({
                   </CollapsibleContent>
                 </Collapsible>
 
-                <ArtifactPreview artifact={selectedArtifact} />
+                <WwxArtifactViewer
+                  artifact={selectedArtifact}
+                  expanded={false}
+                  onExpandedChange={setArtifactExpanded}
+                  className="min-h-[320px] flex-1"
+                />
               </>
             )}
           </div>

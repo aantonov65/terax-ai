@@ -21,6 +21,7 @@ export type ShortcutId =
   | "explorer.search"
   | "ai.toggle"
   | "ai.askSelection"
+  | "lfs.toggleAutonomy"
   | "shortcuts.open"
   | "settings.open"
   | "sidebar.toggle";
@@ -156,6 +157,12 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Ask AI about selection",
     group: "AI",
     defaultBindings: [{ [MOD_PROP]: true, key: "l" }],
+  },
+  {
+    id: "lfs.toggleAutonomy",
+    label: "Toggle LFS autonomous mode",
+    group: "AI",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "a" }],
   },
   {
     id: "sidebar.toggle",

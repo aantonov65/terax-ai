@@ -4,6 +4,16 @@ export type ProductResearchDraft = {
   mechanisms: string;
 };
 
+export type ProductConfigValidation = {
+  ok: boolean;
+  missing: string[];
+  fields: Array<{
+    key: string;
+    label: string;
+    present: boolean;
+  }>;
+};
+
 export type ResearchValidation = {
   ok: boolean;
   missing: string[];
@@ -23,6 +33,40 @@ export type ProductReadiness = {
   gaps: string[];
   starterResearch: boolean;
 };
+
+export const REQUIRED_PRODUCT_CONFIG_FIELDS = [
+  {
+    key: "product_code",
+    label: "Product code",
+    present: (config: Record<string, unknown>) =>
+      typeof config.product_code === "string" && /^[A-Z][A-Z0-9-]*$/.test(config.product_code.trim()),
+  },
+  {
+    key: "product_name",
+    label: "Product name",
+    present: (config: Record<string, unknown>) => Boolean(stringValue(config.product_name)),
+  },
+  {
+    key: "target_demographic",
+    label: "Target demographic",
+    present: (config: Record<string, unknown>) => hasTargetDemographic(config),
+  },
+  {
+    key: "mechanisms",
+    label: "Mechanism truth",
+    present: (config: Record<string, unknown>) => hasMechanism(config),
+  },
+  {
+    key: "pricing_rules.single_bag_price_usd",
+    label: "Pricing rules",
+    present: (config: Record<string, unknown>) => hasPricingRules(config),
+  },
+  {
+    key: "offer_architecture.guarantee_framing",
+    label: "Offer architecture",
+    present: (config: Record<string, unknown>) => hasOfferArchitecture(config),
+  },
+] as const;
 
 const DEFAULT_PRICE = 49;
 const DEFAULT_GUARANTEE = "60-day";
@@ -83,6 +127,19 @@ export function completeProductConfig(
   }
 
   return next;
+}
+
+export function validateProductConfig(config: Record<string, unknown>): ProductConfigValidation {
+  const fields = REQUIRED_PRODUCT_CONFIG_FIELDS.map((field) => ({
+    key: field.key,
+    label: field.label,
+    present: field.present(config),
+  }));
+  return {
+    ok: fields.every((field) => field.present),
+    missing: fields.filter((field) => !field.present).map((field) => field.key),
+    fields,
+  };
 }
 
 export function generateStarterResearch(

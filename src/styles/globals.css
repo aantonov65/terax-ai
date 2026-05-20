@@ -199,7 +199,6 @@ html[data-chrome="borderless"] #settings-root {
   display: none !important;
 }
 
-
 .no-scrollbar {
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;
@@ -239,4 +238,83 @@ html[data-chrome="borderless"] *::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none;
+}
+
+@keyframes dot-matrix-pulse {
+  0%, 100% { opacity: 0.24; transform: scale(0.84); }
+  45% { opacity: 0.92; transform: scale(1); }
+}
+
+.animate-dot-matrix-pulse {
+  animation: dot-matrix-pulse 900ms ease-in-out infinite;
+}
+
+.metal-silver {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.50), rgba(203,213,225,0.34) 42%, rgba(116,123,135,0.35) 52%, rgba(226,232,240,0.42));
+  border-color: rgba(255,255,255,0.28);
+  color: #111318;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.48),
+    inset 0 -1px 0 rgba(0,0,0,0.28);
+}
+
+.metal-silver:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.58), rgba(203,213,225,0.39) 42%, rgba(116,123,135,0.40) 52%, rgba(226,232,240,0.48));
+}
+
+.markdown-preview {
+  color: rgb(226 232 240);
+}
+.markdown-preview :where(h1,h2,h3) {
+  margin: 0.9em 0 0.45em;
+  font-weight: 650;
+  color: rgb(248 250 252);
+}
+.markdown-preview :where(h1) { font-size: 1.05rem; }
+.markdown-preview :where(h2) { font-size: 0.95rem; }
+.markdown-preview :where(h3) { font-size: 0.86rem; }
+.markdown-preview :where(p,ul,ol,blockquote,pre,table) {
+  margin: 0.55em 0;
+}
+.markdown-preview :where(ul,ol) {
+  padding-left: 1.15rem;
+}
+.markdown-preview :where(li) {
+  margin: 0.2em 0;
+}
+.markdown-preview :where(strong) {
+  color: rgb(248 250 252);
+  font-weight: 650;
+}
+.markdown-preview :where(code) {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 0.35rem;
+  background: rgba(255,255,255,0.06);
+  padding: 0.08rem 0.28rem;
+  font-size: 0.9em;
+}
+.markdown-preview :where(pre) {
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 0.6rem;
+  background: rgba(0,0,0,0.20);
+  padding: 0.75rem;
+}
+.markdown-preview :where(pre code) {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.artifact-markdown-preview :where(table) {
+  margin: 0.75rem 0;
+  background: transparent;
+}
+
+.artifact-markdown-preview :where(div:has(> table)) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
 }

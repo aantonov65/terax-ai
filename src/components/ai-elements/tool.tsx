@@ -31,6 +31,7 @@ import { isValidElement, memo, useState } from "react";
 
 import type { BundledLanguage } from "shiki";
 import { CodeBlockContent } from "./code-block";
+import { sendMessage } from "@/modules/ai/store/chatStore";
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -52,17 +53,23 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   open_preview: { label: "Preview", icon: EyeIcon },
   run_subagent: { label: "Subagent", icon: RobotIcon },
   todo_write: { label: "Todos", icon: CheckListIcon },
-  submit_lfs_job: { label: "Submit LFS", icon: ToolsIcon },
-  advance_lfs_job: { label: "Advance LFS", icon: ToolsIcon },
-  resume_lfs_job: { label: "Resume LFS", icon: ToolsIcon },
-  get_lfs_job: { label: "LFS status", icon: ToolsIcon },
-  list_lfs_artifacts: { label: "LFS artifacts", icon: File01Icon },
-  read_lfs_artifact: { label: "Read artifact", icon: File01Icon },
-  edit_lfs_artifact: { label: "Edit artifact", icon: FileEditIcon },
-  rerun_lfs_checks: { label: "Rerun LFS", icon: CheckListIcon },
-  retry_lfs_failures: { label: "Retry LFS", icon: ToolsIcon },
-  export_lfs: { label: "Export LFS", icon: File01Icon },
-  cancel_lfs_job: { label: "Cancel LFS", icon: ToolsIcon },
+  create_product_from_config: { label: "Saving Product Setup", icon: SparklesIcon },
+  run_product_research: { label: "Running Product Research", icon: GlobalSearchIcon },
+  save_strategy_plan: { label: "Saving Creative Direction", icon: FileEditIcon },
+  build_strategy_json: { label: "Building Strategy", icon: ToolsIcon },
+  set_autonomous_mode: { label: "Updating Autonomy", icon: ToolsIcon },
+  get_lfs_plan: { label: "Checking Strategy Plan", icon: File01Icon },
+  submit_lfs_job: { label: "Running LFS Batch", icon: ToolsIcon },
+  advance_lfs_job: { label: "Continuing Batch", icon: ToolsIcon },
+  resume_lfs_job: { label: "Continuing Batch", icon: ToolsIcon },
+  get_lfs_job: { label: "Checking Progress", icon: ToolsIcon },
+  list_lfs_artifacts: { label: "Opening Outputs", icon: File01Icon },
+  read_lfs_artifact: { label: "Opening Output", icon: File01Icon },
+  edit_lfs_artifact: { label: "Editing Output", icon: FileEditIcon },
+  rerun_lfs_checks: { label: "Checking Output", icon: CheckListIcon },
+  retry_lfs_failures: { label: "Repairing Batch", icon: ToolsIcon },
+  export_lfs: { label: "Exporting Scripts", icon: File01Icon },
+  cancel_lfs_job: { label: "Canceling Batch", icon: ToolsIcon },
 };
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
@@ -115,8 +122,17 @@ function deriveSummary(toolName: string, input: unknown): string | null {
       return str("path") ?? str("url");
     case "run_subagent":
       return str("agent") ?? str("task");
+    case "create_product_from_config":
+      return str("product_folder") ?? "product setup";
+    case "run_product_research":
+      return str("topic") ?? "research";
+    case "save_strategy_plan":
+      return Array.isArray(i.ads) ? `${i.ads.length} ad${i.ads.length === 1 ? "" : "s"}` : "creative direction";
+    case "build_strategy_json":
+    case "set_autonomous_mode":
+    case "get_lfs_plan":
     case "submit_lfs_job":
-      return str("angles_path") ?? "attached angle";
+      return str("batch_id") ?? "bound batch";
     case "advance_lfs_job":
     case "resume_lfs_job":
     case "get_lfs_job":
@@ -184,7 +200,7 @@ const ToolImpl = ({
   const isError = state === "output-error";
   const isWwx = isWwxTool(toolName);
   const open = defaultOpen ?? (isError || (isWwx && output !== undefined));
-  const hidesInput = HEAVY_INPUT_TOOLS.has(toolName);
+  const hidesInput = HEAVY_INPUT_TOOLS.has(toolName) || isWwx;
   const hidesOutput = HEAVY_CONTENT_TOOLS.has(toolName);
   // Some tools carry large file bodies in input; the header plus compact output
   // is enough and avoids re-rendering streamed content on every token.
@@ -202,9 +218,9 @@ const ToolImpl = ({
       <CollapsibleTrigger
         disabled={!hasDetails}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left",
+          "flex w-full items-center gap-2 rounded-md border border-white/10 bg-[#17181b]/70 px-2 py-1.5 text-left",
           "text-[12px] transition-colors",
-          "hover:bg-muted/60 disabled:cursor-default disabled:hover:bg-transparent",
+          "hover:bg-muted/50 disabled:cursor-default disabled:hover:bg-[#17181b]/70",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         )}
       >
@@ -241,7 +257,7 @@ const ToolImpl = ({
             "data-[state=open]:animate-in data-[state=open]:fade-in-0",
           )}
         >
-          <div className="ml-3 mt-1 space-y-2 border-l border-border/60 pl-3 pb-1">
+          <div className="ml-3 mt-1 space-y-2 rounded-md border border-border/50 bg-background/20 p-2">
             {showInputBody ? (
               <ToolInput toolName={toolName} input={input} />
             ) : null}
@@ -624,82 +640,148 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
 }
 
 function isWwxTool(toolName: string): boolean {
-  return (
-    toolName.endsWith("_lfs_job") ||
-    toolName === "get_lfs_job" ||
-    toolName === "list_lfs_artifacts" ||
-    toolName === "read_lfs_artifact" ||
-    toolName === "edit_lfs_artifact" ||
-    toolName === "rerun_lfs_checks" ||
-    toolName === "retry_lfs_failures" ||
-    toolName === "export_lfs" ||
-    toolName === "cancel_lfs_job"
-  );
+  return WWX_TOOL_NAMES.has(toolName);
 }
+
+const WWX_TOOL_NAMES = new Set([
+  "create_product_from_config",
+  "run_product_research",
+  "save_strategy_plan",
+  "build_strategy_json",
+  "set_autonomous_mode",
+  "get_lfs_plan",
+  "submit_lfs_job",
+  "advance_lfs_job",
+  "resume_lfs_job",
+  "get_lfs_job",
+  "list_lfs_artifacts",
+  "read_lfs_artifact",
+  "edit_lfs_artifact",
+  "rerun_lfs_checks",
+  "retry_lfs_failures",
+  "export_lfs",
+  "cancel_lfs_job",
+  "get_product_readiness",
+  "enqueue_lfs_job",
+  "list_lfs_queue",
+]);
 
 function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
   const openPreview = useChatStore((s) => s.live.openPreview);
+  const focusInput = useChatStore((s) => s.focusInput);
   const ok = data.ok !== false;
-  const summary = typeof data.summary === "string" ? data.summary : null;
-  const status = typeof data.status === "string" ? data.status : null;
-  const stage =
-    typeof data.current_stage === "string" ? data.current_stage : null;
-  const batch = typeof data.batch_id === "string" ? data.batch_id : null;
-  const product = typeof data.product === "string" ? data.product : null;
+  const ui = readToolUi(data);
+  const summary =
+    ui?.summary ??
+    (typeof data.summary === "string" ? data.summary : null);
+  const headline =
+    ui?.headline ??
+    (ok ? "Workflow updated" : "Workflow needs attention");
+  const stageLabel =
+    ui?.stage_label ??
+    (typeof data.current_stage === "string"
+      ? data.current_stage.replace(/[_-]+/g, " ")
+      : null);
   const retryable = data.retryable === true;
-  const awaitingReview = data.awaiting_review === true;
-  const artifactCount =
-    typeof data.artifact_count === "number" ? data.artifact_count : null;
-  const artifacts = Array.isArray(data.artifacts)
-    ? (data.artifacts as Array<Record<string, unknown>>)
+  const action = ui?.primary_action?.kind === "wait" ? null : ui?.primary_action ?? null;
+  const secondaryAction = ui?.secondary_action ?? null;
+  const artifacts = Array.isArray(ui?.important_artifacts)
+    ? ui.important_artifacts
+    : Array.isArray(data.artifacts)
+      ? (data.artifacts as Array<Record<string, unknown>>).filter(
+          (artifact) => artifact.audience !== "technical",
+        )
+      : [];
+  const diagnosticCount =
+    typeof ui?.diagnostic_count === "number"
+      ? ui.diagnostic_count
+      : Array.isArray(data.artifacts)
+        ? (data.artifacts as Array<Record<string, unknown>>).filter(
+            (artifact) => artifact.audience === "technical",
+          ).length
+        : 0;
+  const diagnosticArtifacts = Array.isArray(data.artifacts)
+    ? (data.artifacts as Array<Record<string, unknown>>).filter(
+        (artifact) => artifact.audience === "technical",
+      )
     : [];
   const reason = typeof data.reason === "string" ? data.reason : null;
+  const tone = ui?.tone ?? (ok ? "success" : "danger");
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-        <span
-          className={cn(
-            "rounded px-1.5 py-0.5 font-medium",
-            ok
-              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-              : "bg-destructive/15 text-destructive",
-          )}
-        >
-          {ok ? "ok" : "failed"}
-        </span>
-        {awaitingReview ? (
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-            awaiting review
+    <div className="space-y-2.5">
+      <div
+        className={cn(
+          "rounded-md border px-2.5 py-2",
+          tone === "danger"
+            ? "border-rose-400/30 bg-rose-400/10"
+            : tone === "warning"
+              ? "border-amber-400/30 bg-amber-400/10"
+              : tone === "running"
+                ? "border-sky-400/30 bg-sky-400/10"
+                : "border-emerald-400/25 bg-emerald-400/10",
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-[12px] font-semibold text-foreground">
+              {headline}
+            </div>
+            {stageLabel ? (
+              <div className="mt-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                {stageLabel}
+              </div>
+            ) : null}
+          </div>
+          <span
+            className={cn(
+              "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+              ok
+                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                : "bg-destructive/15 text-destructive",
+            )}
+          >
+            {ok ? "done" : "blocked"}
           </span>
-        ) : null}
-        {status ? <span className="text-muted-foreground">{status}</span> : null}
-        {stage ? (
-          <span className="font-mono text-muted-foreground">· {stage}</span>
-        ) : null}
-        {product || batch ? (
-          <span className="font-mono text-muted-foreground">
-            · {[product, batch].filter(Boolean).join(" / ")}
-          </span>
+        </div>
+        {summary || reason ? (
+          <div className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {summary ?? reason}
+          </div>
         ) : null}
       </div>
-      {summary || reason ? (
-        <div className="text-[11px] leading-relaxed text-muted-foreground">
-          {summary ?? reason}
+
+      {action ? (
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            className="rounded-md bg-foreground px-2.5 py-1.5 text-[11px] font-semibold text-background hover:opacity-90 active:scale-[0.98]"
+            onClick={() => {
+              if (action.prompt) void sendMessage(action.prompt);
+              else focusInput(action.label);
+            }}
+          >
+            {action.label}
+          </button>
+          {secondaryAction ? (
+            <button
+              type="button"
+              className="rounded-md border border-border/70 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground active:scale-[0.98]"
+              onClick={() => focusInput(secondaryAction.prompt ?? "")}
+            >
+              {secondaryAction.label}
+            </button>
+          ) : null}
         </div>
       ) : null}
+
       {artifacts.length > 0 ? (
         <div className="space-y-1">
           <div className="text-[10px] font-medium text-muted-foreground">
-            Artifacts
-            {artifactCount != null && artifactCount !== artifacts.length
-              ? ` ${artifacts.length}/${artifactCount}`
-              : artifactCount != null
-                ? ` ${artifactCount}`
-                : ""}
+            Important outputs
           </div>
           <div className="max-h-44 overflow-y-auto overflow-x-hidden rounded bg-muted/30 font-mono text-[11px]">
-            {artifacts.map((artifact, idx) => {
+            {artifacts.slice(0, 8).map((artifact, idx) => {
               const label =
                 typeof artifact.label === "string"
                   ? artifact.label
@@ -749,13 +831,72 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
           </div>
         </div>
       ) : null}
+      {diagnosticCount > 0 ? (
+        <Collapsible className="rounded-md border border-border/40 bg-background/20">
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-2 py-1.5 text-left text-[10px] font-medium text-muted-foreground hover:text-foreground">
+            <span>Technical details hidden</span>
+            <span>{diagnosticCount}</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="max-h-40 overflow-y-auto border-t border-border/40 font-mono text-[10.5px]">
+              {diagnosticArtifacts.map((artifact, index) => {
+                const label =
+                  typeof artifact.label === "string"
+                    ? artifact.label
+                    : typeof artifact.filename === "string"
+                      ? artifact.filename
+                      : `detail ${index + 1}`;
+                const path =
+                  typeof artifact.path === "string" ? artifact.path : null;
+                return (
+                  <div
+                    key={`${label}-${index}`}
+                    className="flex gap-2 border-b border-border/30 px-2 py-1 last:border-b-0"
+                  >
+                    {path ? (
+                      <button
+                        type="button"
+                        onClick={() => openPreview(path)}
+                        className="min-w-0 flex-1 truncate text-left text-muted-foreground underline decoration-border underline-offset-2 hover:text-primary"
+                        title={`Open ${label}`}
+                      >
+                        {label}
+                      </button>
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                        {label}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
       {!ok && retryable ? (
         <div className="text-[10px] text-muted-foreground">
-          Retryable after the failed checkpoint is reviewed.
+          Repairable by the workflow. Operator input is only needed if the next step asks for missing truth.
         </div>
       ) : null}
     </div>
   );
+}
+
+type WwxToolUi = {
+  headline?: string;
+  summary?: string;
+  tone?: "neutral" | "running" | "success" | "warning" | "danger";
+  stage_label?: string;
+  primary_action?: { kind?: string; label: string; prompt?: string };
+  secondary_action?: { kind?: string; label: string; prompt?: string };
+  important_artifacts?: Array<Record<string, unknown>>;
+  diagnostic_count?: number;
+};
+
+function readToolUi(data: Record<string, unknown>): WwxToolUi | null {
+  if (!data.ui || typeof data.ui !== "object") return null;
+  return data.ui as WwxToolUi;
 }
 
 function BashRunOutput({ data }: { data: Record<string, unknown> }) {

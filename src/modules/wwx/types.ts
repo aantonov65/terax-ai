@@ -69,6 +69,8 @@ export type StageSummary = {
   status: string;
   approved: boolean;
   artifactCount: number;
+  label?: string;
+  summary?: string;
 };
 
 export type FinalScriptSummary = {
@@ -76,6 +78,44 @@ export type FinalScriptSummary = {
   script: string;
   decision: "ship" | "review" | "fail" | string;
   semanticReason?: string;
+};
+
+export type WorkflowTone = "neutral" | "running" | "success" | "warning" | "danger";
+
+export type WorkflowActionKind =
+  | "add_direction"
+  | "build_strategy"
+  | "run_batch"
+  | "continue"
+  | "repair"
+  | "provide_input"
+  | "review_final"
+  | "export"
+  | "open_agent"
+  | "wait";
+
+export type WorkflowAction = {
+  kind: WorkflowActionKind;
+  label: string;
+  prompt?: string;
+};
+
+export type WorkflowState = {
+  status: BatchStatus;
+  statusLabel: string;
+  stage?: string;
+  stageLabel?: string;
+  headline: string;
+  summary: string;
+  tone: WorkflowTone;
+  operatorNeeded: boolean;
+  retryable: boolean;
+  failureKind?: string;
+  reason?: string;
+  primaryAction?: WorkflowAction;
+  secondaryAction?: WorkflowAction;
+  importantArtifactIds?: string[];
+  diagnosticArtifactIds?: string[];
 };
 
 export type ProductConfigSummary = {
@@ -103,6 +143,7 @@ export type DraftBatchMetadata = {
 
 export type BatchSummary = {
   id: string;
+  productId?: string;
   name: string;
   path: string;
   product?: string;
@@ -111,6 +152,7 @@ export type BatchSummary = {
   legacy?: boolean;
   format?: string;
   status: BatchStatus;
+  currentStage?: string;
   updatedAt?: number;
   totalScripts?: number;
   decisionCounts?: BatchDecisionCounts;
@@ -126,6 +168,8 @@ export type BatchSummary = {
   stageTimeline?: StageSummary[];
   finalScripts?: FinalScriptSummary[];
   alerts: string[];
+  autonomous?: boolean;
+  workflowState?: WorkflowState;
 };
 
 export type ProductSummary = {
@@ -135,10 +179,21 @@ export type ProductSummary = {
   path: string;
   configPath?: string;
   config?: ProductConfigSummary;
+  researchArtifactCount?: number;
+  researchArtifactUpdatedAt?: number | null;
   batchCount: number;
   statusCounts: Record<BatchStatus, number>;
   updatedAt?: number;
   batches: BatchSummary[];
+};
+
+export type ProductResearchJob = {
+  productId: string;
+  topic: string;
+  status: "running" | "complete" | "blocked";
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
 };
 
 export type AgentWindow = {
@@ -149,6 +204,7 @@ export type AgentWindow = {
   batchPath?: string;
   sessionId: string;
   active: boolean;
+  autonomous?: boolean;
   createdAt: number;
   seedPrompt?: string;
 };

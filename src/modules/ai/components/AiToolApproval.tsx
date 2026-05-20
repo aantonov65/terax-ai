@@ -32,17 +32,19 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
-    create_product_from_intake: { label: "Create product from intake", icon: AiMagicIcon },
-    create_batch_plan_from_product: { label: "Create batch plan", icon: AiMagicIcon },
-    approve_concept_matrix: { label: "Approve concept matrix", icon: WorkflowSquare06Icon },
-    submit_lfs_job: { label: "Submit LFS job", icon: WorkflowSquare06Icon },
-    advance_lfs_job: { label: "Advance LFS job", icon: WorkflowSquare06Icon },
-    resume_lfs_job: { label: "Resume LFS job", icon: WorkflowSquare06Icon },
-    rerun_lfs_checks: { label: "Rerun LFS checks", icon: WorkflowSquare06Icon },
-    retry_lfs_failures: { label: "Retry LFS failures", icon: WorkflowSquare06Icon },
-    cancel_lfs_job: { label: "Cancel LFS job", icon: Cancel01Icon },
-    export_lfs: { label: "Export LFS scripts", icon: FileSearchIcon },
-    edit_lfs_artifact: { label: "Edit LFS artifact", icon: FileEditIcon },
+    create_product_from_config: { label: "Saving Product Setup", icon: AiMagicIcon },
+    run_product_research: { label: "Running Product Research", icon: FileSearchIcon },
+    save_strategy_plan: { label: "Saving Creative Direction", icon: FileEditIcon },
+    build_strategy_json: { label: "Building Strategy", icon: WorkflowSquare06Icon },
+    set_autonomous_mode: { label: "Updating Autonomy", icon: WorkflowSquare06Icon },
+    submit_lfs_job: { label: "Running LFS Batch", icon: WorkflowSquare06Icon },
+    advance_lfs_job: { label: "Continuing Batch", icon: WorkflowSquare06Icon },
+    resume_lfs_job: { label: "Continuing Batch", icon: WorkflowSquare06Icon },
+    rerun_lfs_checks: { label: "Checking Output", icon: WorkflowSquare06Icon },
+    retry_lfs_failures: { label: "Repairing Batch", icon: WorkflowSquare06Icon },
+    cancel_lfs_job: { label: "Canceling Batch", icon: Cancel01Icon },
+    export_lfs: { label: "Exporting Scripts", icon: FileSearchIcon },
+    edit_lfs_artifact: { label: "Editing Output", icon: FileEditIcon },
     create_batch_from_angles: { label: "Create WWX batch", icon: AiMagicIcon },
     run_guided_lfs_agent: { label: "Create LFS", icon: WorkflowSquare06Icon },
     run_lfs_v41: { label: "Run LFS V4.1", icon: WorkflowSquare06Icon },
@@ -137,7 +139,7 @@ function PreviewBlock({
     return (
       <div className="space-y-2 text-[11px]">
         <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1">
-          <span className="text-muted-foreground">Intent</span>
+          <span className="text-muted-foreground">Action</span>
           <span>{workflowIntent(toolName)}</span>
           {product ? (
             <>
@@ -151,13 +153,13 @@ function PreviewBlock({
               <span className="font-mono">{batch}</span>
             </>
           ) : null}
-          <span className="text-muted-foreground">Risk</span>
+          <span className="text-muted-foreground">Impact</span>
           <span>{risk || defaultWorkflowRisk(toolName)}</span>
         </div>
         {touched.length ? (
           <div className="rounded-md bg-muted/60 p-2">
             <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              Files touched
+              Details
             </div>
             <div className="space-y-0.5 font-mono text-[10.5px] text-muted-foreground">
               {touched.map((item) => (
@@ -255,11 +257,13 @@ function PreviewBlock({
 
 function isWwxWorkflowTool(toolName: string): boolean {
   return [
+    "create_product_from_config",
+    "run_product_research",
+    "save_strategy_plan",
+    "build_strategy_json",
+    "set_autonomous_mode",
     "submit_lfs_job",
-    "create_product_from_intake",
-    "create_batch_plan_from_product",
     "get_lfs_plan",
-    "approve_concept_matrix",
     "advance_lfs_job",
     "resume_lfs_job",
     "rerun_lfs_checks",
@@ -277,6 +281,8 @@ function isWwxWorkflowTool(toolName: string): boolean {
     "run_lfs_and_images",
     "get_batch_status",
     "open_artifact",
+    "enqueue_lfs_job",
+    "list_lfs_queue",
   ].includes(toolName);
 }
 
@@ -285,21 +291,23 @@ function stringInput(value: unknown): string | null {
 }
 
 function workflowIntent(toolName: string): string {
-  if (toolName === "create_product_from_intake") return "Generate a product package from chat evidence and create the first batch only if readiness passes.";
-  if (toolName === "create_batch_plan_from_product") return "Reuse existing product truth/research to create a new batch concept matrix.";
-  if (toolName === "get_lfs_plan") return "Read the prepared readiness and concept matrix.";
-  if (toolName === "approve_concept_matrix") return "Record explicit strategy approval for this batch.";
-  if (toolName === "submit_lfs_job") return "Canonicalize angle input and start a bound LFS job.";
-  if (toolName === "advance_lfs_job") return "Approve the current checkpoint and run one next stage.";
-  if (toolName === "resume_lfs_job") return "Resume the bound LFS job from saved state.";
-  if (toolName === "rerun_lfs_checks") return "Rerun high-level QA/check stages.";
-  if (toolName === "retry_lfs_failures") return "Retry a failed LFS stage.";
-  if (toolName === "cancel_lfs_job") return "Mark the LFS job canceled.";
-  if (toolName === "export_lfs") return "Export public generated scripts.";
-  if (toolName === "get_lfs_job") return "Read sanitized job status.";
-  if (toolName === "list_lfs_artifacts") return "List public LFS artifacts.";
-  if (toolName === "read_lfs_artifact") return "Read one public LFS artifact.";
-  if (toolName === "edit_lfs_artifact") return "Edit only whitelisted public LFS artifacts.";
+  if (toolName === "create_product_from_config") return "Save the product setup from approved brand facts.";
+  if (toolName === "run_product_research") return "Build the product research base for production batches.";
+  if (toolName === "save_strategy_plan") return "Save and check the creative direction.";
+  if (toolName === "build_strategy_json") return "Turn the creative direction into the runnable batch strategy.";
+  if (toolName === "set_autonomous_mode") return "Choose whether this batch keeps moving without review pauses.";
+  if (toolName === "get_lfs_plan") return "Check the saved direction, strategy, and autonomy setting.";
+  if (toolName === "submit_lfs_job") return "Start generating and checking the LFS ads.";
+  if (toolName === "advance_lfs_job") return "Continue from the current review checkpoint.";
+  if (toolName === "resume_lfs_job") return "Continue the saved batch run.";
+  if (toolName === "rerun_lfs_checks") return "Recheck the current output.";
+  if (toolName === "retry_lfs_failures") return "Repair the batch from the earliest useful checkpoint.";
+  if (toolName === "cancel_lfs_job") return "Stop this batch run.";
+  if (toolName === "export_lfs") return "Prepare final scripts for handoff.";
+  if (toolName === "get_lfs_job") return "Check batch progress.";
+  if (toolName === "list_lfs_artifacts") return "Open available outputs.";
+  if (toolName === "read_lfs_artifact") return "Open one output.";
+  if (toolName === "edit_lfs_artifact") return "Update one approved output.";
   if (toolName === "create_batch_from_angles") return "Compile angles.md into a guarded WWX batch.";
   if (toolName === "run_guided_lfs_agent") return "Run the guided LFS agent workflow.";
   if (toolName === "run_lfs_v41") return "Run the LFS V4.1 script workflow.";
@@ -310,15 +318,17 @@ function workflowIntent(toolName: string): string {
 }
 
 function defaultWorkflowRisk(toolName: string): string {
-  if (toolName === "create_product_from_intake") return "May call model providers and writes a new Product, Batch, and public planning artifacts if readiness passes.";
-  if (toolName === "create_batch_plan_from_product") return "May call model providers and writes a new Batch plus public planning artifacts if readiness passes.";
+  if (toolName === "create_product_from_config") return "Saves one product setup record.";
+  if (toolName === "run_product_research") return "Uses research/model providers and saves product research.";
+  if (toolName === "save_strategy_plan") return "Saves creative direction and checks it against current research.";
+  if (toolName === "build_strategy_json") return "Creates the runnable strategy for this batch.";
+  if (toolName === "set_autonomous_mode") return "Updates this batch's autonomy setting.";
   if (toolName === "get_lfs_plan") return "Read-only.";
-  if (toolName === "approve_concept_matrix") return "Writes the strategy approval record for this batch.";
-  if (toolName === "submit_lfs_job") return "Writes canonical input and may call model providers.";
-  if (toolName === "advance_lfs_job" || toolName === "resume_lfs_job") return "May call model providers and write batch artifacts.";
-  if (toolName === "rerun_lfs_checks" || toolName === "retry_lfs_failures") return "May call model providers for QA/repair stages.";
-  if (toolName === "cancel_lfs_job") return "Updates local job state only.";
-  if (toolName === "edit_lfs_artifact") return "Writes only whitelisted batch artifacts.";
+  if (toolName === "submit_lfs_job") return "May use model providers and save generated outputs.";
+  if (toolName === "advance_lfs_job" || toolName === "resume_lfs_job") return "May use model providers and save the next outputs.";
+  if (toolName === "rerun_lfs_checks" || toolName === "retry_lfs_failures") return "May use model providers while repairing or checking outputs.";
+  if (toolName === "cancel_lfs_job") return "Updates local batch state.";
+  if (toolName === "edit_lfs_artifact") return "Updates one approved batch output.";
   if (toolName === "export_lfs" || toolName === "get_lfs_job" || toolName === "list_lfs_artifacts" || toolName === "read_lfs_artifact") return "Read-only.";
   if (toolName === "create_batch_from_angles") return "Writes strategy/spec/manifest files only.";
   if (toolName === "get_batch_status" || toolName === "open_artifact") return "Read-only.";

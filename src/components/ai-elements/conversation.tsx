@@ -1,13 +1,14 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { ScrollButton } from "@/components/ui/scroll-button";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
-import { ArrowDown01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ComponentProps } from "react";
 import { useCallback } from "react";
-import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+import { StickToBottom } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
@@ -76,28 +77,17 @@ export const ConversationScrollButton = ({
   className,
   ...props
 }: ConversationScrollButtonProps) => {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-
-  const handleScrollToBottom = useCallback(() => {
-    scrollToBottom();
-  }, [scrollToBottom]);
-
   return (
-    !isAtBottom && (
-      <Button
-        className={cn(
-          "absolute bottom-3 left-1/2 size-7 -translate-x-1/2 rounded-full border-border/50 bg-background/90 shadow-md backdrop-blur dark:bg-background/80 dark:hover:bg-muted",
-          className
-        )}
-        onClick={handleScrollToBottom}
-        size="icon"
-        type="button"
-        variant="outline"
-        {...props}
-      >
-        <HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={2} />
-      </Button>
-    )
+    <ScrollButton
+      className={cn(
+        "absolute bottom-3 left-1/2 size-8 -translate-x-1/2 rounded-full border-border/50 bg-background/90 shadow-md backdrop-blur dark:bg-background/80 dark:hover:bg-muted",
+        className
+      )}
+      size="icon-sm"
+      type="button"
+      variant="outline"
+      {...props}
+    />
   );
 };
 

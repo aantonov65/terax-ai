@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { DotMatrixLoader } from "@/components/ui/dot-matrix-loader";
 import {
   Dialog,
   DialogContent,
@@ -11,81 +12,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { invoke } from "@tauri-apps/api/core";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getKey } from "@/modules/ai/lib/keyring";
-import { safeSegment, type ProductResearchDraft } from "./mutations";
-import { generateStarterResearch, validateResearchDraft } from "./research";
-import type { ProductSummary } from "./types";
+import { WwxArtifactViewer } from "./WwxArtifactViewer";
+import { safeSegment } from "./mutations";
+import { validateProductConfig } from "./research";
+import type { ArtifactKind, ArtifactSummary, ProductSummary } from "./types";
 
 export type ProductDraft = {
   productFolder: string;
   config: Record<string, unknown>;
-  research: ProductResearchDraft;
-  sourceBundle?: Record<string, unknown>;
-  packageArtifacts?: {
-    batchId: string;
-    sourceAngle: string;
-    angles: string;
-    strategyJson: string;
-    operatorInputJson: string;
-    readinessAssessmentJson: string;
-    conceptMatrixJson: string;
-    reportJson: string;
-  };
-  approveForProduction?: boolean;
 };
 
-type ResearchFileKey = keyof ProductResearchDraft;
-
-type LoadedResearchFile = {
-  name: string;
-  text: string;
+export type ResearchDraft = {
+  topic: string;
 };
-
-type LoadedSourceDocument = {
-  label: string;
-  content: string;
-};
-
-type GeneratedProductPackage = {
-  productCode: string;
-  batchId: string;
-  configJson: string;
-  archetypes: string;
-  hotwords: string;
-  mechanisms: string;
-  sourceAngle: string;
-  angles: string;
-  strategyJson: string;
-  operatorInputJson: string;
-  readinessAssessmentJson: string;
-  conceptMatrixJson: string;
-  reportJson: string;
-  sourceBundleJson: string;
-};
-
-type PackagePreviewKey =
-  | "config"
-  | "archetypes"
-  | "hotwords"
-  | "mechanisms"
-  | "sourceAngle"
-  | "angles"
-  | "strategy"
-  | "operatorInput"
-  | "readiness"
-  | "matrix"
-  | "report";
-
-const RESEARCH_FILES: Array<{
-  key: ResearchFileKey;
-  filename: `${ResearchFileKey}.md`;
-  label: string;
-}> = [
-  { key: "archetypes", filename: "archetypes.md", label: "Archetypes" },
-  { key: "hotwords", filename: "hotwords.md", label: "Hotwords" },
-  { key: "mechanisms", filename: "mechanisms.md", label: "Mechanisms" },
-];
 
 type ProductDialogProps = {
   open: boolean;
@@ -98,44 +40,32 @@ type BatchDialogProps = {
   product: ProductSummary | null;
   title?: string;
   onOpenChange: (open: boolean) => void;
-  onCreate: (batchName: string) => Promise<void> | void;
+  onCreate: (input: { batchName: string; autonomous: boolean }) => Promise<void> | void;
 };
 
-export function CreateProductDialog({
-  open,
-  onOpenChange,
-  onCreate,
-}: ProductDialogProps) {
+type ResearchDialogProps = {
+  open: boolean;
+  product: ProductSummary | null;
+  running?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRun: (draft: ResearchDraft) => Promise<void> | void;
+};
+
+type ResearchPreviewDialogProps = {
+  open: boolean;
+  product: ProductSummary | null;
+  onOpenChange: (open: boolean) => void;
+  onRunResearch?: (product: ProductSummary) => void;
+};
+
+const WIDE_PRODUCT_DIALOG_WIDTH =
+  "!w-[calc(100vw-32px)] !max-w-none sm:!max-w-none xl:!w-[min(1320px,calc(100vw-64px))]";
+const PRIMARY_RESEARCH_FILES = ["archetypes.md", "mechanisms.md", "hotwords.md"];
+
+export function CreateProductDialog({ open, onOpenChange, onCreate }: ProductDialogProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const sourceFilesRef = useRef<HTMLInputElement | null>(null);
-  const researchRefs = useRef<Record<ResearchFileKey, HTMLInputElement | null>>({
-    archetypes: null,
-    hotwords: null,
-    mechanisms: null,
-  });
   const [folder, setFolder] = useState("");
-  const [brand, setBrand] = useState("");
-  const [productName, setProductName] = useState("");
-  const [price, setPrice] = useState("");
-  const [guarantee, setGuarantee] = useState("60-day");
-  const [url, setUrl] = useState("");
-  const [target, setTarget] = useState("");
   const [rawJson, setRawJson] = useState("");
-  const [researchFiles, setResearchFiles] = useState<
-    Partial<Record<ResearchFileKey, LoadedResearchFile>>
-  >({});
-  const [sourceDocs, setSourceDocs] = useState<LoadedSourceDocument[]>([]);
-  const [sourceNotes, setSourceNotes] = useState("");
-  const [batchGoal, setBatchGoal] = useState("");
-  const [targetAdCount, setTargetAdCount] = useState("10");
-  const [preferredFormats, setPreferredFormats] = useState("");
-  const [generatedPackage, setGeneratedPackage] =
-    useState<GeneratedProductPackage | null>(null);
-  const [packageApproved, setPackageApproved] = useState(false);
-  const [packageDirty, setPackageDirty] = useState(false);
-  const [packageGenerating, setPackageGenerating] = useState(false);
-  const [packagePreview, setPackagePreview] =
-    useState<PackagePreviewKey>("config");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -143,119 +73,16 @@ export function CreateProductDialog({
     setError(null);
   }, [open]);
 
-  const configPreview = useMemo(() => {
-    const base = parseRawJson(rawJson) ?? {};
+  const parsedConfig = useMemo(() => parseRawJson(rawJson), [rawJson]);
+  const configPreview = useMemo<Record<string, unknown>>(() => {
+    if (!parsedConfig) return {};
     return {
-      ...base,
-      brand: brand.trim() || base.brand || folder.trim(),
-      product_code: folder.trim(),
-      product_name: productName.trim(),
-      ...(price.trim() ? { price: coercePrice(price.trim()) } : {}),
-      ...(guarantee.trim() ? { guarantee: guarantee.trim() } : {}),
-      ...(url.trim() ? { url: url.trim() } : {}),
-      ...(target.trim()
-        ? { target_demographic: { description: target.trim() } }
-        : {}),
+      ...parsedConfig,
+      ...(folder.trim() ? { product_code: safeProductCode(folder) } : {}),
     };
-  }, [brand, folder, guarantee, price, productName, rawJson, target, url]);
-
-  const generatedResearch = useMemo(
-    () => generateStarterResearch(configPreview, safeSegment(folder)),
-    [configPreview, folder],
-  );
-  const resolvedResearch = useMemo<ProductResearchDraft>(
-    () => ({
-      archetypes: researchFiles.archetypes?.text ?? generatedResearch.archetypes,
-      hotwords: researchFiles.hotwords?.text ?? generatedResearch.hotwords,
-      mechanisms: researchFiles.mechanisms?.text ?? generatedResearch.mechanisms,
-    }),
-    [generatedResearch, researchFiles],
-  );
-  const researchValidation = useMemo(
-    () => validateResearchDraft(resolvedResearch),
-    [resolvedResearch],
-  );
-  const hasPricing = Boolean(price.trim() || hasConfigPricing(configPreview));
-  const hasGuarantee = Boolean(guarantee.trim() || hasConfigOffer(configPreview));
-  const canSubmit = Boolean(
-    folder.trim() && productName.trim() && hasPricing && hasGuarantee && researchValidation.ok,
-  );
-  const sourceDocuments = useMemo(
-    () => [
-      ...sourceDocs,
-      ...(sourceNotes.trim()
-        ? [{ label: "strategist-notes.md", content: sourceNotes.trim() }]
-        : []),
-    ],
-    [sourceDocs, sourceNotes],
-  );
-  const packagePreviewContent = useMemo(() => {
-    if (!generatedPackage) return "";
-    switch (packagePreview) {
-      case "config":
-        return generatedPackage.configJson;
-      case "archetypes":
-        return generatedPackage.archetypes;
-      case "hotwords":
-        return generatedPackage.hotwords;
-      case "mechanisms":
-        return generatedPackage.mechanisms;
-      case "sourceAngle":
-        return generatedPackage.sourceAngle;
-      case "angles":
-        return generatedPackage.angles;
-      case "strategy":
-        return generatedPackage.strategyJson;
-      case "operatorInput":
-        return generatedPackage.operatorInputJson;
-      case "readiness":
-        return generatedPackage.readinessAssessmentJson;
-      case "matrix":
-        return generatedPackage.conceptMatrixJson;
-      case "report":
-        return generatedPackage.reportJson;
-    }
-  }, [generatedPackage, packagePreview]);
-  const generatedReadiness = useMemo(
-    () => parseRawJson(generatedPackage?.readinessAssessmentJson ?? ""),
-    [generatedPackage?.readinessAssessmentJson],
-  );
-  const readinessStatus = stringValue(generatedReadiness?.status);
-  const readinessCanProceed = generatedReadiness?.can_proceed !== false;
-
-  const submit = async () => {
-    if (!canSubmit) return;
-    setError(null);
-    try {
-      const usablePackage = generatedPackage && !packageDirty ? generatedPackage : null;
-      const sourceBundle = usablePackage
-        ? parseRawJson(usablePackage.sourceBundleJson) ?? undefined
-        : undefined;
-      await onCreate({
-        productFolder: safeSegment(folder),
-        config: configPreview,
-        research: resolvedResearch,
-        sourceBundle,
-        packageArtifacts: usablePackage
-          ? {
-              batchId: usablePackage.batchId,
-              sourceAngle: usablePackage.sourceAngle,
-              angles: usablePackage.angles,
-              strategyJson: usablePackage.strategyJson,
-              operatorInputJson: usablePackage.operatorInputJson,
-              readinessAssessmentJson: usablePackage.readinessAssessmentJson,
-              conceptMatrixJson: usablePackage.conceptMatrixJson,
-              reportJson: usablePackage.reportJson,
-            }
-          : undefined,
-        approveForProduction: Boolean(usablePackage && packageApproved),
-      });
-      onOpenChange(false);
-      reset();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
+  }, [folder, parsedConfig]);
+  const validation = useMemo(() => validateProductConfig(configPreview), [configPreview]);
+  const canSubmit = Boolean(folder.trim() && parsedConfig && validation.ok);
 
   const loadConfig = async (file: File | undefined) => {
     if (!file) return;
@@ -264,290 +91,47 @@ export function CreateProductDialog({
       const content = await file.text();
       const parsed = JSON.parse(content) as Record<string, unknown>;
       setRawJson(JSON.stringify(parsed, null, 2));
-      const nextFolder =
-        stringValue(parsed.product_code) ||
-        stringValue(parsed.brand) ||
-        stringValue(parsed.product_name) ||
-        file.name.replace(/\.json$/i, "");
-      setFolder(safeSegment(nextFolder));
-      setBrand(stringValue(parsed.brand) ?? "");
-      setProductName(
-        stringValue(parsed.product_name) ||
-          stringValue(parsed.name) ||
-          stringValue(parsed.product) ||
-          "",
+      setFolder(
+        safeSegment(
+          stringValue(parsed.product_code) ||
+            stringValue(parsed.brand) ||
+            stringValue(parsed.product_name) ||
+            file.name.replace(/\.json$/i, ""),
+        ),
       );
-      setPrice(parsed.price === undefined ? "" : String(parsed.price));
-      setGuarantee(stringValue(parsed.guarantee) ?? "");
-      setUrl(stringValue(parsed.url) ?? "");
-      setTarget(targetText(parsed.target_demographic));
-      markPackageDirty();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const loadResearchFile = async (
-    key: ResearchFileKey,
-    file: File | undefined,
-  ) => {
-    if (!file) return;
+  const submit = async () => {
+    if (!canSubmit || !parsedConfig) return;
     setError(null);
     try {
-      const text = await file.text();
-      if (!text.trim()) {
-        const filename = RESEARCH_FILES.find((item) => item.key === key)?.filename;
-        throw new Error(`${filename} is empty.`);
-      }
-      setResearchFiles((prev) => ({
-        ...prev,
-        [key]: { name: file.name, text },
-      }));
-      markPackageDirty();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const loadSourceFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setError(null);
-    try {
-      const loaded = await Promise.all(
-        Array.from(files).map(async (file) => ({
-          label: file.name,
-          content: await file.text(),
-        })),
-      );
-      setSourceDocs((current) => [...current, ...loaded.filter((doc) => doc.content.trim())]);
-      markPackageDirty();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const generateProductionPackage = async () => {
-    if (!sourceDocuments.length) {
-      setError("Add at least one source document or strategist note before generating a package.");
-      return;
-    }
-    setError(null);
-    setPackageGenerating(true);
-    try {
-      const anthropicApiKey = await getKey("anthropic");
-      const generated = await invoke<GeneratedProductPackage>("wwx_generate_product_package", {
-        input: {
-          productCode: safeSegment(folder || brand || productName || "PRODUCT").toUpperCase(),
-          documents: sourceDocuments,
-          batchRequest: {
-            goal: batchGoal.trim(),
-            target_ad_count: positiveInteger(targetAdCount, 10),
-            preferred_formats: splitList(preferredFormats),
-          },
-          anthropicApiKey,
-        },
+      await onCreate({
+        productFolder: safeSegment(folder),
+        config: configPreview,
       });
-      const config = parseRawJson(generated.configJson);
-      if (!config) {
-        throw new Error("Generated config.json was invalid.");
-      }
-      setGeneratedPackage(generated);
-      setPackageApproved(false);
-      setPackageDirty(false);
-      setPackagePreview("config");
-      setRawJson(JSON.stringify(config, null, 2));
-      setFolder(safeSegment(stringValue(config.product_code) ?? generated.productCode));
-      setBrand(stringValue(config.brand) ?? "");
-      setProductName(
-        stringValue(config.product_name) ||
-          stringValue(config.name) ||
-          stringValue(config.product) ||
-          "",
-      );
-      setPrice(config.price === undefined ? "" : String(config.price));
-      setGuarantee(stringValue(config.guarantee) ?? "");
-      setUrl(stringValue(config.url) ?? "");
-      setTarget(targetText(config.target_demographic));
-      setResearchFiles({
-        archetypes: { name: "Generated archetypes.md", text: generated.archetypes },
-        hotwords: { name: "Generated hotwords.md", text: generated.hotwords },
-        mechanisms: { name: "Generated mechanisms.md", text: generated.mechanisms },
-      });
+      onOpenChange(false);
+      setFolder("");
+      setRawJson("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPackageGenerating(false);
     }
-  };
-
-  const markPackageDirty = () => {
-    if (generatedPackage) {
-      setPackageApproved(false);
-      setPackageDirty(true);
-    }
-  };
-
-  const reset = () => {
-    if (fileRef.current) fileRef.current.value = "";
-    if (sourceFilesRef.current) sourceFilesRef.current.value = "";
-    for (const ref of Object.values(researchRefs.current)) {
-      if (ref) ref.value = "";
-    }
-    setFolder("");
-    setBrand("");
-    setProductName("");
-    setPrice("");
-    setGuarantee("60-day");
-    setUrl("");
-    setTarget("");
-    setRawJson("");
-    setResearchFiles({});
-    setSourceDocs([]);
-    setSourceNotes("");
-    setBatchGoal("");
-    setTargetAdCount("10");
-    setPreferredFormats("");
-    setGeneratedPackage(null);
-    setPackageApproved(false);
-    setPackageDirty(false);
-    setPackageGenerating(false);
-    setPackagePreview("config");
-    setError(null);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-40px)] w-[calc(100vw-32px)] max-w-none flex-col gap-4 overflow-hidden rounded-lg border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl sm:max-w-none xl:w-[min(1755px,calc(100vw-64px))]">
+      <DialogContent className={`flex max-h-[calc(100dvh-40px)] ${WIDE_PRODUCT_DIALOG_WIDTH} flex-col gap-4 overflow-hidden rounded-xl border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl`}>
         <DialogHeader>
           <DialogTitle>Create Product</DialogTitle>
           <DialogDescription>
-            Create a draft manually, or generate a production package from raw evidence and
-            approve it before LFS can run as production.
+            Upload the owner-authored config.json, or build one with the agent first and paste it here for validation.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden sm:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden sm:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.2fr)]">
           <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
-            <div className="space-y-2 border border-white/15 bg-[#121317] p-3">
-              <div>
-                <div className="text-xs font-medium text-slate-200">
-                  Production package
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  Upload messy source material, generate the upstream package, then approve it.
-                </div>
-              </div>
-              <input
-                ref={sourceFilesRef}
-                type="file"
-                multiple
-                accept=".md,.txt,.json,.csv,text/plain,text/markdown,application/json"
-                className="hidden"
-                onChange={(event) => void loadSourceFiles(event.target.files)}
-              />
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="justify-start rounded-none border-white/15 bg-[#1b1c20] text-slate-100 hover:bg-[#222328]"
-                  onClick={() => sourceFilesRef.current?.click()}
-                >
-                  Upload raw sources
-                </Button>
-                <Button
-                  type="button"
-                  disabled={packageGenerating || !sourceDocuments.length}
-                  className="rounded-none"
-                  onClick={() => void generateProductionPackage()}
-                >
-                  {packageGenerating ? "Generating..." : "Generate"}
-                </Button>
-              </div>
-              {sourceDocs.length ? (
-                <div className="flex flex-wrap gap-1">
-                  {sourceDocs.map((doc, index) => (
-                    <span
-                      key={`${doc.label}-${index}`}
-                      className="border border-white/15 bg-[#1b1c20] px-2 py-1 text-[10px] text-slate-300"
-                    >
-                      {doc.label}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <Textarea
-                value={sourceNotes}
-                onChange={(event) => {
-                  setSourceNotes(event.target.value);
-                  markPackageDirty();
-                }}
-                placeholder="Paste strategist notes, landing page copy, evidence, product facts..."
-                className="min-h-20 rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-              />
-              <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2">
-                <Field label="Batch Goal">
-                  <Input
-                    value={batchGoal}
-                    onChange={(event) => {
-                      setBatchGoal(event.target.value);
-                      markPackageDirty();
-                    }}
-                    placeholder="Scale podcast-style hair-loss ads"
-                    className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-                  />
-                </Field>
-                <Field label="Ad Count">
-                  <Input
-                    value={targetAdCount}
-                    onChange={(event) => {
-                      setTargetAdCount(event.target.value.replace(/[^\d]/g, ""));
-                      markPackageDirty();
-                    }}
-                    placeholder="10"
-                    className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-                  />
-                </Field>
-              </div>
-              <Field label="Preferred Formats">
-                <Input
-                  value={preferredFormats}
-                  onChange={(event) => {
-                    setPreferredFormats(event.target.value);
-                    markPackageDirty();
-                  }}
-                  placeholder="confession, expose, warning"
-                  className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-                />
-              </Field>
-              {generatedPackage ? (
-                <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2">
-                  <div className="text-[11px] text-slate-400">
-                    {packageDirty
-                      ? "Source or package fields changed; regenerate before approval"
-                      : packageApproved
-                        ? "Approved for production"
-                        : readinessStatus
-                          ? `Readiness ${readinessStatus}; awaiting approval`
-                          : "Generated, awaiting approval"}
-                  </div>
-                  <Button
-                    type="button"
-                    variant={packageApproved ? "outline" : "default"}
-                    className="h-7 rounded-none px-2 text-[11px]"
-                    disabled={packageDirty || !readinessCanProceed}
-                    onClick={() => setPackageApproved((current) => !current)}
-                  >
-                    {packageDirty
-                      ? "Needs regenerate"
-                      : !readinessCanProceed
-                        ? "Blocked"
-                        : packageApproved
-                          ? "Approved"
-                          : "Approve package"}
-                  </Button>
-                </div>
-              ) : null}
-            </div>
             <input
               ref={fileRef}
               type="file"
@@ -558,185 +142,48 @@ export function CreateProductDialog({
             <Button
               type="button"
               variant="outline"
-              className="w-full rounded-none border-white/15 bg-[#1b1c20] text-slate-100 hover:bg-[#222328]"
+              className="w-full rounded-md border-white/15 bg-[#1b1c20] text-slate-100 hover:bg-[#222328]"
               onClick={() => fileRef.current?.click()}
             >
               Upload config.json
             </Button>
-            <Field label="Product Folder">
+            <Field label="Product Folder / Code">
               <Input
                 value={folder}
-                onChange={(event) => {
-                  setFolder(safeSegment(event.target.value));
-                  markPackageDirty();
-                }}
-                placeholder="NR-Joints"
-                className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+                onChange={(event) => setFolder(safeSegment(event.target.value))}
+                placeholder="PRVNW"
+                className="rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
               />
             </Field>
-            <Field label="Brand">
-              <Input
-                value={brand}
-                onChange={(event) => {
-                  setBrand(event.target.value);
-                  markPackageDirty();
-                }}
-                placeholder="Brand code or name"
-                className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-              />
-            </Field>
-            <Field label="Product Name">
-              <Input
-                value={productName}
-                onChange={(event) => {
-                  setProductName(event.target.value);
-                  markPackageDirty();
-                }}
-                placeholder="Product display name"
-                className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-              />
-            </Field>
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="Price">
-                <Input
-                  value={price}
-                  onChange={(event) => {
-                    setPrice(event.target.value);
-                    markPackageDirty();
-                  }}
-                  placeholder="49"
-                  className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-                />
-              </Field>
-              <Field label="Guarantee">
-                <Input
-                  value={guarantee}
-                  onChange={(event) => {
-                    setGuarantee(event.target.value);
-                    markPackageDirty();
-                  }}
-                  placeholder="60-day"
-                  className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-                />
-              </Field>
-            </div>
-            <Field label="URL">
-              <Input
-                value={url}
-                onChange={(event) => {
-                  setUrl(event.target.value);
-                  markPackageDirty();
-                }}
-                placeholder="https://..."
-                className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
-              />
-            </Field>
-            <Field label="Target">
+            <Field label="Config JSON">
               <Textarea
-                value={target}
-                onChange={(event) => {
-                  setTarget(event.target.value);
-                  markPackageDirty();
-                }}
-                placeholder="Women 40-65, condition, market..."
-                className="min-h-20 rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+                value={rawJson}
+                onChange={(event) => setRawJson(event.target.value)}
+                placeholder="Paste a full config.json here"
+                className="min-h-72 rounded-md border-white/15 bg-[#101114] font-mono text-[11px] text-slate-100 placeholder:text-slate-500"
               />
             </Field>
-            <div className="space-y-2 border-t border-white/10 pt-3">
-              <div>
-                <div className="text-xs font-medium text-slate-200">
-                  Required LFS research
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  Auto-generated draft files do not satisfy production readiness.
-                </div>
-              </div>
-              {RESEARCH_FILES.map(({ key, filename, label }) => (
-                <div key={key}>
-                  <input
-                    ref={(node) => {
-                      researchRefs.current[key] = node;
-                    }}
-                    type="file"
-                    accept="text/markdown,.md"
-                    className="hidden"
-                    onChange={(event) =>
-                      void loadResearchFile(key, event.target.files?.[0])
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="flex h-auto w-full items-center justify-between rounded-none border-white/15 bg-[#1b1c20] px-3 py-2 text-left text-slate-100 hover:bg-[#222328]"
-                    onClick={() => researchRefs.current[key]?.click()}
-                  >
-                    <span className="flex flex-col">
-                      <span className="text-xs">{label}</span>
-                      <span className="text-[11px] text-slate-400">
-                        {researchFiles[key]?.name ?? `Auto-generated ${filename}`}
-                      </span>
-                    </span>
-                    <span className="text-[11px] text-slate-400">
-                      {researchFiles[key] ? "Replace" : "Optional"}
-                    </span>
-                  </Button>
-                </div>
-              ))}
-            </div>
           </div>
 
-          <div className="flex min-h-0 flex-col gap-2">
-            {generatedPackage ? (
-              <>
-                <div className="grid grid-cols-4 gap-1">
-                  {PACKAGE_PREVIEWS.map((preview) => (
-                    <Button
-                      key={preview.key}
-                      type="button"
-                      variant="outline"
-                      className={`h-7 rounded-none px-2 text-[10px] ${
-                        packagePreview === preview.key ? "bg-[#262832]" : "bg-[#1b1c20]"
-                      }`}
-                      onClick={() => setPackagePreview(preview.key)}
-                    >
-                      {preview.label}
-                    </Button>
-                  ))}
-                </div>
-                <Textarea
-                  value={packagePreviewContent}
-                  readOnly
-                  className="min-h-0 flex-1 rounded-none border-white/15 bg-[#101114] font-mono text-[11px] text-slate-200"
-                />
-              </>
-            ) : (
-              <>
-                <Label className="text-[11px] font-medium text-slate-400">
-                  Config Preview
-                </Label>
-                <Textarea
-                  value={JSON.stringify(configPreview, null, 2)}
-                  readOnly
-                  className="min-h-0 flex-1 rounded-none border-white/15 bg-[#101114] font-mono text-[11px] text-slate-200"
-                />
-              </>
-            )}
+          <div className="flex min-h-0 flex-col gap-3">
+            <section className="rounded-md border border-white/15 bg-[#121317] p-3">
+              <div className="mb-2 text-xs font-medium text-slate-200">Required config fields</div>
+              <div className="grid gap-1.5">
+                {validation.fields.map((field) => (
+                  <div key={field.key} className="flex items-center justify-between gap-3 text-[11px]">
+                    <span className="text-slate-300">{field.label}</span>
+                    <span className={field.present ? "text-emerald-300" : "text-amber-300"}>
+                      {field.present ? "Ready" : field.key}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         </div>
 
-        {!hasPricing ? (
-          <div className="text-xs text-amber-300">Add a price or upload a config with pricing_rules.</div>
-        ) : null}
-        {!hasGuarantee ? (
-          <div className="text-xs text-amber-300">Add a guarantee or upload a config with offer_architecture.</div>
-        ) : null}
-        {!researchValidation.ok ? (
-          <div className="text-xs text-destructive">{researchValidation.missing.join("; ")}</div>
-        ) : null}
-        {generatedPackage && !readinessCanProceed ? (
-          <div className="text-xs text-amber-300">
-            Readiness is blocked. Review the readiness artifact and add the missing truth or research before approval.
-          </div>
+        {!parsedConfig && rawJson.trim() ? (
+          <div className="text-xs text-destructive">config.json is not valid JSON.</div>
         ) : null}
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
@@ -744,13 +191,350 @@ export function CreateProductDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!canSubmit} onClick={() => void submit()}>
-            {packageApproved ? "Create production product" : "Create draft product"}
+          <Button
+            variant="secondary"
+            disabled={!canSubmit}
+            className="text-slate-50 disabled:text-slate-500"
+            onClick={() => void submit()}
+          >
+            Create product
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+export function RunResearchDialog({ open, product, running: alreadyRunning = false, onOpenChange, onRun }: ResearchDialogProps) {
+  const [topic, setTopic] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<Array<{ filename: string; updatedAt: number }>>([]);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setTopic("");
+    setStarting(false);
+    setError(null);
+  }, [open, product?.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    setArtifacts([]);
+    if (!product) {
+      setArtifactsLoading(false);
+      return;
+    }
+    let alive = true;
+    const productId = product.id;
+    setArtifactsLoading(true);
+    void invoke<{
+      artifacts: Array<{ artifact: { filename: string; updatedAt: number } }>;
+    }>("wwx_read_product_package", { productId }).then((result) => {
+      if (!alive) return;
+      setArtifacts(
+        result.artifacts
+          .map((item) => ({
+            filename: item.artifact.filename,
+            updatedAt: item.artifact.updatedAt,
+          }))
+          .filter((artifact) => artifact.filename.startsWith("research/") || artifact.filename.startsWith("research-runs/")),
+      );
+    }).catch(() => {
+      if (alive) setArtifacts([]);
+    }).finally(() => {
+      if (alive) setArtifactsLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open, product?.id, product?.researchArtifactCount, product?.researchArtifactUpdatedAt]);
+
+  const submit = async () => {
+    if (!topic.trim() || !product || alreadyRunning) return;
+    setError(null);
+    setStarting(true);
+    try {
+      await onRun({ topic: topic.trim() });
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[calc(100vw-32px)] max-w-none rounded-xl border border-white/15 bg-[#17181b] text-slate-100 sm:max-w-none xl:w-[min(1320px,calc(100vw-64px))]">
+        <DialogHeader>
+          <DialogTitle>Run Research</DialogTitle>
+          <DialogDescription>
+            {product ? product.name : "Select a product before running research."}
+          </DialogDescription>
+        </DialogHeader>
+        <Field label="Research topic">
+          <Textarea
+            autoFocus
+            value={topic}
+            onChange={(event) => setTopic(event.target.value)}
+            placeholder="pregnancy varicose veins tmi suffering stories"
+            className="min-h-24 rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+          />
+        </Field>
+        {artifactsLoading ? (
+          <section className="rounded-md border border-white/15 bg-[#121317] p-3 text-xs text-slate-400">
+            <DotMatrixLoader label="Checking existing research" />
+          </section>
+        ) : artifacts.length ? (
+          <section className="rounded-md border border-white/15 bg-[#121317] p-3">
+            <div className="mb-2 text-xs font-medium text-slate-200">Current research artifacts</div>
+            <div className="grid gap-1 text-[11px]">
+              {artifacts.map((artifact) => (
+                <div key={artifact.filename} className="flex items-center justify-between gap-3">
+                  <span className="truncate font-mono text-slate-300">{artifact.filename}</span>
+                  <span className="shrink-0 text-slate-500">
+                    {new Date(artifact.updatedAt).toLocaleDateString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {alreadyRunning ? (
+          <div className="rounded-md border border-sky-400/25 bg-sky-400/10 px-3 py-2 text-xs text-sky-200">
+            <DotMatrixLoader className="text-sky-200" label="Research running" />
+          </div>
+        ) : null}
+        {error ? <div className="text-xs text-destructive">{error}</div> : null}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!topic.trim() || !product || starting || alreadyRunning}
+            className="text-slate-50 disabled:text-slate-500"
+            onClick={() => void submit()}
+          >
+            {starting ? <DotMatrixLoader label="Starting" /> : "Start research"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function ResearchPreviewDialog({
+  open,
+  product,
+  onOpenChange,
+  onRunResearch,
+}: ResearchPreviewDialogProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [artifactExpanded, setArtifactExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!open || !product) {
+      setArtifacts([]);
+      setSelectedId(null);
+      setArtifactExpanded(false);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    let alive = true;
+    const productId = product.id;
+    setArtifacts([]);
+    setSelectedId(null);
+    setArtifactExpanded(false);
+    setLoading(true);
+    setError(null);
+    void invoke<{
+      artifacts: Array<{
+        artifact: {
+          id: string;
+          batchId: string;
+          label: string;
+          filename: string;
+          kind: string;
+          updatedAt: number;
+          size: number;
+        };
+      }>;
+    }>("wwx_read_product_package", { productId })
+      .then((result) => {
+        if (!alive) return;
+        const researchArtifacts = result.artifacts
+          .map((item) => ({
+            id: item.artifact.id,
+            batchId: item.artifact.batchId,
+            label: item.artifact.label || item.artifact.filename,
+            filename: item.artifact.filename,
+            path: `app://wwx/artifacts/${item.artifact.id}`,
+            kind: item.artifact.kind as ArtifactKind,
+            size: item.artifact.size,
+            mtime: item.artifact.updatedAt,
+          }))
+          .filter((artifact) => artifact.filename.startsWith("research/") || artifact.filename.startsWith("research-runs/"));
+        setArtifacts(researchArtifacts);
+        setSelectedId((current) =>
+          current && researchArtifacts.some((artifact) => artifact.id === current)
+            ? current
+            : researchArtifacts.find((artifact) => artifact.filename === "research/archetypes.md")?.id ??
+              researchArtifacts.find((artifact) => artifact.filename === "research/mechanisms.md")?.id ??
+              researchArtifacts.find((artifact) => artifact.filename === "research/hotwords.md")?.id ??
+              researchArtifacts.find((artifact) => artifact.filename === "research/cards-report.json")?.id ??
+              researchArtifacts[0]?.id ??
+              null,
+        );
+      })
+      .catch((err) => {
+        if (alive) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, product?.id, product?.researchArtifactCount, product?.researchArtifactUpdatedAt]);
+
+  const selected = artifacts.find((artifact) => artifact.id === selectedId) ?? null;
+  const primaryArtifacts = useMemo(
+    () =>
+      artifacts
+        .filter((artifact) => PRIMARY_RESEARCH_FILES.includes(artifactBasename(artifact.filename ?? artifact.label)))
+        .sort(
+          (a, b) =>
+            PRIMARY_RESEARCH_FILES.indexOf(artifactBasename(a.filename ?? a.label)) -
+            PRIMARY_RESEARCH_FILES.indexOf(artifactBasename(b.filename ?? b.label)),
+        ),
+    [artifacts],
+  );
+  const informationalArtifacts = useMemo(
+    () =>
+      artifacts
+        .filter((artifact) => !PRIMARY_RESEARCH_FILES.includes(artifactBasename(artifact.filename ?? artifact.label)))
+        .sort((a, b) => artifactBasename(a.filename ?? a.label).localeCompare(artifactBasename(b.filename ?? b.label))),
+    [artifacts],
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className={`flex h-[calc(100dvh-40px)] ${WIDE_PRODUCT_DIALOG_WIDTH} flex-col overflow-hidden rounded-xl border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl`}
+      >
+        <DialogHeader className="relative shrink-0 pr-16">
+          <DialogTitle>Research Preview</DialogTitle>
+          <DialogDescription>
+            {product ? `${product.name} research artifacts from the latest completed run.` : "Select a product to preview research."}
+          </DialogDescription>
+          {product && onRunResearch ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="absolute right-8 top-0 rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
+              onClick={() => onRunResearch(product)}
+              title={`Run new research for ${product.name}`}
+              aria-label={`Run new research for ${product.name}`}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={15} strokeWidth={2} />
+            </Button>
+          ) : null}
+        </DialogHeader>
+        <div
+          className={[
+            "grid min-h-0 flex-1 gap-4 overflow-hidden",
+            artifactExpanded ? "grid-cols-1" : "lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]",
+          ].join(" ")}
+        >
+          <section className={artifactExpanded ? "hidden" : "min-h-0 min-w-0 overflow-y-auto rounded-md border border-white/15 bg-[#101114]"}>
+            {loading ? (
+              <div className="p-3 text-xs text-slate-400">
+                <DotMatrixLoader label="Loading research artifacts" />
+              </div>
+            ) : artifacts.length ? (
+              <>
+                {primaryArtifacts.map((artifact) => (
+                  <ResearchArtifactButton
+                    key={artifact.id}
+                    artifact={artifact}
+                    active={selectedId === artifact.id}
+                    onSelect={() => setSelectedId(artifact.id)}
+                  />
+                ))}
+                {informationalArtifacts.length ? (
+                  <div className="border-b border-white/10 bg-[#15161a] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Informational
+                  </div>
+                ) : null}
+                {informationalArtifacts.map((artifact) => (
+                  <ResearchArtifactButton
+                    key={artifact.id}
+                    artifact={artifact}
+                    active={selectedId === artifact.id}
+                    onSelect={() => setSelectedId(artifact.id)}
+                  />
+                ))}
+              </>
+            ) : (
+              <div className="p-3 text-xs text-slate-400">No research artifacts found yet.</div>
+            )}
+          </section>
+          {error ? (
+            <div className="rounded-md border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-200">
+              {error}
+            </div>
+          ) : (
+            <WwxArtifactViewer
+              artifact={selected}
+              expanded={artifactExpanded}
+              onExpandedChange={setArtifactExpanded}
+              emptyMessage="Select a research artifact to preview."
+            />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ResearchArtifactButton({
+  artifact,
+  active,
+  onSelect,
+}: {
+  artifact: ArtifactSummary;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={artifact.filename}
+      className={[
+        "block w-full border-b border-white/10 px-3 py-2 text-left text-xs",
+        active ? "bg-[#262832] text-slate-100" : "text-slate-300 hover:bg-[#1c1d22]",
+      ].join(" ")}
+    >
+      <span className="block truncate font-mono text-[11px]">{artifactBasename(artifact.filename ?? artifact.label)}</span>
+      <span className="mt-0.5 block text-[10px] text-slate-500">
+        {Math.max(1, Math.round((artifact.size ?? 0) / 1024))} KB · {artifact.mtime ? new Date(artifact.mtime).toLocaleString() : "unknown"}
+      </span>
+    </button>
+  );
+}
+
+function artifactBasename(filename: string): string {
+  const parts = filename.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? filename;
 }
 
 export function CreateBatchDialog({
@@ -761,11 +545,13 @@ export function CreateBatchDialog({
   onCreate,
 }: BatchDialogProps) {
   const [batchName, setBatchName] = useState("");
+  const [autonomous, setAutonomous] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setBatchName("");
+    setAutonomous(false);
     setError(null);
   }, [open]);
 
@@ -773,7 +559,7 @@ export function CreateBatchDialog({
     if (!batchName.trim() || !product) return;
     setError(null);
     try {
-      await onCreate(batchName.trim());
+      await onCreate({ batchName: batchName.trim(), autonomous });
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -782,12 +568,12 @@ export function CreateBatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md rounded-lg border border-white/15 bg-[#17181b] text-slate-100">
+      <DialogContent className="max-w-md rounded-xl border border-white/15 bg-[#17181b] text-slate-100">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             {product
-              ? `Create a batch under ${product.name}. An agent window opens for it immediately.`
+              ? `Create a batch under ${product.name}. The strategist chat will ask only for batch creative direction.`
               : "Select a product before creating a batch."}
           </DialogDescription>
         </DialogHeader>
@@ -799,16 +585,35 @@ export function CreateBatchDialog({
             onKeyDown={(event) => {
               if (event.key === "Enter") void submit();
             }}
-            placeholder="May14 Hair Podcast Batch"
-            className="rounded-none border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+            placeholder="PRVNW_LFS_WEIGHT_MIXED_V41_May13"
+            className="rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
           />
         </Field>
+        <label className="flex cursor-pointer items-start gap-2 rounded-md border border-white/15 bg-[#121317] p-3 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={autonomous}
+            onChange={(event) => setAutonomous(event.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="block font-medium text-slate-100">Autonomous mode</span>
+            <span className="block text-[11px] text-slate-400">
+              Once the creative direction validates, continue automatically until the workflow hits a real blocker.
+            </span>
+          </span>
+        </label>
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!batchName.trim() || !product} onClick={() => void submit()}>
+          <Button
+            variant="secondary"
+            disabled={!batchName.trim() || !product}
+            className="text-slate-50 disabled:text-slate-500"
+            onClick={() => void submit()}
+          >
             Create batch
           </Button>
         </DialogFooter>
@@ -817,37 +622,13 @@ export function CreateBatchDialog({
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-[11px] font-medium text-slate-400">
-        {label}
-      </Label>
+      <Label className="text-[11px] font-medium text-slate-400">{label}</Label>
       {children}
     </div>
   );
-}
-
-function hasConfigPricing(config: Record<string, unknown>): boolean {
-  const pricing = config.pricing_rules;
-  if (!isRecord(pricing)) return false;
-  return pricing.single_bag_price_usd !== undefined && Array.isArray(pricing.canonical_phrasings);
-}
-
-function hasConfigOffer(config: Record<string, unknown>): boolean {
-  const offer = config.offer_architecture;
-  if (!isRecord(offer)) return false;
-  return Array.isArray(offer.what_you_get) && Array.isArray(offer.price_anchor_stack);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseRawJson(value: string): Record<string, unknown> | null {
@@ -862,47 +643,10 @@ function parseRawJson(value: string): Record<string, unknown> | null {
   }
 }
 
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+function stringValue(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function coercePrice(value: string): string | number {
-  const n = Number(value);
-  return Number.isFinite(n) && String(n) === value ? n : value;
-}
-
-function targetText(value: unknown): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
-  }
-}
-
-const PACKAGE_PREVIEWS: Array<{ key: PackagePreviewKey; label: string }> = [
-  { key: "config", label: "Config" },
-  { key: "archetypes", label: "Archetypes" },
-  { key: "hotwords", label: "Hotwords" },
-  { key: "mechanisms", label: "Mechanisms" },
-  { key: "sourceAngle", label: "Source" },
-  { key: "angles", label: "Angles" },
-  { key: "strategy", label: "Strategy" },
-  { key: "operatorInput", label: "Input" },
-  { key: "readiness", label: "Readiness" },
-  { key: "matrix", label: "Matrix" },
-  { key: "report", label: "Report" },
-];
-
-function positiveInteger(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function splitList(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+function safeProductCode(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9-]+/g, "") || "PRODUCT";
 }
