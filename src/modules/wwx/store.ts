@@ -349,7 +349,7 @@ function toBatchStatus(status: string): BatchStatus {
 function toRunStatus(status: string): RunStatus {
   if (status === "complete" || status === "ok") return "complete";
   if (status === "blocked" || status === "failed") return "blocked";
-  if (status === "awaiting_review" || status === "held") return "idle";
+  if (status === "awaiting_review" || status === "held" || status === "review") return "review";
   if (status === "running") return "running";
   return "unknown";
 }

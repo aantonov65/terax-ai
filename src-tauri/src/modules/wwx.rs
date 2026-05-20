@@ -1046,23 +1046,6 @@ fn batch_workflow_state(
         diagnostic_artifact_ids,
     };
 
-    if batch.status == "complete" || has_final {
-        state.headline = "Final ads are ready".into();
-        state.summary = "Review the ship, review, and fail decisions before upload.".into();
-        state.tone = "success".into();
-        state.primary_action = Some(workflow_action(
-            "review_final",
-            "Review final ads",
-            Some("Show me the final ads and call out what is ship-ready versus needs review."),
-        ));
-        state.secondary_action = Some(workflow_action(
-            "export",
-            "Export ship-ready ads",
-            Some("Export the ship-ready scripts for handoff."),
-        ));
-        return Ok(state);
-    }
-
     if batch.status == "review" {
         let label = stage_label_value.unwrap_or_else(|| "Checkpoint".into());
         state.headline = format!("{label} is ready. Continue to next stage?");
@@ -1077,6 +1060,23 @@ fn batch_workflow_state(
             "open_agent",
             "Ask / Hold",
             Some("I want to ask a question before continuing this batch."),
+        ));
+        return Ok(state);
+    }
+
+    if batch.status == "complete" || has_final {
+        state.headline = "Final ads are ready".into();
+        state.summary = "Review the ship, review, and fail decisions before upload.".into();
+        state.tone = "success".into();
+        state.primary_action = Some(workflow_action(
+            "review_final",
+            "Review final ads",
+            Some("Show me the final ads and call out what is ship-ready versus needs review."),
+        ));
+        state.secondary_action = Some(workflow_action(
+            "export",
+            "Export ship-ready ads",
+            Some("Export the ship-ready scripts for handoff."),
         ));
         return Ok(state);
     }
@@ -3291,6 +3291,49 @@ mod tests {
         assert_eq!(state.primary_action.unwrap().kind, "review_final");
         assert!(state.important_artifact_ids.contains(&final_id));
         assert!(state.diagnostic_artifact_ids.contains(&diagnostic_id));
+    }
+
+    #[test]
+    fn batch_workflow_state_preserves_guided_review_with_final_outputs() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let final_artifact = upsert_artifact(
+            &conn,
+            "prod_NR",
+            "batch_NR_demo",
+            "output-v41/task.md",
+            "output-v41/task.md",
+            b"final",
+            "runner",
+            true,
+        )
+        .unwrap();
+        let batch = WwxBatch {
+            id: "batch_NR_demo".into(),
+            product_id: "prod_NR".into(),
+            product_code: "NR".into(),
+            name: "demo".into(),
+            batch_id: "demo".into(),
+            status: "review".into(),
+            current_stage: Some("manifest_overview".into()),
+            created_at: 1,
+            updated_at: 1,
+            revision: 1,
+            artifacts: vec![final_artifact],
+            runs: vec![],
+            decision_counts: DecisionCounts::default(),
+            stage_timeline: vec![],
+            final_scripts: vec![],
+            autonomous: false,
+            workflow_state: empty_workflow_state("review", Some("manifest_overview".into())),
+        };
+
+        let state = batch_workflow_state(&conn, &batch).unwrap();
+
+        assert_eq!(state.status, "review");
+        assert_eq!(state.tone, "warning");
+        assert!(state.headline.contains("Continue to next stage?"));
+        assert_eq!(state.primary_action.unwrap().kind, "continue");
     }
 
     #[test]

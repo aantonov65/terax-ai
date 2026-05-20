@@ -165,7 +165,16 @@ function RunLine({ run }: { run: RunSummary | null }) {
     <div className="min-w-0 rounded-md border border-white/15 bg-[#191a1e] px-2.5 py-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="min-w-0 truncate text-xs font-medium text-slate-100">{run.label}</div>
-        <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[9.5px]">
+        <Badge
+          variant="outline"
+          className={cn(
+            "h-5 rounded-md px-1.5 text-[9.5px]",
+            run.status === "review" && "border-amber-400/40 text-amber-200",
+            run.status === "blocked" && "border-red-400/40 text-red-200",
+            run.status === "complete" && "border-emerald-400/40 text-emerald-200",
+            run.status === "running" && "border-sky-400/40 text-sky-200",
+          )}
+        >
           {run.status}
         </Badge>
       </div>
@@ -190,7 +199,7 @@ function StageTimeline({ stages }: { stages: StageSummary[] }) {
       {stages.map((stage, index) => (
         <div key={`${stage.stage}-${index}`} className="grid grid-cols-[18px_minmax(0,1fr)_auto] gap-2 text-[11.5px] text-slate-300">
           <div className="relative flex justify-center">
-            <span className={cn("mt-1.5 size-2 rounded-full", stage.status === "complete" || stage.status === "ok" ? "bg-emerald-300" : stage.status === "blocked" || stage.status === "failed" ? "bg-red-300" : stage.status === "running" ? "bg-sky-300" : "bg-slate-500")} />
+            <span className={cn("mt-1.5 size-2 rounded-full", stage.status === "complete" || stage.status === "ok" ? "bg-emerald-300" : stage.status === "blocked" || stage.status === "failed" ? "bg-red-300" : stage.status === "running" ? "bg-sky-300" : stage.status === "awaiting_review" || stage.status === "held" || !stage.approved ? "bg-amber-300" : "bg-slate-500")} />
             {index < stages.length - 1 ? <span className="absolute top-5 h-[calc(100%-4px)] w-px bg-white/18" /> : null}
           </div>
           <div className="min-w-0 pb-3">

@@ -207,16 +207,6 @@ export function deriveWorkflowState(batch: {
     diagnosticArtifactIds: diagnosticArtifactIds(batch.artifacts),
   };
 
-  if (batch.status === "complete" || hasFinalAds) {
-    return {
-      ...base,
-      headline: "Final ads are ready",
-      summary: "Review the ship, review, and fail decisions before upload.",
-      tone: "success",
-      primaryAction: actionForKind("review_final", batch.autonomous),
-      secondaryAction: actionForKind("export", batch.autonomous),
-    };
-  }
   if (batch.status === "review") {
     return {
       ...base,
@@ -229,6 +219,16 @@ export function deriveWorkflowState(batch: {
         label: "Ask / Hold",
         prompt: "I want to ask a question before continuing this batch.",
       },
+    };
+  }
+  if (batch.status === "complete" || hasFinalAds) {
+    return {
+      ...base,
+      headline: "Final ads are ready",
+      summary: "Review the ship, review, and fail decisions before upload.",
+      tone: "success",
+      primaryAction: actionForKind("review_final", batch.autonomous),
+      secondaryAction: actionForKind("export", batch.autonomous),
     };
   }
   if (batch.status === "blocked") {

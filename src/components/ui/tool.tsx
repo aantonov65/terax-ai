@@ -14,41 +14,71 @@ import {
   Settings,
   XCircle,
 } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
+
+export type ToolStateVariant =
+  | "pending"
+  | "running"
+  | "ready"
+  | "completed"
+  | "review"
+  | "blocked"
+  | "error"
 
 export type ToolPart = {
   type: string
   state:
+    | "approval-requested"
+    | "approval-responded"
     | "input-streaming"
     | "input-available"
     | "output-available"
+    | "output-denied"
     | "output-error"
   input?: Record<string, unknown>
   output?: Record<string, unknown>
   toolCallId?: string
   errorText?: string
+  displayName?: string
+  summary?: string | null
+  stateLabel?: string
+  stateVariant?: ToolStateVariant
 }
 
 export type ToolProps = {
   toolPart: ToolPart
   defaultOpen?: boolean
   className?: string
+  children?: ReactNode
+  hasDetails?: boolean
 }
 
-const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
+const Tool = ({
+  toolPart,
+  defaultOpen = false,
+  className,
+  children,
+  hasDetails,
+}: ToolProps) => {
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
   const { state, input, output, toolCallId } = toolPart
+  const variant = toolPart.stateVariant ?? variantFromState(state)
+  const detailsAvailable =
+    hasDetails ?? Boolean(children || input || output || toolPart.errorText || toolCallId)
 
   const getStateIcon = () => {
-    switch (state) {
-      case "input-streaming":
+    switch (variant) {
+      case "running":
         return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-      case "input-available":
+      case "ready":
         return <Settings className="h-4 w-4 text-orange-500" />
-      case "output-available":
+      case "completed":
         return <CheckCircle className="h-4 w-4 text-green-500" />
-      case "output-error":
+      case "review":
+        return <Settings className="h-4 w-4 text-amber-500" />
+      case "blocked":
+      case "error":
         return <XCircle className="h-4 w-4 text-red-500" />
       default:
         return <Settings className="text-muted-foreground h-4 w-4" />
@@ -57,8 +87,9 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
 
   const getStateBadge = () => {
     const baseClasses = "px-2 py-1 rounded-full text-xs font-medium"
-    switch (state) {
-      case "input-streaming":
+    const label = toolPart.stateLabel
+    switch (variant) {
+      case "running":
         return (
           <span
             className={cn(
@@ -66,10 +97,10 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
               "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
             )}
           >
-            Processing
+            {label ?? "Processing"}
           </span>
         )
-      case "input-available":
+      case "ready":
         return (
           <span
             className={cn(
@@ -77,10 +108,10 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
               "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
             )}
           >
-            Ready
+            {label ?? "Ready"}
           </span>
         )
-      case "output-available":
+      case "completed":
         return (
           <span
             className={cn(
@@ -88,10 +119,22 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
               "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
             )}
           >
-            Completed
+            {label ?? "Completed"}
           </span>
         )
-      case "output-error":
+      case "review":
+        return (
+          <span
+            className={cn(
+              baseClasses,
+              "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+            )}
+          >
+            {label ?? "Needs review"}
+          </span>
+        )
+      case "blocked":
+      case "error":
         return (
           <span
             className={cn(
@@ -99,7 +142,7 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
               "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
             )}
           >
-            Error
+            {label ?? (variant === "blocked" ? "Blocked" : "Error")}
           </span>
         )
       default:
@@ -110,7 +153,7 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
               "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
             )}
           >
-            Pending
+            {label ?? "Pending"}
           </span>
         )
     }
@@ -137,26 +180,37 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
-            className="bg-background h-auto w-full justify-between rounded-b-none px-3 py-2 font-normal"
+            disabled={!detailsAvailable}
+            className="bg-background h-auto w-full justify-between rounded-b-none px-3 py-2 font-normal disabled:opacity-100"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               {getStateIcon()}
-              <span className="font-mono text-sm font-medium">
-                {toolPart.type}
+              <span className="shrink-0 font-mono text-sm font-medium">
+                {toolPart.displayName ?? toolPart.type}
               </span>
               {getStateBadge()}
+              {toolPart.summary ? (
+                <span className="min-w-0 truncate text-left text-xs text-muted-foreground">
+                  {toolPart.summary}
+                </span>
+              ) : null}
             </div>
-            <ChevronDown className={cn("h-4 w-4", isOpen && "rotate-180")} />
+            {detailsAvailable ? (
+              <ChevronDown className={cn("h-4 w-4", isOpen && "rotate-180")} />
+            ) : null}
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent
-          className={cn(
-            "border-border border-t",
-            "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
-          )}
-        >
-          <div className="bg-background space-y-3 p-3">
-            {input && Object.keys(input).length > 0 && (
+        {detailsAvailable && (
+          <CollapsibleContent
+            className={cn(
+              "border-border border-t",
+              "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
+            )}
+          >
+            <div className="bg-background space-y-3 p-3">
+              {children ?? (
+                <>
+                  {input && Object.keys(input).length > 0 && (
               <div>
                 <h4 className="text-muted-foreground mb-2 text-sm font-medium">
                   Input
@@ -170,9 +224,9 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
                   ))}
                 </div>
               </div>
-            )}
+                  )}
 
-            {output && (
+                  {output && (
               <div>
                 <h4 className="text-muted-foreground mb-2 text-sm font-medium">
                   Output
@@ -183,33 +237,55 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
                   </pre>
                 </div>
               </div>
-            )}
+                  )}
 
-            {state === "output-error" && toolPart.errorText && (
+                  {state === "output-error" && toolPart.errorText && (
               <div>
                 <h4 className="mb-2 text-sm font-medium text-red-500">Error</h4>
                 <div className="bg-background rounded border border-red-200 p-2 text-sm dark:border-red-950 dark:bg-red-900/20">
                   {toolPart.errorText}
                 </div>
               </div>
-            )}
+                  )}
 
-            {state === "input-streaming" && (
+                  {state === "input-streaming" && (
               <div className="text-muted-foreground text-sm">
                 Processing tool call...
               </div>
-            )}
+                  )}
 
-            {toolCallId && (
+                  {toolCallId && (
               <div className="text-muted-foreground border-t border-blue-200 pt-2 text-xs">
                 <span className="font-mono">Call ID: {toolCallId}</span>
               </div>
-            )}
-          </div>
-        </CollapsibleContent>
+                  )}
+                </>
+              )}
+            </div>
+          </CollapsibleContent>
+        )}
       </Collapsible>
     </div>
   )
 }
 
 export { Tool }
+
+function variantFromState(state: ToolPart["state"]): ToolStateVariant {
+  switch (state) {
+    case "input-streaming":
+    case "approval-responded":
+      return "running"
+    case "approval-requested":
+    case "input-available":
+      return "ready"
+    case "output-available":
+      return "completed"
+    case "output-denied":
+      return "blocked"
+    case "output-error":
+      return "error"
+    default:
+      return "pending"
+  }
+}

@@ -51,7 +51,7 @@ export type ArtifactSummary = {
   mtime?: number;
 };
 
-export type RunStatus = "running" | "complete" | "blocked" | "idle" | "unknown";
+export type RunStatus = "running" | "complete" | "review" | "blocked" | "idle" | "unknown";
 
 export type RunSummary = {
   id: string;

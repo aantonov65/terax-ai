@@ -5,6 +5,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tool as PromptKitTool,
+  type ToolPart as PromptKitToolPart,
+  type ToolStateVariant,
+} from "@/components/ui/tool";
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
@@ -70,26 +75,6 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   retry_lfs_failures: { label: "Repairing Batch", icon: ToolsIcon },
   export_lfs: { label: "Exporting Scripts", icon: File01Icon },
   cancel_lfs_job: { label: "Canceling Batch", icon: ToolsIcon },
-};
-
-const STATUS_DOT: Record<ToolPart["state"], string> = {
-  "approval-requested": "bg-amber-500",
-  "approval-responded": "bg-sky-500",
-  "input-streaming": "bg-muted-foreground/40",
-  "input-available": "bg-amber-500",
-  "output-available": "bg-transparent border border-muted-foreground/40",
-  "output-denied": "bg-orange-500",
-  "output-error": "bg-destructive",
-};
-
-const STATUS_LABEL: Record<ToolPart["state"], string> = {
-  "approval-requested": "awaiting approval",
-  "approval-responded": "responded",
-  "input-streaming": "preparing",
-  "input-available": "running",
-  "output-available": "done",
-  "output-denied": "denied",
-  "output-error": "error",
 };
 
 function deriveSummary(toolName: string, input: unknown): string | null {
@@ -194,11 +179,12 @@ const ToolImpl = ({
   ...props
 }: ToolProps) => {
   const meta = TOOL_META[toolName];
-  const Icon = meta?.icon ?? ToolsIcon;
   const label = meta?.label ?? toolName;
-  const summary = deriveSummary(toolName, input);
+  const inputSummary = deriveSummary(toolName, input);
   const isError = state === "output-error";
   const isWwx = isWwxTool(toolName);
+  const toolState = getPromptKitToolState(toolName, state, output, errorText);
+  const summary = toolState.summary ?? inputSummary;
   const open = defaultOpen ?? (isError || (isWwx && output !== undefined));
   const hidesInput = HEAVY_INPUT_TOOLS.has(toolName) || isWwx;
   const hidesOutput = HEAVY_CONTENT_TOOLS.has(toolName);
@@ -210,68 +196,32 @@ const ToolImpl = ({
     showInputBody || showOutputBody || Boolean(errorText);
 
   return (
-    <Collapsible
+    <PromptKitTool
+      toolPart={{
+        type: label,
+        displayName: label,
+        state: state as PromptKitToolPart["state"],
+        input: isRecord(input) ? input : undefined,
+        output: isRecord(output) ? output : undefined,
+        errorText,
+        summary,
+        stateLabel: toolState.label,
+        stateVariant: toolState.variant,
+      }}
       defaultOpen={open}
       className={cn("group/tool not-prose w-full", className)}
+      hasDetails={hasDetails}
       {...props}
     >
-      <CollapsibleTrigger
-        disabled={!hasDetails}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-md border border-white/10 bg-[#17181b]/70 px-2 py-1.5 text-left",
-          "text-[12px] transition-colors",
-          "hover:bg-muted/50 disabled:cursor-default disabled:hover:bg-[#17181b]/70",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        )}
-      >
-        <span
-          className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[state])}
-          aria-label={STATUS_LABEL[state]}
+      {showInputBody ? <ToolInput toolName={toolName} input={input} /> : null}
+      {showOutputBody || errorText ? (
+        <ToolOutput
+          toolName={toolName}
+          output={showOutputBody ? output : undefined}
+          errorText={errorText}
         />
-        <HugeiconsIcon
-          icon={Icon}
-          size={13}
-          strokeWidth={1.75}
-          className="shrink-0 text-muted-foreground"
-        />
-        <span className="shrink-0 font-medium text-foreground">{label}</span>
-        {summary ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
-            {summary}
-          </span>
-        ) : (
-          <span className="flex-1" />
-        )}
-        {isError && (
-          <span className="shrink-0 text-[10px] font-medium text-destructive">
-            failed
-          </span>
-        )}
-      </CollapsibleTrigger>
-
-      {hasDetails && (
-        <CollapsibleContent
-          className={cn(
-            "overflow-hidden",
-            "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
-            "data-[state=open]:animate-in data-[state=open]:fade-in-0",
-          )}
-        >
-          <div className="ml-3 mt-1 space-y-2 rounded-md border border-border/50 bg-background/20 p-2">
-            {showInputBody ? (
-              <ToolInput toolName={toolName} input={input} />
-            ) : null}
-            {showOutputBody || errorText ? (
-              <ToolOutput
-                toolName={toolName}
-                output={showOutputBody ? output : undefined}
-                errorText={errorText}
-              />
-            ) : null}
-          </div>
-        </CollapsibleContent>
-      )}
-    </Collapsible>
+      ) : null}
+    </PromptKitTool>
   );
 };
 
@@ -289,6 +239,59 @@ export const Tool = memo(ToolImpl, (a, b) => {
   }
   return a.input === b.input;
 });
+
+function getPromptKitToolState(
+  toolName: string,
+  state: ToolPart["state"],
+  output: unknown,
+  errorText?: string,
+): { variant?: ToolStateVariant; label?: string; summary?: string | null } {
+  if (errorText || state === "output-error") {
+    return { variant: "error", label: "Error" };
+  }
+
+  if (isWwxTool(toolName) && output && typeof output === "object") {
+    const data = output as Record<string, unknown>;
+    const ui = readToolUi(data);
+    const status = typeof data.status === "string" ? data.status : null;
+    const awaitingReview =
+      data.awaiting_review === true ||
+      status === "awaiting_review" ||
+      status === "held" ||
+      status === "review";
+    const retryable = data.retryable === true || ui?.retryable === true;
+    const operatorNeeded =
+      data.operator_needed === true || ui?.operator_needed === true;
+    const summary =
+      ui?.stage_label ??
+      (typeof data.current_stage === "string"
+        ? data.current_stage.replace(/[_-]+/g, " ")
+        : null);
+
+    if (awaitingReview || ui?.tone === "warning") {
+      return {
+        variant: "review",
+        label: retryable && !awaitingReview ? "Needs repair" : "Needs review",
+        summary,
+      };
+    }
+    if (ui?.tone === "danger" || operatorNeeded || data.ok === false) {
+      return { variant: "blocked", label: "Blocked", summary };
+    }
+    if (ui?.tone === "running") {
+      return { variant: "running", label: "Processing", summary };
+    }
+    if (state === "output-available") {
+      return { variant: "completed", label: "Completed", summary };
+    }
+  }
+
+  return {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 function ToolInput({ toolName, input }: { toolName: string; input: unknown }) {
   if (input == null) return null;
@@ -707,6 +710,16 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
     : [];
   const reason = typeof data.reason === "string" ? data.reason : null;
   const tone = ui?.tone ?? (ok ? "success" : "danger");
+  const statusBadge =
+    data.awaiting_review === true || data.status === "awaiting_review" || data.status === "held"
+      ? "needs review"
+      : tone === "warning" && retryable
+        ? "needs repair"
+        : tone === "danger"
+          ? "blocked"
+          : ok
+            ? "done"
+            : "failed";
 
   return (
     <div className="space-y-2.5">
@@ -738,10 +751,12 @@ function WwxToolOutput({ data }: { data: Record<string, unknown> }) {
               "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
               ok
                 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                : "bg-destructive/15 text-destructive",
+                : tone === "warning"
+                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                  : "bg-destructive/15 text-destructive",
             )}
           >
-            {ok ? "done" : "blocked"}
+            {statusBadge}
           </span>
         </div>
         {summary || reason ? (
@@ -887,6 +902,8 @@ type WwxToolUi = {
   headline?: string;
   summary?: string;
   tone?: "neutral" | "running" | "success" | "warning" | "danger";
+  operator_needed?: boolean;
+  retryable?: boolean;
   stage_label?: string;
   primary_action?: { kind?: string; label: string; prompt?: string };
   secondary_action?: { kind?: string; label: string; prompt?: string };
