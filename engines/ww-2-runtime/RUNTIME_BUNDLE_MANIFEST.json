@@ -1,6 +1,5 @@
 {
-  "generatedAt": "2026-05-20T18:37:34.728Z",
-  "sourceRoot": "/Users/aantonov1/boris/ww-2",
+  "generatedAt": "2026-05-20T18:38:48.486Z",
   "sourceGitCommit": "1d92aa72dc74ba3035031a52f20672e7bf134442",
   "purpose": "Minimal ww-2 runtime required by hosted WWX research, strategy, and LFS4.1 workflows.",
   "excludedByDesign": [

@@ -107,7 +107,6 @@ function copyPath(relativePath) {
 function writeManifest(copiedFiles, copiedDirs) {
   const manifest = {
     generatedAt: new Date().toISOString(),
-    sourceRoot,
     sourceGitCommit: gitOutput(["rev-parse", "HEAD"]) ?? null,
     purpose: "Minimal ww-2 runtime required by hosted WWX research, strategy, and LFS4.1 workflows.",
     excludedByDesign: [
