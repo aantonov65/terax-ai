@@ -259,6 +259,86 @@ test("hosted workflow run executes through Trigger payload and exact queue job",
   await app.close();
 });
 
+test("hosted research and strategy workflow types are accepted and executable", async () => {
+  const trigger = new CapturingWorkflowTrigger();
+  const { app, store, service, observability } = createWorkflowHarness(trigger);
+  const operatorHeaders = {
+    "x-workspace-id": workspaceId,
+    "x-user-id": "operator-workflows",
+    "x-user-email": "operator-workflows@wwx.local",
+    "x-user-role": "operator",
+    "x-client-version": "1.4.2",
+  };
+
+  const research = await app.inject({
+    method: "POST",
+    url: "/runs",
+    headers: operatorHeaders,
+    payload: {
+      workflowType: "research",
+      productId: "prod_hair",
+      payload: { productId: "prod_hair", topic: "hair loss shame", searchTerms: ["hair loss shame"] },
+    },
+  });
+  assert.equal(research.statusCode, 200);
+  assert.equal(trigger.lastInput?.workflowType, "research");
+  const researchRunId = research.json().run.id as string;
+  await executeWorkflowTask({
+    runId: researchRunId,
+    workspaceId,
+    createdByUserId: "operator-workflows",
+    workflowType: "research",
+    correlationId: "test-research",
+    input: trigger.lastInput?.payload,
+  }, {
+    store,
+    storage: new MemoryObjectStorage(),
+    engine: new FakeLfsEngine(),
+    service,
+    observability,
+    trigger,
+    workflow: new WorkflowRuntimeService(observability, trigger, service, "1.4.0"),
+  });
+  assert.equal((await app.inject({ method: "GET", url: `/runs/${researchRunId}/status`, headers: operatorHeaders })).json().run.status, "succeeded");
+
+  const strategy = await app.inject({
+    method: "POST",
+    url: "/runs",
+    headers: operatorHeaders,
+    payload: {
+      workflowType: "strategy",
+      productId: "prod_hair",
+      batchId: "batch_strategy",
+      payload: {
+        productId: "prod_hair",
+        batchId: "batch_strategy",
+        strategyPlanJson: { batch_id: "batch_strategy", ads: [] },
+      },
+    },
+  });
+  assert.equal(strategy.statusCode, 200);
+  assert.equal(trigger.lastInput?.workflowType, "strategy");
+  const strategyRunId = strategy.json().run.id as string;
+  await executeWorkflowTask({
+    runId: strategyRunId,
+    workspaceId,
+    createdByUserId: "operator-workflows",
+    workflowType: "strategy",
+    correlationId: "test-strategy",
+    input: trigger.lastInput?.payload,
+  }, {
+    store,
+    storage: new MemoryObjectStorage(),
+    engine: new FakeLfsEngine(),
+    service,
+    observability,
+    trigger,
+    workflow: new WorkflowRuntimeService(observability, trigger, service, "1.4.0"),
+  });
+  assert.equal((await app.inject({ method: "GET", url: `/runs/${strategyRunId}/status`, headers: operatorHeaders })).json().run.status, "succeeded");
+  await app.close();
+});
+
 test("workflow agent refuses operator cost and hidden prompt questions", async () => {
   const { app } = createWorkflowHarness();
   const headersWithUser = { ...headers, "x-user-id": "operator-2", "x-user-role": "operator", "x-client-version": "1.4.2" };

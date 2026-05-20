@@ -162,6 +162,30 @@ export type CreateAdsInput = {
   fromStage?: string;
 };
 
+export type ResearchWorkflowInput = {
+  productId: string;
+  productCode?: string;
+  productName?: string;
+  configJson?: Record<string, unknown> | string;
+  topic: string;
+  searchTerms?: string[];
+};
+
+export type StrategyWorkflowInput = {
+  productId: string;
+  batchId: string;
+  productCode?: string;
+  productName?: string;
+  configJson?: Record<string, unknown> | string;
+  strategyPlanJson: Record<string, unknown> | string;
+  researchFiles?: {
+    archetypes?: string;
+    hotwords?: string;
+    mechanisms?: string;
+  };
+  force?: boolean;
+};
+
 export type EngineWorkItem = {
   stage: string;
   itemKey: string;

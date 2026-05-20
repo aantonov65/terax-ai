@@ -24,7 +24,52 @@ export const lfsAdsTask = task({
   },
 });
 
-export const researchTask = placeholderTask("wwx.research", "research");
+export const researchTask = task({
+  id: "wwx.research",
+  queue: {
+    name: "research",
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_RESEARCH_CONCURRENCY ?? "2", 10),
+  },
+  retry: {
+    maxAttempts: 2,
+    minTimeoutInMs: 10_000,
+    maxTimeoutInMs: 120_000,
+    factor: 2,
+    randomize: true,
+  },
+  run: async (payload: WorkflowTaskPayload) => {
+    logger.info("Starting WWX research workflow", {
+      runId: payload.runId,
+      workflowType: payload.workflowType,
+      correlationId: payload.correlationId,
+    });
+    return executeWorkflowTask({ ...payload, workflowType: "research" });
+  },
+});
+
+export const strategyTask = task({
+  id: "wwx.strategy",
+  queue: {
+    name: "strategy",
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_STRATEGY_CONCURRENCY ?? "4", 10),
+  },
+  retry: {
+    maxAttempts: 2,
+    minTimeoutInMs: 5_000,
+    maxTimeoutInMs: 60_000,
+    factor: 2,
+    randomize: true,
+  },
+  run: async (payload: WorkflowTaskPayload) => {
+    logger.info("Starting WWX strategy workflow", {
+      runId: payload.runId,
+      workflowType: payload.workflowType,
+      correlationId: payload.correlationId,
+    });
+    return executeWorkflowTask({ ...payload, workflowType: "strategy" });
+  },
+});
+
 export const imageBatchTask = placeholderTask("wwx.image_batch", "image_batch");
 export const modularVideoTask = placeholderTask("wwx.modular_video", "modular_video");
 export const avatarVideoTask = placeholderTask("wwx.avatar_video", "avatar_video");

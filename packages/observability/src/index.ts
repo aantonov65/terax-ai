@@ -8,6 +8,7 @@ export const ALERT_STATUSES = ["open", "acknowledged", "resolved", "ignored"] as
 export const WORKFLOW_TYPES = [
   "lfs_ads",
   "research",
+  "strategy",
   "image_batch",
   "modular_video",
   "avatar_video",

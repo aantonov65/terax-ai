@@ -78,6 +78,8 @@ function queueFor(workflowType: WorkflowType): { name: string; concurrencyLimit:
       return { name: "lfs_ads", concurrencyLimit: parseIntEnv("TRIGGER_LFS_CONCURRENCY", 6) };
     case "research":
       return { name: "research", concurrencyLimit: parseIntEnv("TRIGGER_RESEARCH_CONCURRENCY", 2) };
+    case "strategy":
+      return { name: "strategy", concurrencyLimit: parseIntEnv("TRIGGER_STRATEGY_CONCURRENCY", 4) };
     case "image_batch":
       return { name: "image_batch", concurrencyLimit: parseIntEnv("TRIGGER_IMAGE_CONCURRENCY", 3) };
     case "modular_video":
