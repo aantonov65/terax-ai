@@ -23,6 +23,8 @@ type NativeArtifact = {
   size: number;
   source: string;
   public: boolean;
+  visibilityClass: string;
+  contentSha256: string;
   createdAt: number;
   updatedAt: number;
   revision: number;
@@ -69,7 +71,21 @@ type NativeProduct = {
   revision: number;
   researchArtifactCount?: number;
   researchArtifactUpdatedAt?: number | null;
+  researchRuns?: NativeResearchRun[];
   batches: NativeBatch[];
+};
+
+type NativeResearchRun = {
+  id: string;
+  productId: string;
+  topicSlug: string;
+  topic: string;
+  searchTermsJson: string;
+  runFolder: string;
+  status: string;
+  qualityJson: string;
+  createdAt: number;
+  updatedAt: number;
 };
 
 type NativeIndex = {
@@ -207,6 +223,46 @@ export async function writeWwxArtifact(input: {
   return mapArtifact(artifact);
 }
 
+export async function listResearchRuns(productId: string): Promise<NativeResearchRun[]> {
+  return invoke<NativeResearchRun[]>("wwx_list_research_runs", { productId });
+}
+
+export async function selectBatchResearchRuns(input: {
+  productId: string;
+  batchId: string;
+  researchRunIds: string[];
+}): Promise<NativeResearchRun[]> {
+  return invoke<NativeResearchRun[]>("wwx_select_batch_research_runs", { input });
+}
+
+export async function analyzeAds(batchId: string): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("wwx_analyze_ads", { batchId });
+}
+
+export async function getBatchMetrics(batchId: string): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("wwx_get_batch_metrics", { batchId });
+}
+
+export async function answerBatchQuestion(input: {
+  batchId: string;
+  question: string;
+}): Promise<{ refused: boolean; answer: string; citations: string[] }> {
+  return invoke("wwx_answer_batch_question", { input });
+}
+
+export async function exportHandoffPackage(batchId: string): Promise<{
+  artifact: ArtifactSummary;
+  scriptCount: number;
+}> {
+  const result = await invoke<{ artifact: NativeArtifact; scriptCount: number }>("wwx_export_handoff_package", {
+    batchId,
+  });
+  return {
+    artifact: mapArtifact(result.artifact),
+    scriptCount: result.scriptCount,
+  };
+}
+
 function mapProduct(product: NativeProduct): ProductSummary {
   const config = safeJson(product.configJson);
   const readiness = isRecord(config.wwx_readiness) ? config.wwx_readiness : null;
@@ -236,6 +292,7 @@ function mapProduct(product: NativeProduct): ProductSummary {
     },
     researchArtifactCount: product.researchArtifactCount ?? 0,
     researchArtifactUpdatedAt: product.researchArtifactUpdatedAt ?? null,
+    researchRuns: product.researchRuns ?? [],
     batchCount: batches.length,
     statusCounts: statusCounts(batches),
     updatedAt: product.updatedAt,
@@ -276,9 +333,6 @@ function mapBatch(batch: NativeBatch, product: NativeProduct): BatchSummary {
     updatedAt: batch.updatedAt,
     decisionCounts: decisions,
     nextAction: workflowState.summary,
-    strategyPath: artifactPath(batch.artifacts, "strategy.json"),
-    manifestPath: artifactPath(batch.artifacts, "lfs-v41-manifest.json"),
-    reportPath: artifactPath(batch.artifacts, "lfs-v41-report.json"),
     artifacts,
     runs: batch.runs.map(mapRun),
     stageTimeline: (batch.stageTimeline ?? []).map((stage) => ({
@@ -300,6 +354,8 @@ function mapArtifact(artifact: NativeArtifact): ArtifactSummary {
     filename: artifact.filename,
     path: `app://wwx/artifacts/${artifact.id}`,
     kind: toArtifactKind(artifact.kind),
+    visibilityClass: artifact.visibilityClass,
+    contentSha256: artifact.contentSha256,
     size: artifact.size,
     mtime: artifact.updatedAt,
     source: "account",
@@ -387,11 +443,6 @@ function statusCounts(batches: BatchSummary[]): Record<BatchStatus, number> {
   return counts;
 }
 
-function artifactPath(artifacts: NativeArtifact[], filename: string): string | undefined {
-  const artifact = artifacts.find((item) => item.filename === filename);
-  return artifact ? `app://wwx/artifacts/${artifact.id}` : undefined;
-}
-
 function decisionCounts(artifacts: NativeArtifact[]) {
   const manifest = artifacts.find((item) => item.filename === "lfs-v41-manifest.json");
   if (!manifest) return { ship: 0, review: 0, fail: 0 };
@@ -405,9 +456,9 @@ function nextAction(
   hasStrategy = false,
 ): string {
   if (status === "draft") {
-    if (hasStrategy) return "Strategy ready. Run LFS4.1 when ready.";
-    if (hasStrategyPlan) return "Review the creative direction, then build strategy.";
-    return "Add owner-authored creative direction.";
+    if (hasStrategy) return "Batch inputs ready. Run autonomous LFS4.1 when ready.";
+    if (hasStrategyPlan) return "Review the input bundle, then build internal batch inputs.";
+    return "Add product truth, research topic, ad count, and optional constraints.";
   }
   if (status === "review") return `${friendlyStageLabel(stage)} is ready. Continue when approved.`;
   if (status === "running") return `${friendlyStageLabel(stage)} is running.`;

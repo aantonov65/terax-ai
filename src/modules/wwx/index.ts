@@ -15,7 +15,13 @@ export {
 export {
   createBatchInStore,
   createProductInStore,
+  analyzeAds,
+  answerBatchQuestion,
+  exportHandoffPackage,
+  getBatchMetrics,
+  listResearchRuns,
   readWwxArtifact,
+  selectBatchResearchRuns,
   useWwxIndex,
   writeWwxArtifact,
 } from "./store";
@@ -29,6 +35,7 @@ export type {
   ProductConfigSummary,
   ProductResearchJob,
   ProductSummary,
+  ResearchRunSummary,
   RunSummary,
   WorkflowAction,
   WorkflowState,

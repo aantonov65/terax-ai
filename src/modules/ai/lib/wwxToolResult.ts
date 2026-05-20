@@ -1,23 +1,18 @@
 import type { UIMessage } from "ai";
 
 const WWX_WORKFLOWS = new Set([
-  "create_product_from_config",
-  "run_product_research",
-  "save_strategy_plan",
-  "build_strategy_json",
-  "set_autonomous_mode",
-  "submit_lfs_job",
-  "get_lfs_plan",
-  "advance_lfs_job",
-  "resume_lfs_job",
-  "get_lfs_job",
-  "list_lfs_artifacts",
-  "read_lfs_artifact",
-  "edit_lfs_artifact",
-  "rerun_lfs_checks",
-  "retry_lfs_failures",
-  "export_lfs",
-  "cancel_lfs_job",
+  "create_ads",
+  "start_research_run",
+  "list_research_runs",
+  "get_batch_status",
+  "list_final_ads",
+  "get_final_ad",
+  "get_asset_inputs",
+  "get_batch_metrics",
+  "analyze_ads",
+  "compare_batches",
+  "answer_batch_question",
+  "export_handoff_package",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

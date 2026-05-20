@@ -33,18 +33,17 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     create_product_from_config: { label: "Saving Product Setup", icon: AiMagicIcon },
-    run_product_research: { label: "Running Product Research", icon: FileSearchIcon },
-    save_strategy_plan: { label: "Saving Creative Direction", icon: FileEditIcon },
-    build_strategy_json: { label: "Building Strategy", icon: WorkflowSquare06Icon },
-    set_autonomous_mode: { label: "Updating Autonomy", icon: WorkflowSquare06Icon },
-    submit_lfs_job: { label: "Running LFS Batch", icon: WorkflowSquare06Icon },
-    advance_lfs_job: { label: "Continuing Batch", icon: WorkflowSquare06Icon },
-    resume_lfs_job: { label: "Continuing Batch", icon: WorkflowSquare06Icon },
-    rerun_lfs_checks: { label: "Checking Output", icon: WorkflowSquare06Icon },
-    retry_lfs_failures: { label: "Repairing Batch", icon: WorkflowSquare06Icon },
-    cancel_lfs_job: { label: "Canceling Batch", icon: Cancel01Icon },
-    export_lfs: { label: "Exporting Scripts", icon: FileSearchIcon },
-    edit_lfs_artifact: { label: "Editing Output", icon: FileEditIcon },
+    create_ads: { label: "Creating Ads", icon: WorkflowSquare06Icon },
+    start_research_run: { label: "Running Research", icon: FileSearchIcon },
+    list_research_runs: { label: "Listing Research", icon: FileSearchIcon },
+    list_final_ads: { label: "Listing Final Ads", icon: FileSearchIcon },
+    get_final_ad: { label: "Opening Final Ad", icon: FileSearchIcon },
+    get_asset_inputs: { label: "Opening Asset Inputs", icon: Image01Icon },
+    get_batch_metrics: { label: "Reading Metrics", icon: FileSearchIcon },
+    analyze_ads: { label: "Analyzing Ads", icon: WorkflowSquare06Icon },
+    compare_batches: { label: "Comparing Batches", icon: WorkflowSquare06Icon },
+    answer_batch_question: { label: "Answering Batch Question", icon: FileSearchIcon },
+    export_handoff_package: { label: "Exporting Handoff", icon: FileSearchIcon },
     create_batch_from_angles: { label: "Create WWX batch", icon: AiMagicIcon },
     run_guided_lfs_agent: { label: "Create LFS", icon: WorkflowSquare06Icon },
     run_lfs_v41: { label: "Run LFS V4.1", icon: WorkflowSquare06Icon },
@@ -125,16 +124,16 @@ function PreviewBlock({
   input: Record<string, unknown>;
 }) {
   if (isWwxWorkflowTool(toolName)) {
-    const product = stringInput(input.product);
+    const product = stringInput(input.product_id) ?? stringInput(input.product);
     const batch = stringInput(input.batch_id);
     const risk = stringInput(input.expected_cost_risk);
-    const productPrefix = product ? `products/${product}` : "products/{product}";
     const touched = [
-      stringInput(input.angles_path),
-      stringInput(input.strategy_path),
-      input.angles_markdown ? "uploaded angle.md" : null,
-      batch ? `${productPrefix}/batches/${batch}/wwx-artifacts.json` : null,
-      toolName.includes("image") ? "images/ and image-report.json" : null,
+      stringInput(input.topic),
+      stringInput(input.artifact_id),
+      stringInput(input.task_id),
+      input.angles_markdown ? "owner-provided batch input text" : null,
+      toolName === "get_asset_inputs" ? "public asset-inputs.json" : null,
+      toolName === "export_handoff_package" ? "public handoff-package.json" : null,
     ].filter((item): item is string => Boolean(item));
     return (
       <div className="space-y-2 text-[11px]">
@@ -257,32 +256,18 @@ function PreviewBlock({
 
 function isWwxWorkflowTool(toolName: string): boolean {
   return [
-    "create_product_from_config",
-    "run_product_research",
-    "save_strategy_plan",
-    "build_strategy_json",
-    "set_autonomous_mode",
-    "submit_lfs_job",
-    "get_lfs_plan",
-    "advance_lfs_job",
-    "resume_lfs_job",
-    "rerun_lfs_checks",
-    "retry_lfs_failures",
-    "cancel_lfs_job",
-    "export_lfs",
-    "get_lfs_job",
-    "list_lfs_artifacts",
-    "read_lfs_artifact",
-    "edit_lfs_artifact",
-    "create_batch_from_angles",
-    "run_guided_lfs_agent",
-    "run_lfs_v41",
-    "generate_images",
-    "run_lfs_and_images",
+    "create_ads",
+    "start_research_run",
+    "list_research_runs",
     "get_batch_status",
-    "open_artifact",
-    "enqueue_lfs_job",
-    "list_lfs_queue",
+    "list_final_ads",
+    "get_final_ad",
+    "get_asset_inputs",
+    "get_batch_metrics",
+    "analyze_ads",
+    "compare_batches",
+    "answer_batch_question",
+    "export_handoff_package",
   ].includes(toolName);
 }
 
@@ -291,23 +276,18 @@ function stringInput(value: unknown): string | null {
 }
 
 function workflowIntent(toolName: string): string {
-  if (toolName === "create_product_from_config") return "Save the product setup from approved brand facts.";
-  if (toolName === "run_product_research") return "Build the product research base for production batches.";
-  if (toolName === "save_strategy_plan") return "Save and check the creative direction.";
-  if (toolName === "build_strategy_json") return "Turn the creative direction into the runnable batch strategy.";
-  if (toolName === "set_autonomous_mode") return "Choose whether this batch keeps moving without review pauses.";
-  if (toolName === "get_lfs_plan") return "Check the saved direction, strategy, and autonomy setting.";
-  if (toolName === "submit_lfs_job") return "Start generating and checking the LFS ads.";
-  if (toolName === "advance_lfs_job") return "Continue from the current review checkpoint.";
-  if (toolName === "resume_lfs_job") return "Continue the saved batch run.";
-  if (toolName === "rerun_lfs_checks") return "Recheck the current output.";
-  if (toolName === "retry_lfs_failures") return "Repair the batch from the earliest useful checkpoint.";
-  if (toolName === "cancel_lfs_job") return "Stop this batch run.";
-  if (toolName === "export_lfs") return "Prepare final scripts for handoff.";
-  if (toolName === "get_lfs_job") return "Check batch progress.";
-  if (toolName === "list_lfs_artifacts") return "Open available outputs.";
-  if (toolName === "read_lfs_artifact") return "Open one output.";
-  if (toolName === "edit_lfs_artifact") return "Update one approved output.";
+  if (toolName === "create_ads") return "Start the autonomous blackbox LFS4.1 workflow.";
+  if (toolName === "start_research_run") return "Build a reusable research topic for this product.";
+  if (toolName === "list_research_runs") return "List available research topics and quality stats.";
+  if (toolName === "get_batch_status") return "Read public status and artifact metadata.";
+  if (toolName === "list_final_ads") return "List final public scripts.";
+  if (toolName === "get_final_ad") return "Open one final public script.";
+  if (toolName === "get_asset_inputs") return "Open public asset-generation inputs.";
+  if (toolName === "get_batch_metrics") return "Read public batch metrics.";
+  if (toolName === "analyze_ads") return "Analyze duplicates, angles, and coverage.";
+  if (toolName === "compare_batches") return "Compare public metrics across batches.";
+  if (toolName === "answer_batch_question") return "Answer from public batch data only.";
+  if (toolName === "export_handoff_package") return "Prepare final scripts and asset inputs for handoff.";
   if (toolName === "create_batch_from_angles") return "Compile angles.md into a guarded WWX batch.";
   if (toolName === "run_guided_lfs_agent") return "Run the guided LFS agent workflow.";
   if (toolName === "run_lfs_v41") return "Run the LFS V4.1 script workflow.";
@@ -318,21 +298,7 @@ function workflowIntent(toolName: string): string {
 }
 
 function defaultWorkflowRisk(toolName: string): string {
-  if (toolName === "create_product_from_config") return "Saves one product setup record.";
-  if (toolName === "run_product_research") return "Uses research/model providers and saves product research.";
-  if (toolName === "save_strategy_plan") return "Saves creative direction and checks it against current research.";
-  if (toolName === "build_strategy_json") return "Creates the runnable strategy for this batch.";
-  if (toolName === "set_autonomous_mode") return "Updates this batch's autonomy setting.";
-  if (toolName === "get_lfs_plan") return "Read-only.";
-  if (toolName === "submit_lfs_job") return "May use model providers and save generated outputs.";
-  if (toolName === "advance_lfs_job" || toolName === "resume_lfs_job") return "May use model providers and save the next outputs.";
-  if (toolName === "rerun_lfs_checks" || toolName === "retry_lfs_failures") return "May use model providers while repairing or checking outputs.";
-  if (toolName === "cancel_lfs_job") return "Updates local batch state.";
-  if (toolName === "edit_lfs_artifact") return "Updates one approved batch output.";
-  if (toolName === "export_lfs" || toolName === "get_lfs_job" || toolName === "list_lfs_artifacts" || toolName === "read_lfs_artifact") return "Read-only.";
-  if (toolName === "create_batch_from_angles") return "Writes strategy/spec/manifest files only.";
-  if (toolName === "get_batch_status" || toolName === "open_artifact") return "Read-only.";
-  if (toolName === "generate_images") return "May call image providers and consume credits.";
-  if (toolName === "run_guided_lfs_agent") return "May call model providers and write LFS artifacts.";
+  if (toolName === "create_ads" || toolName === "start_research_run") return "May use model/research providers and save public outputs plus hidden backend state.";
+  if (toolName === "export_handoff_package") return "Writes one public handoff artifact.";
   return "May call model providers and write generated artifacts.";
 }

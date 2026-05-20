@@ -10,43 +10,43 @@ export const LOCAL_WORKSPACE: WorkspaceSummary = {
 
 export const recipes: CommandRecipe[] = [
   {
-    id: "create-batch-from-angles",
-    label: "Create Batch From Angles",
-    command: "ww compile-angles products/PRODUCT/batches/BATCH/angles.md",
-    description: "Compile angles.md into a product-scoped LFS/image batch.",
-    batchMode: "compile-angles",
+    id: "create-ads",
+    label: "Create Ads",
+    command: "create_ads",
+    description: "Start the autonomous blackbox LFS4.1 workflow from product, research, count, and constraints.",
+    batchMode: "create_ads",
     requiresBatch: true,
   },
   {
-    id: "run-lfs-images",
-    label: "Run LFS + Images",
-    command: "ww lfs-v41 products/PRODUCT/batches/BATCH/strategy.json && ww imagebatch BATCH",
-    description: "Run the current batch through LFS V4.1, then image generation.",
-    batchMode: "run-lfs-images",
+    id: "status",
+    label: "Batch Status",
+    command: "get_batch_status",
+    description: "Read the current stage, retry state, and sanitized blockers for a batch.",
+    batchMode: "get_batch_status",
     requiresBatch: true,
   },
   {
-    id: "generate-images",
-    label: "Generate Images",
-    command: "ww imagebatch EXAMPLE_BATCH",
-    description: "Generate or repair image assets inside the selected batch.",
-    batchMode: "imagebatch",
+    id: "asset-inputs",
+    label: "Asset Inputs",
+    command: "get_asset_inputs",
+    description: "Return approved scripts and asset-generation fields for handoff.",
+    batchMode: "get_asset_inputs",
     requiresBatch: true,
   },
   {
-    id: "inspect-status",
-    label: "Inspect Status",
-    command: "ww status EXAMPLE_BATCH",
-    description: "Inspect the current batch report from the terminal.",
-    batchMode: "status",
+    id: "analyze-ads",
+    label: "Analyze Ads",
+    command: "analyze_ads",
+    description: "Cluster duplicates and summarize tested angles, mechanisms, formats, and coverage.",
+    batchMode: "analyze_ads",
     requiresBatch: true,
   },
   {
-    id: "open-artifacts",
-    label: "Open Artifacts",
-    command: "python3 -m json.tool products/PRODUCT/batches/BATCH/wwx-artifacts.json",
-    description: "Open the public artifact manifest for the selected batch.",
-    batchMode: "open-artifacts",
+    id: "export-handoff",
+    label: "Export Handoff",
+    command: "export_handoff_package",
+    description: "Export public final scripts, asset inputs, and batch analysis for the strategist.",
+    batchMode: "export_handoff_package",
     requiresBatch: true,
   },
 ];
@@ -58,21 +58,16 @@ export function resolveRecipeCommand(
   if (!recipe.batchMode || !batch) return recipe.command;
 
   switch (recipe.batchMode) {
-    case "compile-angles":
-      return `ww compile-angles ${shellQuote(`${batch.path}/angles.md`)}`;
-    case "run-lfs-images":
-      return [
-        `ww lfs-v41 ${shellQuote(batch.strategyPath ?? `${batch.path}/strategy.json`)}`,
-        `ww imagebatch ${shellQuote(batch.id)}`,
-      ].join(" && ");
-    case "lfs-v41":
-      return `ww lfs-v41 ${shellQuote(batch.strategyPath ?? `${batch.path}/strategy.json`)}`;
-    case "status":
-      return `ww status ${shellQuote(batch.id)}`;
-    case "imagebatch":
-      return `ww imagebatch ${shellQuote(batch.id)}`;
-    case "open-artifacts":
-      return `python3 -m json.tool ${shellQuote(`${batch.path}/wwx-artifacts.json`)}`;
+    case "create_ads":
+      return `create_ads(batch_id=${shellQuote(batch.id)})`;
+    case "get_batch_status":
+      return `get_batch_status(batch_id=${shellQuote(batch.id)})`;
+    case "get_asset_inputs":
+      return `get_asset_inputs(batch_id=${shellQuote(batch.id)})`;
+    case "analyze_ads":
+      return `analyze_ads(batch_id=${shellQuote(batch.id)})`;
+    case "export_handoff_package":
+      return `export_handoff_package(batch_id=${shellQuote(batch.id)})`;
   }
 }
 

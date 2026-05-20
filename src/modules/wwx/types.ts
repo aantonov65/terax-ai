@@ -43,6 +43,8 @@ export type ArtifactSummary = {
   filename?: string;
   path: string;
   kind: ArtifactKind;
+  visibilityClass?: "public_final" | "public_asset_input" | "public_summary" | "technical_hidden" | "engine_secret" | string;
+  contentSha256?: string;
   content?: string;
   dataUrl?: string;
   source?: "account" | "local";
@@ -181,6 +183,7 @@ export type ProductSummary = {
   config?: ProductConfigSummary;
   researchArtifactCount?: number;
   researchArtifactUpdatedAt?: number | null;
+  researchRuns?: ResearchRunSummary[];
   batchCount: number;
   statusCounts: Record<BatchStatus, number>;
   updatedAt?: number;
@@ -194,6 +197,19 @@ export type ProductResearchJob = {
   startedAt: number;
   finishedAt?: number;
   error?: string;
+};
+
+export type ResearchRunSummary = {
+  id: string;
+  productId: string;
+  topicSlug: string;
+  topic: string;
+  searchTermsJson: string;
+  runFolder: string;
+  status: string;
+  qualityJson: string;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type AgentWindow = {
@@ -215,12 +231,11 @@ export type CommandRecipe = {
   description: string;
   command: string;
   batchMode?:
-    | "compile-angles"
-    | "run-lfs-images"
-    | "lfs-v41"
-    | "status"
-    | "imagebatch"
-    | "open-artifacts";
+    | "create_ads"
+    | "get_batch_status"
+    | "get_asset_inputs"
+    | "analyze_ads"
+    | "export_handoff_package";
   requiresBatch?: boolean;
 };
 

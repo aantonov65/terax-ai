@@ -118,16 +118,9 @@ const EMPTY_INDEX: WwxIndexState = {
 
 const OUTPUT_DIRS = [
   "output-v41",
-  "output",
-  "output-chiefed",
-  "prompts",
-  "outlines",
-  "research-cards",
   "assets",
   "images",
   "landing-pages",
-  "logs",
-  "lfs-v41-parallel-runs",
 ];
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]);
 const MARKDOWN_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
@@ -139,33 +132,11 @@ const ROOT_ARTIFACT_FILES: Array<{
   label: string;
   kind: ArtifactKind;
 }> = [
-  { name: "angles.md", label: "Angles", kind: "angles" },
-  { name: "operator-input.json", label: "Operator Input", kind: "json" },
-  { name: "readiness-assessment.json", label: "Readiness Assessment", kind: "report" },
-  { name: "concept-matrix.json", label: "Concept Matrix", kind: "strategy" },
-  { name: "concept-matrix-approval.json", label: "Concept Matrix Approval", kind: "json" },
-  { name: "wwx-artifacts.json", label: "Artifact Manifest", kind: "manifest" },
-  { name: "lfs-v41-manifest.json", label: "LFS Manifest", kind: "manifest" },
-  { name: "lfs-v41-report.json", label: "LFS V4.1 Report", kind: "report" },
-  { name: "image-report.json", label: "Image Report", kind: "report" },
-  { name: "lfs-v41-finish-report.json", label: "V4.1 Finish Report", kind: "report" },
-  { name: "lfs-outline-report.json", label: "Outline Report", kind: "report" },
-  { name: "lfs-finish-report.json", label: "Finish Report", kind: "report" },
-  { name: "lfs-v4-report.json", label: "LFS V4 Report", kind: "report" },
-  { name: "lfs-chief-report.json", label: "Chief Report", kind: "report" },
-  { name: "craft-audit-report.json", label: "Craft Audit", kind: "report" },
-  { name: "cards-report.json", label: "Research Cards Report", kind: "report" },
-  { name: "enrich-report.json", label: "Enrich Report", kind: "report" },
-  { name: "simulate-report.json", label: "Simulation Report", kind: "report" },
-  { name: "report.json", label: "Batch Report", kind: "report" },
-  { name: "upload.json", label: "Upload Package", kind: "upload" },
-  { name: "upload-report.json", label: "Upload Report", kind: "report" },
-  { name: "meta-upload-dry-run-report.json", label: "Meta Dry Run", kind: "report" },
-  { name: "meta-upload-report.json", label: "Meta Upload Report", kind: "report" },
-  { name: "gdrive-upload-report.json", label: "Drive Upload Report", kind: "report" },
-  { name: "headlines.csv", label: "Headlines", kind: "csv" },
-  { name: "angle-map.md", label: "Angle Map", kind: "markdown" },
-  { name: "README.md", label: "Batch Notes", kind: "markdown" },
+  { name: "ad-analysis-index.json", label: "Ad Analysis", kind: "report" },
+  { name: "asset-inputs.json", label: "Asset Inputs", kind: "json" },
+  { name: "batch-summary.json", label: "Batch Summary", kind: "report" },
+  { name: "handoff-package.json", label: "Handoff Package", kind: "json" },
+  { name: "research-selection.json", label: "Research Selection", kind: "report" },
 ];
 
 export function useWwxIndex(rootPath: string | null): WwxIndexState {
@@ -313,8 +284,6 @@ async function indexBatch(candidate: BatchCandidate): Promise<BatchSummary> {
   const strategyPath = filePathIfPresent(candidate.path, files, "strategy.json");
   const specPath = filePathIfPresent(candidate.path, files, "spec.json");
   const batchMetaPath = filePathIfPresent(candidate.path, files, "wwx-batch.json");
-  const agentRunPath = filePathIfPresent(candidate.path, files, "agent-run.json");
-  const eventsPath = filePathIfPresent(candidate.path, files, "agent-events.jsonl");
   const manifestPath = filePathIfPresent(candidate.path, files, "lfs-v41-manifest.json");
   const lfsReportPath = filePathIfPresent(candidate.path, files, "lfs-v41-report.json");
   const imageReportPath = filePathIfPresent(candidate.path, files, "image-report.json");
@@ -329,11 +298,6 @@ async function indexBatch(candidate: BatchCandidate): Promise<BatchSummary> {
   ]);
 
   const artifacts: ArtifactSummary[] = [];
-  addFileArtifact(artifacts, candidate.id, "Batch Metadata", batchMetaPath, "json", files.get("wwx-batch.json"));
-  addFileArtifact(artifacts, candidate.id, "Agent Run", agentRunPath, "json", files.get("agent-run.json"));
-  addFileArtifact(artifacts, candidate.id, "Agent Events", eventsPath, "heartbeat", files.get("agent-events.jsonl"));
-  addFileArtifact(artifacts, candidate.id, "Strategy", strategyPath, "strategy", files.get("strategy.json"));
-  addFileArtifact(artifacts, candidate.id, "Spec", specPath, "json", files.get("spec.json"));
   for (const artifact of ROOT_ARTIFACT_FILES) {
     addFileArtifact(
       artifacts,
@@ -346,7 +310,6 @@ async function indexBatch(candidate: BatchCandidate): Promise<BatchSummary> {
   }
 
   await addDirectoryArtifacts(candidate.path, candidate.id, artifacts);
-  await addConceptArtifacts(candidate.path, candidate.id, artifacts);
 
   const runs = await readRuns(candidate.path, candidate.id, files);
   const decisions = normalizeDecisions(manifest);
@@ -386,12 +349,7 @@ async function indexBatch(candidate: BatchCandidate): Promise<BatchSummary> {
     totalScripts: manifest?.total_scripts ?? manifest?.scripts?.length,
     decisionCounts: decisions,
     batchMetaPath,
-    agentRunPath,
-    eventsPath,
-    nextAction: nextActionForStatus(status, Boolean(agentRunPath), batchMeta?.batch_name),
-    strategyPath,
-    manifestPath,
-    reportPath,
+    nextAction: nextActionForStatus(status, runs.length > 0, batchMeta?.batch_name),
     artifacts: artifacts.slice(0, 48),
     runs,
     alerts,
@@ -461,36 +419,6 @@ async function addDirectoryArtifacts(
   }
 }
 
-async function addConceptArtifacts(
-  batchPath: string,
-  batchId: string,
-  artifacts: ArtifactSummary[],
-): Promise<void> {
-  const conceptsPath = joinPath(batchPath, "concepts");
-  const concepts = await readDirSafe(conceptsPath);
-  for (const concept of concepts.slice(0, 10)) {
-    if (concept.kind !== "dir") continue;
-    const conceptPath = joinPath(conceptsPath, concept.name);
-    for (const folder of ["copy", "images"]) {
-      const folderPath = joinPath(conceptPath, folder);
-      const entries = await readDirSafe(folderPath);
-      for (const entry of entries.slice(0, 8)) {
-        if (entry.kind !== "file") continue;
-        const path = joinPath(folderPath, entry.name);
-        artifacts.push({
-          id: path,
-          batchId,
-          label: `${concept.name}/${folder}/${entry.name}`,
-          path,
-          kind: classifyPath(entry.name),
-          size: entry.size,
-          mtime: entry.mtime,
-        });
-      }
-    }
-  }
-}
-
 async function readRuns(
   batchPath: string,
   batchId: string,
@@ -530,31 +458,6 @@ async function readRuns(
     });
   }
 
-  const reportEntry = files.get("lfs-v41-report.json");
-  if (reportEntry) {
-    runs.unshift({
-      id: joinPath(batchPath, "lfs-v41-report.json"),
-      batchId,
-      label: "LFS V4.1",
-      status: "complete",
-      stage: "report written",
-      lastEvent: "lfs-v41-report.json",
-      updatedAt: reportEntry.mtime,
-    });
-  }
-  const imageReportEntry = files.get("image-report.json");
-  if (imageReportEntry) {
-    runs.unshift({
-      id: joinPath(batchPath, "image-report.json"),
-      batchId,
-      label: "Images",
-      status: "complete",
-      stage: "report written",
-      lastEvent: "image-report.json",
-      updatedAt: imageReportEntry.mtime,
-    });
-  }
-
   return runs;
 }
 
@@ -583,8 +486,8 @@ function collectAlerts({
   reportPath?: string;
 }): string[] {
   const alerts: string[] = [];
-  if (!strategyPath && !anglesPath) alerts.push("No strategy.json or angles.md found in this batch.");
-  if (!manifest && !reportPath) alerts.push("No manifest or report has been written yet.");
+  if (!strategyPath && !anglesPath) alerts.push("No batch input bundle is visible yet.");
+  if (!manifest && !reportPath) alerts.push("No public final summary has been written yet.");
   if (runs.some((run) => run.status === "blocked")) alerts.push("A recorded run ended with a failure event.");
   if (entries.some((entry) => entry.name === "repair-history.json")) {
     alerts.push("Repair history is available for this batch.");
@@ -636,11 +539,11 @@ function nextActionForStatus(
   hasAgentRun: boolean,
   batchName?: string,
 ): string {
-  if (status === "draft") return `Start guided workflow for ${batchName ?? "this batch"}.`;
-  if (status === "running") return "Review the latest agent checkpoint.";
+  if (status === "draft") return `Add batch inputs for ${batchName ?? "this batch"}.`;
+  if (status === "running") return "The autonomous workflow is running.";
   if (status === "review") return "Continue repair or approval from the current checkpoint.";
-  if (status === "blocked") return "Open the agent to inspect the blocking validation issue.";
-  if (status === "ready") return hasAgentRun ? "Continue the guided workflow." : "Start the guided workflow.";
+  if (status === "blocked") return "Open the agent for a sanitized blocker summary.";
+  if (status === "ready") return hasAgentRun ? "Continue the autonomous workflow." : "Start the autonomous workflow.";
   if (status === "complete") return "Batch is complete.";
   return "Open the agent to inspect the batch.";
 }

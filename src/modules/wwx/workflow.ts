@@ -19,8 +19,8 @@ export const STAGE_LABELS: Record<string, string> = {
   objective_finish_final: "Final structure check",
   semantic_final_check: "Final quality check",
   manifest_overview: "Preparing final ads",
-  strategy_plan: "Creative direction",
-  strategy: "Strategy",
+  strategy_plan: "Preparing inputs",
+  strategy: "Batch inputs",
   resume: "Continuing batch",
 };
 
@@ -38,10 +38,10 @@ const STAGE_SUMMARIES: Record<string, string> = {
   semantic_final_check: "The final script set is getting a last quality pass.",
   manifest_overview: "The final ad decisions are being prepared.",
   strategy_plan: "Creative direction has been saved for this batch.",
-  strategy: "The batch strategy is ready to run.",
+  strategy: "Hidden batch inputs are ready to run.",
 };
 
-export type ArtifactGroupKey = "final_ads" | "strategy" | "summary" | "technical";
+export type ArtifactGroupKey = "final_ads" | "asset_inputs" | "summary" | "technical";
 
 export type ArtifactGroup = {
   key: ArtifactGroupKey;
@@ -61,26 +61,18 @@ export function stageSummary(stage?: string | null): string {
 
 export function artifactAudience(artifact: Pick<ArtifactSummary, "filename" | "label"> & { kind?: string }): ArtifactGroupKey {
   const filename = (artifact.filename || artifact.label || "").replace(/^\/+/, "");
-  if (/^output-v41\/.+\.md$/i.test(filename) || /^output\/.+\.md$/i.test(filename)) {
+  if (/^output-v41\/.+\.md$/i.test(filename)) {
     return "final_ads";
   }
-  if (
-    filename === "strategy-plan.json" ||
-    filename === "strategy.json" ||
-    filename === "source-angle.md" ||
-    filename === "angles.md"
-  ) {
-    return "strategy";
+  if (filename === "asset-inputs.json" || filename === "handoff-package.json" || /^images\//i.test(filename)) {
+    return "asset_inputs";
   }
   if (
-    filename === "lfs-v41-manifest.json" ||
-    filename === "lfs-v41-report.json" ||
-    filename === "strategy-plan-validation.json" ||
-    filename === "lfs-brief-report.json" ||
-    filename === "lfs-outline-report.json" ||
-    filename === "lfs-v41-finish-report.json" ||
-    filename === "lfs-semantic-report.json" ||
-    filename === "report.json"
+    filename === "ad-analysis-index.json" ||
+    filename === "batch-summary.json" ||
+    filename === "duplicate-report.json" ||
+    filename === "coverage-report.json" ||
+    filename === "research-selection.json"
   ) {
     return "summary";
   }
@@ -90,9 +82,9 @@ export function artifactAudience(artifact: Pick<ArtifactSummary, "filename" | "l
 export function groupArtifacts(artifacts: ArtifactSummary[]): ArtifactGroup[] {
   const groups: ArtifactGroup[] = [
     { key: "final_ads", label: "Final Ads", artifacts: [] },
-    { key: "strategy", label: "Strategy", artifacts: [] },
-    { key: "summary", label: "Run Summary", artifacts: [] },
-    { key: "technical", label: "Technical Details", artifacts: [] },
+    { key: "asset_inputs", label: "Asset Inputs", artifacts: [] },
+    { key: "summary", label: "Batch Summary", artifacts: [] },
+    { key: "technical", label: "Hidden / Technical", artifacts: [] },
   ];
   const byKey = new Map(groups.map((group) => [group.key, group]));
   for (const artifact of artifacts) {
@@ -118,11 +110,11 @@ export function actionForKind(kind: WorkflowAction["kind"], autonomous = false):
     case "add_direction":
       return {
         kind,
-        label: "Add creative direction",
-        prompt: "Help me structure creative direction for this batch.",
+        label: "Add batch inputs",
+        prompt: "Help me structure the product truth, research selection, and ad count for this batch.",
       };
     case "build_strategy":
-      return { kind, label: "Build Strategy" };
+      return { kind, label: "Prepare Batch Inputs" };
     case "run_batch":
       return { kind, label: autonomous ? "Run autonomously" : "Run Batch" };
     case "continue":
@@ -254,8 +246,8 @@ export function deriveWorkflowState(batch: {
   if (hasStrategy) {
     return {
       ...base,
-      headline: "Strategy is ready",
-      summary: "Run the LFS batch when you are ready for generation.",
+      headline: "Batch inputs are ready",
+      summary: "Run the autonomous LFS batch when the product truth and research are ready.",
       tone: "neutral",
       primaryAction: actionForKind("run_batch", batch.autonomous),
     };
@@ -264,15 +256,15 @@ export function deriveWorkflowState(batch: {
     return {
       ...base,
       headline: "Creative direction is saved",
-      summary: "Build the strategy before running the LFS batch.",
+      summary: "Build the hidden batch inputs before running LFS.",
       tone: "neutral",
       primaryAction: actionForKind("build_strategy", batch.autonomous),
     };
   }
   return {
     ...base,
-    headline: "Creative direction needed",
-    summary: "Add the ARC, A/B, mechanism, format, count, and any swipes or notes.",
+    headline: "Batch inputs needed",
+    summary: "Add product truth, research topics, ad count, format constraints, swipes, or launch notes.",
     tone: "neutral",
     primaryAction: actionForKind("add_direction", batch.autonomous),
   };

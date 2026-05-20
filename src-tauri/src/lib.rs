@@ -165,6 +165,8 @@ pub fn run() {
             wwx::wwx_write_artifact,
             wwx::wwx_generate_product_package,
             wwx::wwx_run_research_pipeline,
+            wwx::wwx_list_research_runs,
+            wwx::wwx_select_batch_research_runs,
             wwx::wwx_validate_strategy_plan,
             wwx::wwx_build_strategy,
             wwx::wwx_start_lfs_job,
@@ -173,6 +175,11 @@ pub fn run() {
             wwx::wwx_enqueue_lfs_job,
             wwx::wwx_list_lfs_queue,
             wwx::wwx_cancel_lfs_job,
+            wwx::wwx_analyze_ads,
+            wwx::wwx_get_batch_metrics,
+            wwx::wwx_compare_batches,
+            wwx::wwx_answer_batch_question,
+            wwx::wwx_export_handoff_package,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -67,26 +67,18 @@ function CommandSnippet({ name }: { name: string }) {
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 type AnyPart = UIMessagePart<Record<string, never>, Record<string, never>>;
 const WWX_TOOL_NAMES = new Set([
-  "create_product_from_config",
-  "run_product_research",
-  "save_strategy_plan",
-  "build_strategy_json",
-  "set_autonomous_mode",
-  "get_lfs_plan",
-  "submit_lfs_job",
-  "advance_lfs_job",
-  "resume_lfs_job",
-  "get_lfs_job",
-  "list_lfs_artifacts",
-  "read_lfs_artifact",
-  "edit_lfs_artifact",
-  "rerun_lfs_checks",
-  "retry_lfs_failures",
-  "export_lfs",
-  "cancel_lfs_job",
-  "get_product_readiness",
-  "enqueue_lfs_job",
-  "list_lfs_queue",
+  "create_ads",
+  "start_research_run",
+  "list_research_runs",
+  "get_batch_status",
+  "list_final_ads",
+  "get_final_ad",
+  "get_asset_inputs",
+  "get_batch_metrics",
+  "analyze_ads",
+  "compare_batches",
+  "answer_batch_question",
+  "export_handoff_package",
 ]);
 
 type ApprovalArg = {
@@ -406,8 +398,8 @@ function terminalActionQuestion(stageLabel: string | undefined, action: WwxActio
   if (action.kind === "provide_input") return "Input needed. Open agent?";
   if (action.kind === "review_final") return "Final ads completed. Review now?";
   if (action.kind === "export") return "Final ads completed. Export now?";
-  if (action.kind === "build_strategy") return "Creative direction saved. Build strategy?";
-  if (action.kind === "run_batch") return "Strategy completed. Run batch?";
+  if (action.kind === "build_strategy") return "Batch input plan saved. Prepare hidden inputs?";
+  if (action.kind === "run_batch") return "Batch inputs ready. Create ads?";
   return action.label || "Continue?";
 }
 
@@ -418,7 +410,7 @@ function terminalActionLabel(action: WwxAction): string {
   if (action.kind === "provide_input") return "Open agent";
   if (action.kind === "review_final") return "Review";
   if (action.kind === "export") return "Export";
-  if (action.kind === "build_strategy") return "Build";
+  if (action.kind === "build_strategy") return "Prepare";
   if (action.kind === "run_batch") return "Run";
   return action.label || "Continue";
 }
