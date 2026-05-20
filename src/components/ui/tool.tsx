@@ -1,20 +1,11 @@
-"use client"
-
-import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 import {
   CheckCircle,
-  ChevronDown,
   Loader2,
   Settings,
   XCircle,
 } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import type { ReactNode } from "react"
 
 export type ToolStateVariant =
   | "pending"
@@ -55,17 +46,10 @@ export type ToolProps = {
 
 const Tool = ({
   toolPart,
-  defaultOpen = false,
   className,
-  children,
-  hasDetails,
 }: ToolProps) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-
-  const { state, input, output, toolCallId } = toolPart
+  const { state } = toolPart
   const variant = toolPart.stateVariant ?? variantFromState(state)
-  const detailsAvailable =
-    hasDetails ?? Boolean(children || input || output || toolPart.errorText || toolCallId)
 
   const getStateIcon = () => {
     switch (variant) {
@@ -159,112 +143,27 @@ const Tool = ({
     }
   }
 
-  const formatValue = (value: unknown): string => {
-    if (value === null) return "null"
-    if (value === undefined) return "undefined"
-    if (typeof value === "string") return value
-    if (typeof value === "object") {
-      return JSON.stringify(value, null, 2)
-    }
-    return String(value)
-  }
-
   return (
     <div
       className={cn(
-        "border-border mt-3 overflow-hidden rounded-lg border",
+        "border-border mt-3 overflow-hidden rounded-lg border bg-muted/50",
         className
       )}
     >
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            disabled={!detailsAvailable}
-            className="h-auto w-full justify-between rounded-b-none bg-muted/50 px-3 py-2 font-normal hover:bg-muted/50 disabled:opacity-100"
-          >
-            <div className="flex min-w-0 items-center gap-2">
-              {getStateIcon()}
-              <span className="shrink-0 font-mono text-sm font-medium">
-                {toolPart.displayName ?? toolPart.type}
-              </span>
-              {getStateBadge()}
-              {toolPart.summary ? (
-                <span className="min-w-0 truncate text-left text-xs text-muted-foreground">
-                  {toolPart.summary}
-                </span>
-              ) : null}
-            </div>
-            {detailsAvailable ? (
-              <ChevronDown className={cn("h-4 w-4", isOpen && "rotate-180")} />
-            ) : null}
-          </Button>
-        </CollapsibleTrigger>
-        {detailsAvailable && (
-          <CollapsibleContent
-            className={cn(
-              "border-border border-t",
-              "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
-            )}
-          >
-            <div className="space-y-3 bg-muted/50 p-3">
-              {children ?? (
-                <>
-                  {input && Object.keys(input).length > 0 && (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Input
-                </h4>
-                <div className="bg-background rounded border p-2 font-mono text-sm">
-                  {Object.entries(input).map(([key, value]) => (
-                    <div key={key} className="mb-1">
-                      <span className="text-muted-foreground">{key}:</span>{" "}
-                      <span>{formatValue(value)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-                  )}
-
-                  {output && (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Output
-                </h4>
-                <div className="bg-background max-h-60 overflow-auto rounded border p-2 font-mono text-sm">
-                  <pre className="whitespace-pre-wrap">
-                    {formatValue(output)}
-                  </pre>
-                </div>
-              </div>
-                  )}
-
-                  {state === "output-error" && toolPart.errorText && (
-              <div>
-                <h4 className="mb-2 text-sm font-medium text-red-500">Error</h4>
-                <div className="bg-background rounded border border-red-200 p-2 text-sm dark:border-red-950 dark:bg-red-900/20">
-                  {toolPart.errorText}
-                </div>
-              </div>
-                  )}
-
-                  {state === "input-streaming" && (
-              <div className="text-muted-foreground text-sm">
-                Processing tool call...
-              </div>
-                  )}
-
-                  {toolCallId && (
-              <div className="text-muted-foreground border-t border-blue-200 pt-2 text-xs">
-                <span className="font-mono">Call ID: {toolCallId}</span>
-              </div>
-                  )}
-                </>
-              )}
-            </div>
-          </CollapsibleContent>
-        )}
-      </Collapsible>
+      <div className="flex min-w-0 items-center justify-between gap-2 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {getStateIcon()}
+          <span className="shrink-0 font-mono text-sm font-medium">
+            {toolPart.displayName ?? toolPart.type}
+          </span>
+          {getStateBadge()}
+          {toolPart.summary ? (
+            <span className="min-w-0 truncate text-left text-xs text-muted-foreground">
+              {toolPart.summary}
+            </span>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 }
