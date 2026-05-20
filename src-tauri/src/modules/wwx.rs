@@ -629,12 +629,6 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(product_id, deleted_at);
-        CREATE INDEX IF NOT EXISTS idx_artifacts_batch ON artifacts(batch_id, public, deleted_at);
-        CREATE INDEX IF NOT EXISTS idx_artifacts_visibility ON artifacts(batch_id, visibility_class, deleted_at);
-        CREATE INDEX IF NOT EXISTS idx_research_runs_product ON research_runs(product_id, deleted_at, updated_at);
-        CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id, updated_at);
-        CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, requested_at);
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -658,6 +652,37 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "lineage_json TEXT NOT NULL DEFAULT '{}'",
     )?;
     ensure_column(conn, "artifacts", "object_key", "object_key TEXT")?;
+    ensure_column(conn, "artifacts", "deleted_at", "deleted_at INTEGER")?;
+    ensure_column(conn, "research_runs", "deleted_at", "deleted_at INTEGER")?;
+    ensure_column(
+        conn,
+        "research_runs",
+        "updated_at",
+        "updated_at INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "job_queue",
+        "requested_at",
+        "requested_at INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "job_queue",
+        "status",
+        "status TEXT NOT NULL DEFAULT 'queued'",
+    )?;
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(product_id, deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_batch ON artifacts(batch_id, public, deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_visibility ON artifacts(batch_id, visibility_class, deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_research_runs_product ON research_runs(product_id, deleted_at, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, requested_at);
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
     backfill_artifact_security_metadata(conn)?;
     Ok(())
 }
