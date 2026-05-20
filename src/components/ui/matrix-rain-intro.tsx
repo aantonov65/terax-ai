@@ -20,7 +20,7 @@ export function MatrixRainIntro({ durationMs = 3200 }: MatrixRainIntroProps) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const glyphs = "01ARCMBLFS41WWX";
+    const glyphs = "01ARCMBLFS41WWW";
     let width = 0;
     let height = 0;
     let columns = 0;

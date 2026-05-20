@@ -1,4 +1,4 @@
-export const KEYRING_SERVICE = "terax-ai";
+export const KEYRING_SERVICE = "wwworkbench-ai";
 
 export type ProviderId =
   | "openai"
@@ -37,63 +37,6 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     keyPrefix: "sk-ant-",
     consoleUrl: "https://console.anthropic.com/settings/keys",
   },
-  {
-    id: "google",
-    label: "Google",
-    keyringAccount: "google-api-key",
-    keyPrefix: null,
-    consoleUrl: "https://aistudio.google.com/apikey",
-  },
-  {
-    id: "xai",
-    label: "xAI",
-    keyringAccount: "xai-api-key",
-    keyPrefix: "xai-",
-    consoleUrl: "https://console.x.ai/",
-  },
-  {
-    id: "cerebras",
-    label: "Cerebras",
-    keyringAccount: "cerebras-api-key",
-    keyPrefix: "csk-",
-    consoleUrl: "https://cloud.cerebras.ai/",
-  },
-  {
-    id: "groq",
-    label: "Groq",
-    keyringAccount: "groq-api-key",
-    keyPrefix: "gsk_",
-    consoleUrl: "https://console.groq.com/keys",
-  },
-  {
-    id: "deepseek",
-    label: "DeepSeek",
-    keyringAccount: "deepseek-api-key",
-    keyPrefix: "sk-",
-    consoleUrl: "https://platform.deepseek.com/api_keys",
-  },
-  {
-    id: "openrouter",
-    label: "OpenRouter",
-    keyringAccount: "openrouter-api-key",
-    keyPrefix: "sk-or-",
-    consoleUrl: "https://openrouter.ai/keys",
-  },
-  {
-    id: "openai-compatible",
-    label: "OpenAI Compatible",
-    keyringAccount: "openai-compatible-api-key",
-    keyPrefix: null,
-    consoleUrl: "https://platform.openai.com/docs/api-reference",
-    keyOptional: true,
-  },
-  {
-    id: "lmstudio",
-    label: "LM Studio",
-    keyringAccount: "",
-    keyPrefix: null,
-    consoleUrl: "https://lmstudio.ai/docs/basics/server",
-  },
 ] as const;
 
 export function getProvider(id: ProviderId): ProviderInfo {
@@ -125,7 +68,7 @@ export type ModelInfo = {
   tags?: readonly ModelTag[];
 };
 
-export const MODELS = [
+export const MODELS = ([
   // ── OpenAI ────────────────────────────────────────────────────────────────
   {
     id: "gpt-5.5",
@@ -521,7 +464,9 @@ export const MODELS = [
     description: "Local GGUF models via LM Studio.",
     capabilities: { intelligence: 3, speed: 3, cost: 5 },
   },
-] as const satisfies readonly ModelInfo[];
+] as const satisfies readonly ModelInfo[]).filter(
+  (model) => model.provider === "openai" || model.provider === "anthropic",
+);
 
 export type ModelId = (typeof MODELS)[number]["id"];
 
@@ -667,9 +612,7 @@ export const DEFAULT_AUTOCOMPLETE_MODEL: Partial<Record<ProviderId, string>> = {
 
 /** Curated list of fast models suitable for inline completion (speed ≥ 4). */
 export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
-  return MODELS.filter(
-    (m) => m.capabilities.speed >= 4 && m.id !== "openai-compatible-custom",
-  );
+  return MODELS.filter((m) => m.capabilities.speed >= 4);
 }
 
 export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
@@ -677,7 +620,7 @@ export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
 
-export const SYSTEM_PROMPT = `You are Terax, an AI assistant embedded in a developer terminal emulator.
+export const SYSTEM_PROMPT = `You are wwworkbench, an AI assistant embedded in a developer terminal emulator.
 
 # Environment
 Every turn carries a short <env> block: workspace_root, active_terminal_cwd, optionally active_file. Treat it as ground truth — never ask the user where they are. The terminal scrollback is NOT auto-injected; call get_terminal_output only when the user references "this error" / "the last command" or you genuinely need to interpret recent output.
@@ -720,7 +663,7 @@ Every turn carries a short <env> block: workspace_root, active_terminal_cwd, opt
 - State *why* in one sentence before any mutation tool call.
 - Refused reads on sensitive files (.env, .ssh, credentials) are final — don't retry.`;
 
-export const SYSTEM_PROMPT_LITE = `You are Terax, an AI assistant embedded in a developer terminal emulator. Each turn carries an <env> block with workspace_root, active_terminal_cwd, optional active_file — treat as ground truth.
+export const SYSTEM_PROMPT_LITE = `You are wwworkbench, an AI assistant embedded in a developer terminal emulator. Each turn carries an <env> block with workspace_root, active_terminal_cwd, optional active_file — treat as ground truth.
 
 Tools: read_file, list_directory, grep, glob, get_terminal_output, edit, multi_edit, write_file, create_directory, bash_run, bash_background, bash_logs, bash_list, bash_kill, suggest_command, open_preview.
 

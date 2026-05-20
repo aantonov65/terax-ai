@@ -259,7 +259,7 @@ async function loadHostedIndex(): Promise<NativeIndex> {
 
 async function hostedRequest<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const baseUrl = wwxApiUrl();
-  if (!baseUrl) throw new Error("Hosted WWX API is not configured.");
+  if (!baseUrl) throw new Error("Hosted API is not configured.");
   const response = await invoke<{ status: number; headers: Record<string, string>; body: number[] }>("ai_http_request", {
     url: `${baseUrl}${path}`,
     method: options.method ?? "GET",

@@ -340,7 +340,7 @@ function inferRequestedAdCount(batch: BatchSummary, strategyJson: string | null)
 
 async function hostedRequest<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const baseUrl = wwxApiUrl();
-  if (!baseUrl) throw new Error("Hosted WWX API is not configured.");
+  if (!baseUrl) throw new Error("Hosted API is not configured.");
   const headers = {
     ...await wwxAuthHeaders(),
     "content-type": "application/json",
@@ -352,7 +352,7 @@ async function hostedRequest<T>(path: string, options: { method?: string; body?:
     body: options.body ? Array.from(new TextEncoder().encode(JSON.stringify(options.body))) : undefined,
   });
   const text = new TextDecoder().decode(Uint8Array.from(response.body));
-  if (response.status === 426) throw new Error("WWX Desktop must be updated before using the hosted runtime.");
+  if (response.status === 426) throw new Error("wwworkbench must be updated before using the hosted runtime.");
   if (response.status < 200 || response.status >= 300) throw new Error(safeError(text, response.status));
   return text ? JSON.parse(text) as T : {} as T;
 }

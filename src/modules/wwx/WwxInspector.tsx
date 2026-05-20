@@ -33,12 +33,9 @@ import type {
   FinalScriptSummary,
   RunSummary,
   StageSummary,
-  WwxIndexState,
 } from "./types";
 
 type Props = {
-  cwd: string | null;
-  index: WwxIndexState;
   selectedBatch: BatchSummary | null;
   selectedArtifactPath?: string | null;
   onRunBatch: (batch: BatchSummary) => void;
@@ -108,23 +105,11 @@ function basename(path: string): string {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
-function EmptyInspector({
-  cwd,
-  index,
-}: {
-  cwd: string | null;
-  index: WwxIndexState;
-}) {
+function EmptyInspector() {
   return (
     <div className="flex h-full min-h-0 items-center justify-center p-4">
       <div className="max-w-xs border border-dashed border-white/15 bg-[#15161a] p-4 text-center text-slate-100">
-        <div className="text-sm font-medium">No batch selected</div>
-        <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-          Select a batch to inspect its artifacts and preview output.
-        </p>
-        <p className="mt-3 break-all font-mono text-[10px] text-slate-500">
-          {cwd ?? index.workspace?.rootPath ?? "No terminal cwd yet"}
-        </p>
+        <div className="text-sm font-medium">Open an agent terminal to start.</div>
       </div>
     </div>
   );
@@ -298,8 +283,6 @@ function ArtifactRow({
 }
 
 export function WwxInspector({
-  cwd,
-  index,
   selectedBatch,
   selectedArtifactPath,
   onRunBatch,
@@ -447,7 +430,7 @@ export function WwxInspector({
     <aside className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#101114] text-slate-100">
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {!selectedBatch ? (
-          <EmptyInspector cwd={cwd} index={index} />
+          <EmptyInspector />
         ) : (
           <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 p-3">
             {artifactExpanded ? (

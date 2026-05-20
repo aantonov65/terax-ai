@@ -48,11 +48,11 @@ export function UpdaterDialog() {
               ? "Update ready"
               : downloading
                 ? "Downloading update…"
-                : `Terax v${update?.version} is available`}
+                : `wwworkbench v${update?.version} is available`}
           </DialogTitle>
           <DialogDescription>
             {ready
-              ? "Restart Terax to finish installing."
+              ? "Restart wwworkbench to finish installing."
               : downloading
                 ? progress !== null
                   ? `${progress.toFixed(0)}% — ${formatBytes(status.downloaded)}`

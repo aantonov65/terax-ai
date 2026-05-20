@@ -62,7 +62,6 @@ import {
 } from "@/modules/wwx";
 import {
   Alert02Icon,
-  AiMagicIcon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Copy01Icon,
@@ -285,13 +284,9 @@ export default function App() {
   }, [hostedEnabled]);
 
   useEffect(() => {
-    if (
-      selectedBatchId &&
-      wwxIndex.batches.some((batch) => batch.id === selectedBatchId)
-    ) {
-      return;
+    if (selectedBatchId && !wwxIndex.batches.some((batch) => batch.id === selectedBatchId)) {
+      setSelectedBatchId(null);
     }
-    setSelectedBatchId(wwxIndex.batches[0]?.id ?? null);
   }, [selectedBatchId, wwxIndex.batches]);
 
   const activeWindow = agentWindows.find((window) => window.active) ?? null;
@@ -384,37 +379,6 @@ export default function App() {
       useChatStore.getState().switchSession(window.sessionId);
       useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
     }
-  }, [agentWindows]);
-
-  const ensureIntakeAgentWindow = useCallback(() => {
-    const existing = agentWindows.find((window) => !window.batchId);
-    if (existing) {
-      setAgentWindows((current) =>
-        current.map((window) => ({ ...window, active: window.id === existing.id })),
-      );
-      useChatStore.getState().switchSession(existing.sessionId);
-      useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
-      return existing.id;
-    }
-
-    const sessionId = useChatStore.getState().newSession();
-    const next: AgentWindow = {
-      id: `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-      sessionId,
-      active: true,
-      createdAt: Date.now(),
-      seedPrompt: [
-        "Start a new product setup intake.",
-        "Ask me only for the brand-brief facts needed to produce a valid config.json.",
-        "When I provide enough truth, structure it into config JSON and use create_product_from_config. Do not create research or a batch yet.",
-      ].join(" "),
-    };
-    setAgentWindows((current) => [
-      ...current.map((window) => ({ ...window, active: false })),
-      next,
-    ]);
-    useAgentsStore.getState().setActiveId(CREATIVE_STRATEGIST_ID);
-    return next.id;
   }, [agentWindows]);
 
   const ensureAgentWindowForBatch = useCallback(
@@ -902,7 +866,7 @@ export default function App() {
           <WwxHeader
             selectedBatch={selectedBatch}
             activeWindows={agentWindows.length}
-            hostedEnabled={hostedEnabled}
+            hostedEnabled={false}
             hostedSignedIn={hostedSignedIn}
             hostedUserEmail={hostedUser?.email ?? null}
             hostedAuthBusy={hostedAuthBusy}
@@ -949,7 +913,6 @@ export default function App() {
                   windows={agentWindows}
                   batches={wwxIndex.batches}
                   hasComposer={hasComposer}
-                  onOpenIntake={ensureIntakeAgentWindow}
                   onFocus={focusAgentWindow}
                   onClose={closeAgentWindow}
                   onOpenDiagnostics={(batch) => {
@@ -962,29 +925,31 @@ export default function App() {
                   onAddApiKey={() => void openSettingsWindow("models")}
                 />
               </ResizablePanel>
-              <ResizableHandle withHandle className="bg-white/15" />
-              <ResizablePanel
-                id="wwx-inspector"
-                panelRef={inspectorRef}
-                defaultSize="290px"
-                minSize="250px"
-                maxSize="390px"
-                collapsible
-                collapsedSize={0}
-                className="min-w-0 overflow-hidden border-l border-white/15 bg-[#101114]"
-              >
-                <WwxInspector
-                  cwd={null}
-                  index={wwxIndex}
-                  selectedBatch={selectedBatch}
-                  selectedArtifactPath={selectedArtifactPath}
-                  onBuildStrategy={(batch) => void handleBuildStrategy(batch)}
-                  onRunBatch={(batch) => void handleRunBatch(batch)}
-                  onToggleAutonomy={(batch) =>
-                    void setBatchAutonomous(batch, !batch.autonomous)
-                  }
-                />
-              </ResizablePanel>
+              {selectedBatch ? (
+                <>
+                  <ResizableHandle withHandle className="bg-white/15" />
+                  <ResizablePanel
+                    id="wwx-inspector"
+                    panelRef={inspectorRef}
+                    defaultSize="290px"
+                    minSize="250px"
+                    maxSize="390px"
+                    collapsible
+                    collapsedSize={0}
+                    className="min-w-0 overflow-hidden border-l border-white/15 bg-[#101114]"
+                  >
+                    <WwxInspector
+                      selectedBatch={selectedBatch}
+                      selectedArtifactPath={selectedArtifactPath}
+                      onBuildStrategy={(batch) => void handleBuildStrategy(batch)}
+                      onRunBatch={(batch) => void handleRunBatch(batch)}
+                      onToggleAutonomy={(batch) =>
+                        void setBatchAutonomous(batch, !batch.autonomous)
+                      }
+                    />
+                  </ResizablePanel>
+                </>
+              ) : null}
             </ResizablePanelGroup>
           </main>
 
@@ -1135,11 +1100,11 @@ function HostedSignInGate({
           <div className="w-full max-w-sm border border-white/15 bg-[#1b1c20] p-6 shadow-2xl">
             <div className="mb-5 flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center border border-white/15 bg-[#101114]">
-                <span className="text-xs font-semibold tracking-[0.18em] text-slate-200">WWX</span>
+                <span className="text-xs font-semibold tracking-[0.18em] text-slate-200">WWW</span>
               </div>
               <div className="min-w-0">
                 <h1 className="text-sm font-semibold text-slate-100">Sign in required</h1>
-                <p className="mt-1 text-xs text-slate-400">Use your invited WWX account to continue.</p>
+                <p className="mt-1 text-xs text-slate-400">Use your invited wwworkbench account to continue.</p>
               </div>
             </div>
             {error ? (
@@ -1232,7 +1197,7 @@ function WwxHeader({
               hostedSignedIn ? "bg-emerald-300" : "bg-amber-300",
             )}
           />
-          {hostedSignedIn ? "Hosted" : "Sign in"}
+          {hostedSignedIn ? null : "Sign in"}
         </Button>
       ) : null}
       <Button
@@ -1266,7 +1231,6 @@ function AgentCanvas({
   windows,
   batches,
   hasComposer,
-  onOpenIntake,
   onFocus,
   onClose,
   onOpenDiagnostics,
@@ -1276,7 +1240,6 @@ function AgentCanvas({
   windows: AgentWindow[];
   batches: BatchSummary[];
   hasComposer: boolean;
-  onOpenIntake: () => void;
   onFocus: (windowId: string) => void;
   onClose: (windowId: string) => void;
   onOpenDiagnostics: (batch: BatchSummary) => void;
@@ -1298,20 +1261,7 @@ function AgentCanvas({
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-8">
         <div className="max-w-md border border-dashed border-white/20 bg-[#202126] p-6 text-center">
-          <div className="text-sm font-medium">No LFS agent is open</div>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            Start product setup, or open an existing batch from the
-            product sidebar.
-          </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="mt-4 rounded-md"
-            onClick={onOpenIntake}
-          >
-            <HugeiconsIcon icon={AiMagicIcon} size={14} strokeWidth={1.8} />
-            New product setup
-          </Button>
+          <div className="text-sm font-medium">Open an agent terminal to start.</div>
         </div>
       </div>
     );

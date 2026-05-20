@@ -44,7 +44,7 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     compare_batches: { label: "Comparing Batches", icon: WorkflowSquare06Icon },
     answer_batch_question: { label: "Answering Batch Question", icon: FileSearchIcon },
     export_handoff_package: { label: "Exporting Handoff", icon: FileSearchIcon },
-    create_batch_from_angles: { label: "Create WWX batch", icon: AiMagicIcon },
+    create_batch_from_angles: { label: "Create batch", icon: AiMagicIcon },
     run_guided_lfs_agent: { label: "Create LFS", icon: WorkflowSquare06Icon },
     run_lfs_v41: { label: "Run LFS V4.1", icon: WorkflowSquare06Icon },
     generate_images: { label: "Generate images", icon: Image01Icon },
@@ -288,7 +288,7 @@ function workflowIntent(toolName: string): string {
   if (toolName === "compare_batches") return "Compare public metrics across batches.";
   if (toolName === "answer_batch_question") return "Answer from public batch data only.";
   if (toolName === "export_handoff_package") return "Prepare final scripts and asset inputs for handoff.";
-  if (toolName === "create_batch_from_angles") return "Compile angles.md into a guarded WWX batch.";
+  if (toolName === "create_batch_from_angles") return "Compile angles.md into a guarded batch.";
   if (toolName === "run_guided_lfs_agent") return "Run the guided LFS agent workflow.";
   if (toolName === "run_lfs_v41") return "Run the LFS V4.1 script workflow.";
   if (toolName === "generate_images") return "Generate image assets for the batch.";

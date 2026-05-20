@@ -51,7 +51,7 @@ const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> = 
   compare_batches: () => "Comparing batches",
   answer_batch_question: () => "Answering batch question",
   export_handoff_package: () => "Exporting handoff package",
-  create_batch_from_angles: (i) => `Creating WWX batch from ${shortPath(i.angles_path)}`,
+  create_batch_from_angles: (i) => `Creating batch from ${shortPath(i.angles_path)}`,
   run_guided_lfs_agent: (i) =>
     `Creating LFS for ${shortPath(i.angles_path ?? i.filename ?? i.batch_id ?? "uploaded angle.md")}`,
   run_lfs_v41: (i) => `Running LFS V4.1 for ${shortPath(i.strategy_path)}`,
@@ -152,7 +152,7 @@ export async function buildLanguageModel(
         apiKey: key,
         headers: {
           "HTTP-Referer": "https://terax.ai",
-          "X-Title": "Terax",
+          "X-Title": "wwworkbench",
         },
       })(resolvedModelId);
       break;

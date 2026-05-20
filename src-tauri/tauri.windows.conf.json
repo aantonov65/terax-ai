@@ -4,7 +4,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "WWX",
+        "title": "wwworkbench",
         "decorations": false,
         "transparent": true,
         "visible": false,

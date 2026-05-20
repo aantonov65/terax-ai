@@ -16,17 +16,11 @@ import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ThemePref } from "@/modules/settings/store";
 import {
-  EDITOR_THEME_LABELS,
-  EDITOR_THEMES,
   TERMINAL_FONT_SIZES,
   setAutostart,
-  setEditorTheme,
   setRestoreWindowState,
-  setShowHidden,
   setTerminalFontSize,
   setTerminalWebglEnabled,
-  setVimMode,
-  type EditorThemeId,
 } from "@/modules/settings/store";
 import { useTheme } from "@/modules/theme";
 import {
@@ -53,11 +47,8 @@ const APPEARANCE: {
 
 export function GeneralSection() {
   const { theme, setTheme } = useTheme();
-  const editorTheme = usePreferencesStore((s) => s.editorTheme);
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
-  const vimMode = usePreferencesStore((s) => s.vimMode);
-  const showHidden = usePreferencesStore((s) => s.showHidden);
   const terminalWebglEnabled = usePreferencesStore(
     (s) => s.terminalWebglEnabled,
   );
@@ -90,8 +81,6 @@ export function GeneralSection() {
     }
   };
 
-  const onPickEditor = (id: EditorThemeId) => void setEditorTheme(id);
-
   const onToggleTerminalWebgl = (next: boolean) => {
     void setTerminalWebglEnabled(next).catch((e) =>
       console.error("terminal WebGL preference update failed", e),
@@ -104,7 +93,7 @@ export function GeneralSection() {
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="General"
-        description="Appearance, editor, and startup."
+        description="Appearance, terminal, and startup."
       />
 
       <div className="flex flex-col gap-2">
@@ -127,62 +116,6 @@ export function GeneralSection() {
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <Label>Editor theme</Label>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              className="h-9 justify-between gap-2 px-2.5 text-[12px]"
-            >
-              <span>{EDITOR_THEME_LABELS[editorTheme]}</span>
-              <HugeiconsIcon
-                icon={ArrowDown01Icon}
-                size={12}
-                strokeWidth={2}
-                className="opacity-70"
-              />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[220px]">
-            {EDITOR_THEMES.map((t) => (
-              <DropdownMenuItem
-                key={t}
-                onSelect={() => onPickEditor(t)}
-                className={cn(
-                  "text-[12px]",
-                  t === editorTheme && "bg-accent/50",
-                )}
-              >
-                {EDITOR_THEME_LABELS[t]}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <SettingRow
-          title="Vim mode"
-          description="Enable Vim keybindings in the code editor."
-        >
-          <Switch
-            checked={vimMode}
-            onCheckedChange={(v) => void setVimMode(v)}
-          />
-        </SettingRow>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <Label>Explorer</Label>
-        <SettingRow
-          title="Show hidden files"
-          description="Include dot-prefixed files and folders (.env, .gitignore, .config) in the file explorer and search."
-        >
-          <Switch
-            checked={showHidden}
-            onCheckedChange={(v) => void setShowHidden(v)}
-          />
-        </SettingRow>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -260,7 +193,7 @@ export function GeneralSection() {
         <div className="flex flex-col gap-2">
           <SettingRow
             title="Launch at login"
-            description="Open Terax automatically when you sign in."
+            description="Open wwworkbench automatically when you sign in."
           >
             <Switch
               checked={autostart}

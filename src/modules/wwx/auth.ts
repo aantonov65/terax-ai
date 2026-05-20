@@ -118,7 +118,7 @@ export async function getWwxMe(): Promise<WwxMe> {
   const session = await getWwxAuthSession();
   if (!session) throw new Error("Not signed in.");
   const baseUrl = wwxApiUrl();
-  if (!baseUrl) throw new Error("Hosted WWX API is not configured.");
+  if (!baseUrl) throw new Error("Hosted API is not configured.");
   const response = await httpRequest(`${baseUrl}/me`, "GET", {
     authorization: `Bearer ${session.accessToken}`,
     "x-workspace-id": wwxWorkspaceId(),
@@ -126,7 +126,7 @@ export async function getWwxMe(): Promise<WwxMe> {
   });
   if (response.status === 401 || response.status === 403) {
     await signOutWwx();
-    throw new Error("Sign-in is required for this WWX workspace.");
+    throw new Error("Sign-in is required for this workspace.");
   }
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Hosted session check failed with ${response.status}.`);

@@ -209,7 +209,7 @@ export function Header({
           strokeWidth={1.85}
           className="text-muted-foreground"
         />
-        <span>WWX</span>
+        <span>wwworkbench</span>
       </div>
 
       <div
