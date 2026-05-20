@@ -87,7 +87,7 @@ Set these at Desktop build time:
 - `VITE_WWX_AUTH_CLIENT_ID`: Clerk public OAuth/OIDC client ID.
 - `VITE_WWX_AUTH_REDIRECT_PORT`: defaults to `17891`.
 - `VITE_WWX_AUTH_REDIRECT_URI`: defaults to `http://127.0.0.1:17891/auth/callback`; add this callback to Clerk.
-- `VITE_WWX_AUTH_SCOPE`: defaults to `openid profile email offline_access`.
+- `VITE_WWX_AUTH_SCOPE`: defaults to `profile email`. Clerk OAuth apps may reject `openid` and `offline_access`; the Desktop strips those values defensively if they are present.
 - `VITE_WWX_CLIENT_VERSION`: sent to the API for minimum-version enforcement.
 
 The Desktop stores the Clerk/OIDC session in the OS keychain, starts LFS through `POST /runs`, records hosted runs into local SQLite as a read cache, polls safe run status, and mirrors public final scripts/asset inputs/analysis back into the existing artifact viewer. The local Tauri LFS command remains available only when the hosted runtime is disabled.

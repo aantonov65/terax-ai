@@ -91,9 +91,9 @@ export async function signInWithClerkPkce(): Promise<WwxAuthSession> {
   await openUrl(`${discovery.authorization_endpoint}?${params.toString()}`);
   const query = await callback;
   const result = new URLSearchParams(query);
-  if (result.get("state") !== state) throw new Error("Auth state mismatch.");
   const error = result.get("error");
   if (error) throw new Error(result.get("error_description") ?? error);
+  if (result.get("state") !== state) throw new Error("Auth state mismatch.");
   const code = result.get("code");
   if (!code) throw new Error("Auth code was not returned.");
   return exchangeToken(discovery.token_endpoint, {
@@ -153,13 +153,13 @@ async function refreshWwxAuthSession(): Promise<WwxAuthSession | null> {
 }
 
 function wwxAuthScope(): string {
-  const raw = stringEnv("VITE_WWX_AUTH_SCOPE") ?? "openid profile email";
+  const raw = stringEnv("VITE_WWX_AUTH_SCOPE") ?? "profile email";
   const scopes = raw
     .split(/\s+/)
     .map((scope) => scope.trim())
     .filter(Boolean)
-    .filter((scope) => scope !== "offline_access");
-  return [...new Set(scopes.length ? scopes : ["openid", "profile", "email"])].join(" ");
+    .filter((scope) => scope !== "openid" && scope !== "offline_access");
+  return [...new Set(scopes.length ? scopes : ["profile", "email"])].join(" ");
 }
 
 async function exchangeToken(tokenEndpoint: string, body: Record<string, string>): Promise<WwxAuthSession> {
