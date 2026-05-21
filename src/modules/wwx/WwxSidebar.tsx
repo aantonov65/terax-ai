@@ -255,7 +255,7 @@ export function WwxSidebar({
                 product.config?.readiness?.status === "production_ready" ||
                 researchJob?.status === "complete" ||
                 hasPersistedResearch;
-              const researchRunning = researchJob?.status === "running";
+              const researchRunning = ["queued", "running"].includes(researchJob?.status ?? "");
               const researchBlocked = researchJob?.status === "blocked";
               const hasVisibleBatches = product.batches.length > 0;
               const open =

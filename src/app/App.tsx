@@ -44,6 +44,7 @@ import {
 } from "@/modules/wwx/auth";
 import {
   shouldUseHostedRuntime,
+  listHostedResearchRuns,
   startHostedLfsRun,
   startHostedResearchRun,
   startHostedStrategyRun,
@@ -95,6 +96,8 @@ type AppNotification = {
   id: string;
   productId: string;
   batchId?: string;
+  researchRunId?: string;
+  researchTopic?: string;
   title: string;
   body: string;
   tone: "success" | "error" | "warning";
@@ -132,6 +135,8 @@ export default function App() {
     useState<ProductSummary | null>(null);
   const [researchPreviewProduct, setResearchPreviewProduct] =
     useState<ProductSummary | null>(null);
+  const [researchPreviewFocus, setResearchPreviewFocus] =
+    useState<{ productId: string; researchRunId?: string; topic?: string } | null>(null);
   const [researchJobs, setResearchJobs] = useState<Record<string, ProductResearchJob>>({});
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [hostedAuthState, setHostedAuthState] = useState<"checking" | "signed_out" | "signed_in">(
@@ -577,8 +582,12 @@ export default function App() {
     setResearchDialogProduct(product);
   }, []);
 
-  const openResearchPreview = useCallback((product: ProductSummary) => {
+  const openResearchPreview = useCallback((
+    product: ProductSummary,
+    focus?: { researchRunId?: string; topic?: string },
+  ) => {
     setResearchPreviewProduct(product);
+    setResearchPreviewFocus(focus ? { productId: product.id, ...focus } : null);
     setNotifications((current) =>
       current.filter((item) => item.productId !== product.id || item.batchId),
     );
@@ -588,9 +597,10 @@ export default function App() {
     async ({ topic }: ResearchDraft) => {
       const product = researchDialogProduct;
       if (!product) return;
-      if (researchJobs[product.id]?.status === "running") return;
+      if (["queued", "running"].includes(researchJobs[product.id]?.status ?? "")) return;
 
       const startedAt = Date.now();
+      let hostedRunId: string | undefined;
       setResearchJobs((current) => ({
         ...current,
         [product.id]: {
@@ -611,23 +621,60 @@ export default function App() {
         try {
           if (shouldUseHostedRuntime()) {
             const run = await startHostedResearchRun({ product, topic });
+            hostedRunId = run.id;
+            setResearchJobs((current) => ({
+              ...current,
+              [product.id]: {
+                ...current[product.id],
+                productId: product.id,
+                topic,
+                status: "running",
+                startedAt,
+                runId: run.id,
+              },
+            }));
             setHostedAuthState("signed_in");
             await waitForHostedRun(run.id);
-          } else {
-          const result = await invoke<{
-            ok: boolean;
-            productId: string;
-            productCode: string;
-            runFolder: string;
-            artifacts: unknown[];
-          }>("wwx_run_research_pipeline", {
-            input: {
+            const researchRuns = await listHostedResearchRuns(product.id).catch(() => []);
+            const matchingResearchRun = researchRuns
+              .filter((item) => item.topic === topic)
+              .sort((a, b) => (b.updatedAt ?? b.updated_at ?? 0) - (a.updatedAt ?? a.updated_at ?? 0))[0];
+            setResearchJobs((current) => ({
+              ...current,
+              [product.id]: {
+                productId: product.id,
+                topic,
+                status: "complete",
+                startedAt,
+                finishedAt: Date.now(),
+                runId: run.id,
+                researchRunId: matchingResearchRun?.id,
+              },
+            }));
+            pushNotification({
               productId: product.id,
-              topic,
-              anthropicApiKey: await getKey("anthropic"),
-            },
-          });
-          if (!result.ok) throw new Error("Research pipeline failed.");
+              researchRunId: matchingResearchRun?.id,
+              researchTopic: topic,
+              tone: "success",
+              title: "Research complete",
+              body: `${product.name} research is ready. Click to preview.`,
+            });
+            return;
+          } else {
+            const result = await invoke<{
+              ok: boolean;
+              productId: string;
+              productCode: string;
+              runFolder: string;
+              artifacts: unknown[];
+            }>("wwx_run_research_pipeline", {
+              input: {
+                productId: product.id,
+                topic,
+                anthropicApiKey: await getKey("anthropic"),
+              },
+            });
+            if (!result.ok) throw new Error("Research pipeline failed.");
           }
           setResearchJobs((current) => ({
             ...current,
@@ -646,7 +693,7 @@ export default function App() {
             body: `${product.name} research is ready. Click to preview.`,
           });
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = safeOperatorResearchError(err);
           setResearchJobs((current) => ({
             ...current,
             [product.id]: {
@@ -656,6 +703,7 @@ export default function App() {
               startedAt,
               finishedAt: Date.now(),
               error: message,
+              runId: hostedRunId,
             },
           }));
           pushNotification({
@@ -972,7 +1020,7 @@ export default function App() {
             product={currentResearchDialogProduct}
             running={Boolean(
               currentResearchDialogProduct &&
-                researchJobs[currentResearchDialogProduct.id]?.status === "running",
+                ["queued", "running"].includes(researchJobs[currentResearchDialogProduct.id]?.status ?? ""),
             )}
             onOpenChange={(open) => {
               if (!open) setResearchDialogProduct(null);
@@ -982,8 +1030,22 @@ export default function App() {
           <ResearchPreviewDialog
             open={Boolean(currentResearchPreviewProduct)}
             product={currentResearchPreviewProduct}
+            researchJob={currentResearchPreviewProduct ? researchJobs[currentResearchPreviewProduct.id] ?? null : null}
+            focusedResearchId={
+              currentResearchPreviewProduct && researchPreviewFocus?.productId === currentResearchPreviewProduct.id
+                ? researchPreviewFocus.researchRunId ?? null
+                : null
+            }
+            focusedResearchTopic={
+              currentResearchPreviewProduct && researchPreviewFocus?.productId === currentResearchPreviewProduct.id
+                ? researchPreviewFocus.topic ?? null
+                : null
+            }
             onOpenChange={(open) => {
-              if (!open) setResearchPreviewProduct(null);
+              if (!open) {
+                setResearchPreviewProduct(null);
+                setResearchPreviewFocus(null);
+              }
             }}
             onRunResearch={openResearchDialog}
           />
@@ -1007,7 +1069,12 @@ export default function App() {
                     const product = wwxIndex.products.find(
                       (item) => item.id === notification.productId,
                     );
-                    if (product) openResearchPreview(product);
+                    if (product) {
+                      openResearchPreview(product, {
+                        researchRunId: notification.researchRunId,
+                        topic: notification.researchTopic,
+                      });
+                    }
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -1016,12 +1083,12 @@ export default function App() {
                     }
                   }}
                   className={cn(
-                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border bg-[#f8fafc] px-3.5 py-2.5 text-left text-slate-900 shadow-xl outline-none ring-0",
+                    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border bg-[#202126] px-3.5 py-2.5 text-left text-slate-100 shadow-2xl outline-none ring-1 ring-black/30 transition-colors hover:bg-[#25262b]",
                     notification.tone === "error"
-                      ? "border-red-200"
+                      ? "border-red-400/35"
                       : notification.tone === "warning"
-                        ? "border-amber-200"
-                        : "border-slate-200",
+                        ? "border-amber-400/35"
+                        : "border-white/15",
                   )}
                 >
                   <HugeiconsIcon
@@ -1035,10 +1102,10 @@ export default function App() {
                     className={cn(
                       "mt-0.5 shrink-0",
                       notification.tone === "error"
-                        ? "text-red-600"
+                        ? "text-red-300"
                         : notification.tone === "warning"
-                          ? "text-amber-600"
-                          : "text-emerald-600",
+                          ? "text-amber-300"
+                          : "text-emerald-300",
                     )}
                   />
                   <span className="min-w-0">
@@ -1049,10 +1116,10 @@ export default function App() {
                       className={cn(
                         "mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
                         notification.tone === "error"
-                          ? "bg-red-100 text-red-700"
+                          ? "border border-red-400/30 bg-red-400/10 text-red-200"
                           : notification.tone === "warning"
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-emerald-100 text-emerald-700",
+                            ? "border border-amber-400/30 bg-amber-400/10 text-amber-200"
+                            : "border border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
                       )}
                     >
                       {notification.title.replace(/^Research /, "").replace(/^Batch /, "")}
@@ -1060,7 +1127,7 @@ export default function App() {
                   </span>
                   <button
                     type="button"
-                    className="rounded-md p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                    className="rounded-md p-1 text-slate-500 hover:bg-white/10 hover:text-slate-100"
                     onClick={(event) => {
                       event.stopPropagation();
                       setNotifications((current) =>
@@ -1082,6 +1149,15 @@ export default function App() {
   );
 
   return <AiComposerProvider>{shell}</AiComposerProvider>;
+}
+
+function safeOperatorResearchError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  if (!raw) return "Research workflow failed.";
+  if (/query returned no rows|enoent|spawnsync|database|sql|trigger|r2|object key|prompt|template|provider/i.test(raw)) {
+    return "Research workflow failed.";
+  }
+  return raw;
 }
 
 function HostedSignInGate({

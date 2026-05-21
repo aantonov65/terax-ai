@@ -1,4 +1,5 @@
 import { logger, task } from "@trigger.dev/sdk";
+import { createRuntimeFromEnv } from "../backend/wwx-runtime/src/runtime.js";
 import { executeWorkflowTask, type WorkflowTaskPayload } from "../backend/wwx-runtime/src/workflow-runner.js";
 
 export const lfsAdsTask = task({
@@ -20,7 +21,7 @@ export const lfsAdsTask = task({
       workflowType: payload.workflowType,
       correlationId: payload.correlationId,
     });
-    return executeWorkflowTask({ ...payload, workflowType: "lfs_ads" });
+    return executeWorkflowTask({ ...payload, workflowType: "lfs_ads" }, createDurableRuntime());
   },
 });
 
@@ -28,7 +29,7 @@ export const researchTask = task({
   id: "wwx.research",
   queue: {
     name: "research",
-    concurrencyLimit: Number.parseInt(process.env.TRIGGER_RESEARCH_CONCURRENCY ?? "2", 10),
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_RESEARCH_CONCURRENCY ?? "4", 10),
   },
   retry: {
     maxAttempts: 2,
@@ -43,7 +44,7 @@ export const researchTask = task({
       workflowType: payload.workflowType,
       correlationId: payload.correlationId,
     });
-    return executeWorkflowTask({ ...payload, workflowType: "research" });
+    return executeWorkflowTask({ ...payload, workflowType: "research" }, createDurableRuntime());
   },
 });
 
@@ -66,7 +67,7 @@ export const strategyTask = task({
       workflowType: payload.workflowType,
       correlationId: payload.correlationId,
     });
-    return executeWorkflowTask({ ...payload, workflowType: "strategy" });
+    return executeWorkflowTask({ ...payload, workflowType: "strategy" }, createDurableRuntime());
   },
 });
 
@@ -92,7 +93,14 @@ function placeholderTask(id: string, queueName: string) {
         runId: payload.runId,
         workflowType: payload.workflowType,
       });
-      return executeWorkflowTask(payload);
+      return executeWorkflowTask(payload, createDurableRuntime());
     },
   });
+}
+
+function createDurableRuntime() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL_REQUIRED_FOR_TRIGGER_RUNTIME");
+  }
+  return createRuntimeFromEnv();
 }

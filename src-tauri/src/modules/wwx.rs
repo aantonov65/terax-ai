@@ -822,6 +822,22 @@ fn artifact_visibility_class(filename: &str, public: bool) -> String {
     {
         return "public_asset_input".into();
     }
+    let parts: Vec<&str> = clean.split('/').collect();
+    if parts.len() == 3 && parts[0] == "research-runs" {
+        let file = parts[2];
+        if matches!(
+            file,
+            "archetypes.md"
+                | "hotwords.md"
+                | "mechanisms.md"
+                | "cards-report.json"
+                | "README.md"
+                | "queries.json"
+                | "summary.json"
+        ) {
+            return "public_summary".into();
+        }
+    }
     if matches!(
         clean,
         "ad-analysis-index.json"

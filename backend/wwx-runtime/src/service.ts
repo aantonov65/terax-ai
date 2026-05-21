@@ -40,6 +40,7 @@ export class RuntimeService {
     return Promise.all(products.map(async (product) => {
       const batches = await this.store.listBatches(workspaceId, product.id);
       const researchRuns = await this.store.listResearchRuns(workspaceId, product.id);
+      const researchArtifacts = await this.store.listPublicArtifacts(workspaceId, product.id);
       const mappedBatches = await Promise.all(batches.map(async (batch) => ({
         ...batch,
         artifacts: await this.store.listPublicArtifacts(workspaceId, batch.id),
@@ -47,6 +48,7 @@ export class RuntimeService {
       return {
         ...product,
         researchRuns,
+        researchArtifacts,
         batches: mappedBatches,
       };
     }));
@@ -63,9 +65,40 @@ export class RuntimeService {
     });
   }
 
-  async startResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[] = []): Promise<ResearchRun> {
+  async startResearchRun(
+    workspaceId: string,
+    productId: string,
+    topic: string,
+    searchTerms: string[] = [],
+    status: ResearchRun["status"] = "complete",
+    quality?: Record<string, unknown>,
+  ): Promise<ResearchRun> {
     await this.store.ensureProduct(workspaceId, productId);
-    return this.store.createResearchRun(workspaceId, productId, topic, searchTerms.length ? searchTerms : [topic]);
+    return this.store.createResearchRun(workspaceId, productId, topic, searchTerms.length ? searchTerms : [topic], status, quality);
+  }
+
+  completeResearchRun(
+    workspaceId: string,
+    researchRunId: string,
+    searchTerms: string[],
+    quality: Record<string, unknown> = {},
+  ): Promise<ResearchRun> {
+    return this.store.updateResearchRun(workspaceId, researchRunId, {
+      status: "complete",
+      searchTerms,
+      quality: {
+        searchTermCount: searchTerms.length,
+        corpusRefs: searchTerms.length,
+        ...quality,
+      },
+    });
+  }
+
+  failResearchRun(workspaceId: string, researchRunId: string, reason = "research_failed"): Promise<ResearchRun> {
+    return this.store.updateResearchRun(workspaceId, researchRunId, {
+      status: "failed",
+      quality: { failure: reason },
+    });
   }
 
   listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]> {

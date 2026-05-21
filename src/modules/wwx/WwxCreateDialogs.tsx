@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { WwxArtifactViewer } from "./WwxArtifactViewer";
 import { safeSegment } from "./mutations";
 import { validateProductConfig } from "./research";
-import type { ArtifactKind, ArtifactSummary, ProductSummary } from "./types";
+import type { ArtifactKind, ArtifactSummary, ProductResearchJob, ProductSummary } from "./types";
 
 export type ProductDraft = {
   productFolder: string;
@@ -54,6 +54,9 @@ type ResearchDialogProps = {
 type ResearchPreviewDialogProps = {
   open: boolean;
   product: ProductSummary | null;
+  researchJob?: ProductResearchJob | null;
+  focusedResearchId?: string | null;
+  focusedResearchTopic?: string | null;
   onOpenChange: (open: boolean) => void;
   onRunResearch?: (product: ProductSummary) => void;
 };
@@ -122,15 +125,12 @@ export function CreateProductDialog({ open, onOpenChange, onCreate }: ProductDia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={`flex max-h-[calc(100dvh-40px)] ${WIDE_PRODUCT_DIALOG_WIDTH} flex-col gap-4 overflow-hidden rounded-xl border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl`}>
+      <DialogContent className="flex max-h-[calc(100dvh-40px)] !w-[calc(100vw-32px)] !max-w-none flex-col gap-4 overflow-hidden rounded-xl border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl sm:!max-w-none xl:!w-[min(1080px,calc(100vw-64px))]">
         <DialogHeader>
           <DialogTitle>Create Product</DialogTitle>
-          <DialogDescription>
-            Upload the owner-authored config.json, or build one with the agent first and paste it here for validation.
-          </DialogDescription>
         </DialogHeader>
 
-        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden sm:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.2fr)]">
+        <div className="grid min-h-0 flex-1 gap-5 overflow-hidden sm:grid-cols-2">
           <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
             <input
               ref={fileRef}
@@ -155,17 +155,6 @@ export function CreateProductDialog({ open, onOpenChange, onCreate }: ProductDia
                 className="rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
               />
             </Field>
-            <Field label="Config JSON">
-              <Textarea
-                value={rawJson}
-                onChange={(event) => setRawJson(event.target.value)}
-                placeholder="Paste a full config.json here"
-                className="min-h-72 rounded-md border-white/15 bg-[#101114] font-mono text-[11px] text-slate-100 placeholder:text-slate-500"
-              />
-            </Field>
-          </div>
-
-          <div className="flex min-h-0 flex-col gap-3">
             <section className="rounded-md border border-white/15 bg-[#121317] p-3">
               <div className="mb-2 text-xs font-medium text-slate-200">Required config fields</div>
               <div className="grid gap-1.5">
@@ -179,6 +168,16 @@ export function CreateProductDialog({ open, onOpenChange, onCreate }: ProductDia
                 ))}
               </div>
             </section>
+          </div>
+
+          <div className="min-h-0">
+            <Textarea
+              value={rawJson}
+              onChange={(event) => setRawJson(event.target.value)}
+              placeholder="Paste a full config.json here"
+              aria-label="Config JSON"
+              className="min-h-[420px] rounded-md border-white/15 bg-[#101114] font-mono text-[11px] text-slate-100 placeholder:text-slate-500"
+            />
           </div>
         </div>
 
@@ -209,74 +208,32 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
   const [topic, setTopic] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [submittedTopic, setSubmittedTopic] = useState<string | null>(null);
-  const [artifacts, setArtifacts] = useState<Array<{ filename: string; updatedAt: number }>>([]);
-  const [artifactsLoading, setArtifactsLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setTopic("");
     setStarting(false);
     setError(null);
-    setSubmittedTopic(null);
   }, [open, product?.id]);
-
-  useEffect(() => {
-    if (!alreadyRunning) setSubmittedTopic(null);
-  }, [alreadyRunning]);
-
-  useEffect(() => {
-    if (!open) return;
-    setArtifacts([]);
-    if (!product) {
-      setArtifactsLoading(false);
-      return;
-    }
-    let alive = true;
-    const productId = product.id;
-    setArtifactsLoading(true);
-    void invoke<{
-      artifacts: Array<{ artifact: { filename: string; updatedAt: number } }>;
-    }>("wwx_read_product_package", { productId }).then((result) => {
-      if (!alive) return;
-      setArtifacts(
-        result.artifacts
-          .map((item) => ({
-            filename: item.artifact.filename,
-            updatedAt: item.artifact.updatedAt,
-          }))
-          .filter((artifact) => artifact.filename.startsWith("research/") || artifact.filename.startsWith("research-runs/")),
-      );
-    }).catch(() => {
-      if (alive) setArtifacts([]);
-    }).finally(() => {
-      if (alive) setArtifactsLoading(false);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [open, product?.id, product?.researchArtifactCount, product?.researchArtifactUpdatedAt]);
 
   const submit = async () => {
     if (!topic.trim() || !product || alreadyRunning) return;
     const nextTopic = topic.trim();
     setError(null);
     setStarting(true);
-    setSubmittedTopic(nextTopic);
     try {
       await onRun({ topic: nextTopic });
+      onOpenChange(false);
     } catch (err) {
-      setSubmittedTopic(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStarting(false);
     }
   };
-  const researchRunning = alreadyRunning || Boolean(submittedTopic);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-32px)] max-w-none rounded-xl border border-white/15 bg-[#17181b] text-slate-100 sm:max-w-none xl:w-[min(1320px,calc(100vw-64px))]">
+      <DialogContent className="w-[calc(100vw-32px)] max-w-[520px] rounded-xl border border-white/15 bg-[#17181b] text-slate-100 sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>Run Research</DialogTitle>
           <DialogDescription>
@@ -289,36 +246,9 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
             value={topic}
             onChange={(event) => setTopic(event.target.value)}
             placeholder="pregnancy varicose veins tmi suffering stories"
-            className="min-h-24 rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
+            className="min-h-44 rounded-md border-white/15 bg-[#1b1c20] text-slate-100 placeholder:text-slate-500"
           />
         </Field>
-        {artifactsLoading ? (
-          <section className="rounded-md border border-white/15 bg-[#121317] p-3 text-xs text-slate-400">
-            <DotMatrixLoader label="Checking existing research" />
-          </section>
-        ) : artifacts.length ? (
-          <section className="rounded-md border border-white/15 bg-[#121317] p-3">
-            <div className="mb-2 text-xs font-medium text-slate-200">Current research artifacts</div>
-            <div className="grid gap-1 text-[11px]">
-              {artifacts.map((artifact) => (
-                <div key={artifact.filename} className="flex items-center justify-between gap-3">
-                  <span className="truncate font-mono text-slate-300">{artifact.filename}</span>
-                  <span className="shrink-0 text-slate-500">
-                    {new Date(artifact.updatedAt).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
-        {researchRunning ? (
-          <div className="rounded-md border border-sky-400/25 bg-sky-400/10 px-3 py-2 text-xs text-sky-200">
-            <DotMatrixLoader
-              className="text-sky-200"
-              label={submittedTopic || topic.trim() ? `Research running: ${submittedTopic ?? topic.trim()}` : "Research running"}
-            />
-          </div>
-        ) : null}
         {error ? <div className="text-xs text-destructive">{error}</div> : null}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -326,7 +256,7 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
           </Button>
           <Button
             variant="secondary"
-            disabled={!topic.trim() || !product || starting || researchRunning}
+            disabled={!topic.trim() || !product || starting || alreadyRunning}
             className="text-slate-50 disabled:text-slate-500"
             onClick={() => void submit()}
           >
@@ -341,30 +271,33 @@ export function RunResearchDialog({ open, product, running: alreadyRunning = fal
 export function ResearchPreviewDialog({
   open,
   product,
+  researchJob,
+  focusedResearchId,
+  focusedResearchTopic,
   onOpenChange,
   onRunResearch,
 }: ResearchPreviewDialogProps) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expandedResearchId, setExpandedResearchId] = useState<string | null>(null);
   const [artifactExpanded, setArtifactExpanded] = useState(false);
 
   useEffect(() => {
     if (!open || !product) {
       setArtifacts([]);
       setSelectedId(null);
+      setExpandedResearchId(null);
       setArtifactExpanded(false);
       setLoading(false);
-      setError(null);
       return;
     }
     let alive = true;
     const productId = product.id;
     setArtifacts([]);
     setSelectedId(null);
+    setExpandedResearchId(null);
     setArtifactExpanded(false);
-    setError(null);
     if (product.path.startsWith("hosted://")) {
       setLoading(false);
       return () => {
@@ -411,8 +344,8 @@ export function ResearchPreviewDialog({
               null,
         );
       })
-      .catch((err) => {
-        if (alive) setError(err instanceof Error ? err.message : String(err));
+      .catch(() => {
+        if (alive) setArtifacts([]);
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -422,49 +355,77 @@ export function ResearchPreviewDialog({
     };
   }, [open, product?.id, product?.researchArtifactCount, product?.researchArtifactUpdatedAt]);
 
-  const selected = artifacts.find((artifact) => artifact.id === selectedId) ?? null;
-  const primaryArtifacts = useMemo(
-    () =>
-      artifacts
-        .filter((artifact) => PRIMARY_RESEARCH_FILES.includes(artifactBasename(artifact.filename ?? artifact.label)))
-        .sort(
-          (a, b) =>
-            PRIMARY_RESEARCH_FILES.indexOf(artifactBasename(a.filename ?? a.label)) -
-            PRIMARY_RESEARCH_FILES.indexOf(artifactBasename(b.filename ?? b.label)),
-        ),
-    [artifacts],
+  const researchItems = useMemo(
+    () => buildResearchItems(product, artifacts, researchJob),
+    [product, artifacts, researchJob],
   );
-  const informationalArtifacts = useMemo(
-    () =>
-      artifacts
-        .filter((artifact) => !PRIMARY_RESEARCH_FILES.includes(artifactBasename(artifact.filename ?? artifact.label)))
-        .sort((a, b) => artifactBasename(a.filename ?? a.label).localeCompare(artifactBasename(b.filename ?? b.label))),
-    [artifacts],
-  );
+  const selected = researchItems
+    .flatMap((item) => item.artifacts)
+    .find((artifact) => artifact.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const focused = researchItems.find((item) => {
+      if (focusedResearchId && item.id === focusedResearchId) return true;
+      return Boolean(focusedResearchTopic && item.topic === focusedResearchTopic);
+    });
+    const running = researchItems.find((item) => researchIsRunning(item.status));
+    const next = focused?.id ?? running?.id ?? researchItems[0]?.id ?? null;
+    setExpandedResearchId((current) =>
+      current && researchItems.some((item) => item.id === current) ? current : next,
+    );
+  }, [focusedResearchId, focusedResearchTopic, open, researchItems]);
+
+  useEffect(() => {
+    const expanded = researchItems.find((item) => item.id === expandedResearchId);
+    if (!expanded) {
+      setSelectedId(null);
+      return;
+    }
+    setSelectedId((current) => {
+      if (current && expanded.artifacts.some((artifact) => artifact.id === current)) return current;
+      return preferredResearchArtifact(expanded.artifacts)?.id ?? null;
+    });
+  }, [expandedResearchId, researchItems]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={`flex h-[calc(100dvh-40px)] ${WIDE_PRODUCT_DIALOG_WIDTH} flex-col overflow-hidden rounded-xl border border-white/15 bg-[#17181b] text-slate-100 shadow-2xl`}
       >
-        <DialogHeader className="relative shrink-0 pr-16">
-          <DialogTitle>Research Preview</DialogTitle>
-          <DialogDescription>
-            {product ? `${product.name} research artifacts from the latest completed run.` : "Select a product to preview research."}
-          </DialogDescription>
-          {product && onRunResearch ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="absolute right-8 top-0 rounded-md text-slate-400 hover:bg-white/10 hover:text-slate-100"
-              onClick={() => onRunResearch(product)}
-              title={`Run new research for ${product.name}`}
-              aria-label={`Run new research for ${product.name}`}
-            >
-              <HugeiconsIcon icon={PlusSignIcon} size={15} strokeWidth={2} />
-            </Button>
-          ) : null}
+        <DialogHeader className="shrink-0 pr-16">
+          <div
+            className={[
+              "grid items-center gap-4",
+              artifactExpanded ? "grid-cols-1" : "lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]",
+            ].join(" ")}
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="min-w-0">
+                <DialogTitle>Research Preview</DialogTitle>
+                {product ? (
+                  <span className="mt-1 block min-w-0 truncate text-sm font-medium text-slate-400">{product.name}</span>
+                ) : (
+                  <DialogDescription className="mt-1 min-w-0 truncate text-sm">
+                    Select a product to preview research.
+                  </DialogDescription>
+                )}
+              </div>
+              {product && onRunResearch ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-auto rounded-md border border-white/10 bg-white/[0.03] text-slate-400 hover:border-white/20 hover:bg-white/10 hover:text-slate-100"
+                  onClick={() => onRunResearch(product)}
+                  title={`Run new research for ${product.name}`}
+                  aria-label={`Run new research for ${product.name}`}
+                >
+                  <HugeiconsIcon icon={PlusSignIcon} size={15} strokeWidth={2} />
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </DialogHeader>
         <div
           className={[
@@ -478,59 +439,217 @@ export function ResearchPreviewDialog({
                 <DotMatrixLoader label="Loading research artifacts" />
               </div>
             ) : artifacts.length ? (
-              <>
-                {primaryArtifacts.map((artifact) => (
-                  <ResearchArtifactButton
-                    key={artifact.id}
-                    artifact={artifact}
-                    active={selectedId === artifact.id}
-                    onSelect={() => setSelectedId(artifact.id)}
-                  />
-                ))}
-                {informationalArtifacts.length ? (
-                  <div className="border-b border-white/10 bg-[#15161a] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                    Informational
-                  </div>
-                ) : null}
-                {informationalArtifacts.map((artifact) => (
-                  <ResearchArtifactButton
-                    key={artifact.id}
-                    artifact={artifact}
-                    active={selectedId === artifact.id}
-                    onSelect={() => setSelectedId(artifact.id)}
-                  />
-                ))}
-              </>
-            ) : product?.path.startsWith("hosted://") && product.researchRuns?.length ? (
-              <div className="divide-y divide-white/10">
-                {product.researchRuns.map((run) => (
-                  <div key={run.id} className="px-3 py-2 text-xs">
-                    <div className="truncate font-medium text-slate-200">{run.topic}</div>
-                    <div className="mt-0.5 text-[10px] text-slate-500">
-                      {run.status} · {new Date(run.updatedAt).toLocaleString()}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <ResearchAccordion
+                items={researchItems}
+                expandedId={expandedResearchId}
+                selectedArtifactId={selectedId}
+                onExpandedChange={(id) => setExpandedResearchId((current) => current === id ? null : id)}
+                onSelectArtifact={(artifact) => setSelectedId(artifact.id)}
+              />
+            ) : researchItems.length ? (
+              <ResearchAccordion
+                items={researchItems}
+                expandedId={expandedResearchId}
+                selectedArtifactId={selectedId}
+                onExpandedChange={(id) => setExpandedResearchId((current) => current === id ? null : id)}
+                onSelectArtifact={(artifact) => setSelectedId(artifact.id)}
+              />
             ) : (
               <div className="p-3 text-xs text-slate-400">No research runs found yet.</div>
             )}
           </section>
-          {error ? (
-            <div className="rounded-md border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-200">
-              {error}
-            </div>
-          ) : (
-            <WwxArtifactViewer
-              artifact={selected}
-              expanded={artifactExpanded}
-              onExpandedChange={setArtifactExpanded}
-              emptyMessage="Select a research artifact to preview."
-            />
-          )}
+          <WwxArtifactViewer
+            artifact={selected}
+            expanded={artifactExpanded}
+            onExpandedChange={setArtifactExpanded}
+            emptyMessage="Select a research artifact to preview."
+          />
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+type ResearchAccordionItem = {
+  id: string;
+  topic: string;
+  status: string;
+  updatedAt?: number;
+  artifacts: ArtifactSummary[];
+  error?: string;
+};
+
+function ResearchAccordion({
+  items,
+  expandedId,
+  selectedArtifactId,
+  onExpandedChange,
+  onSelectArtifact,
+}: {
+  items: ResearchAccordionItem[];
+  expandedId: string | null;
+  selectedArtifactId: string | null;
+  onExpandedChange: (id: string) => void;
+  onSelectArtifact: (artifact: ArtifactSummary) => void;
+}) {
+  return (
+    <div className="divide-y divide-white/10">
+      {items.map((item) => {
+        const expanded = expandedId === item.id;
+        const running = researchIsRunning(item.status);
+        const orderedArtifacts = sortResearchArtifacts(item.artifacts);
+        return (
+          <div key={item.id}>
+            <button
+              type="button"
+              className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left hover:bg-[#1c1d22]"
+              onClick={() => onExpandedChange(item.id)}
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-slate-200">{item.topic}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-slate-500">
+                  {researchStatusLabel(item.status)}
+                  {item.updatedAt ? ` · ${new Date(item.updatedAt).toLocaleString()}` : ""}
+                </span>
+                {researchIsBlocked(item.status) && item.error ? (
+                  <span className="mt-1 block truncate text-[10px] text-red-300">{item.error}</span>
+                ) : null}
+              </span>
+              {running ? (
+                <DotMatrixLoader className="text-emerald-300" label="Running" />
+              ) : (
+                <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-slate-400">
+                  {orderedArtifacts.length}
+                </span>
+              )}
+            </button>
+            {expanded ? (
+              <div className="border-t border-white/10 bg-[#0d0e11]">
+                {orderedArtifacts.length ? (
+                  orderedArtifacts.map((artifact) => (
+                    <ResearchArtifactButton
+                      key={artifact.id}
+                      artifact={artifact}
+                      active={selectedArtifactId === artifact.id}
+                      onSelect={() => onSelectArtifact(artifact)}
+                    />
+                  ))
+                ) : (
+                  <div className="px-3 py-3 text-xs text-slate-500">
+                    {running ? "Artifacts will appear when research finishes." : "No public research artifacts found for this run."}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function buildResearchItems(
+  product: ProductSummary | null,
+  localArtifacts: ArtifactSummary[],
+  researchJob?: ProductResearchJob | null,
+): ResearchAccordionItem[] {
+  if (!product) return [];
+  const items: ResearchAccordionItem[] = (product.researchRuns ?? []).map((run) => ({
+    id: run.id,
+    topic: run.topic,
+    status: run.status,
+    updatedAt: run.updatedAt,
+    artifacts: run.artifacts ?? [],
+    error: researchIsBlocked(run.status) ? safeResearchError(researchRunFailure(run.qualityJson)) : undefined,
+  }));
+  if (!items.length && localArtifacts.length) {
+    items.push({
+      id: "local-research",
+      topic: "Local research artifacts",
+      status: "complete",
+      updatedAt: product.researchArtifactUpdatedAt ?? undefined,
+      artifacts: localArtifacts,
+    });
+  }
+  if (
+    researchJob &&
+    researchJob.productId === product.id &&
+    ["queued", "running", "complete", "blocked"].includes(researchJob.status) &&
+    !items.some((item) => item.id === researchJob.researchRunId || item.topic === researchJob.topic)
+  ) {
+    items.push({
+      id: researchJob.researchRunId ?? researchJob.runId ?? `job:${product.id}:${researchJob.topic}`,
+      topic: researchJob.topic,
+      status: researchJob.status,
+      updatedAt: researchJob.finishedAt ?? researchJob.startedAt,
+      artifacts: [],
+      error: researchIsBlocked(researchJob.status) ? safeResearchError(researchJob.error) : undefined,
+    });
+  }
+  return items.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
+function researchIsRunning(status: string): boolean {
+  return ["queued", "running", "retrying"].includes(status.toLowerCase());
+}
+
+function researchIsBlocked(status: string): boolean {
+  return ["blocked", "failed", "cancelled", "canceled", "quarantined"].includes(status.toLowerCase());
+}
+
+function safeResearchError(value: unknown): string {
+  const message = stringValue(value);
+  if (!message) return "Research workflow failed.";
+  if (/query returned no rows|enoent|spawnsync|database|sql|trigger|r2|object key|prompt|template|provider/i.test(message)) {
+    return "Research workflow failed.";
+  }
+  return message;
+}
+
+function researchRunFailure(qualityJson: string): string {
+  const quality = parseRawJson(qualityJson) ?? {};
+  return (
+    stringValue(quality.failure_message_safe) ||
+    stringValue(quality.error_message_safe) ||
+    stringValue(quality.failure) ||
+    stringValue(quality.error)
+  );
+}
+
+function researchStatusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "complete" || normalized === "succeeded") return "complete";
+  if (normalized === "queued") return "queued";
+  if (normalized === "retrying") return "retrying";
+  if (normalized === "running") return "running";
+  if (normalized === "blocked" || normalized === "failed") return "blocked";
+  return status;
+}
+
+function sortResearchArtifacts(artifacts: ArtifactSummary[]): ArtifactSummary[] {
+  return [...artifacts].sort((a, b) => {
+    const aName = artifactBasename(a.filename ?? a.label);
+    const bName = artifactBasename(b.filename ?? b.label);
+    const aPrimary = PRIMARY_RESEARCH_FILES.indexOf(aName);
+    const bPrimary = PRIMARY_RESEARCH_FILES.indexOf(bName);
+    if (aPrimary !== -1 || bPrimary !== -1) {
+      if (aPrimary === -1) return 1;
+      if (bPrimary === -1) return -1;
+      return aPrimary - bPrimary;
+    }
+    return aName.localeCompare(bName);
+  });
+}
+
+function preferredResearchArtifact(artifacts: ArtifactSummary[]): ArtifactSummary | null {
+  const sorted = sortResearchArtifacts(artifacts);
+  return (
+    sorted.find((artifact) => artifactBasename(artifact.filename ?? artifact.label) === "archetypes.md") ??
+    sorted.find((artifact) => artifactBasename(artifact.filename ?? artifact.label) === "mechanisms.md") ??
+    sorted.find((artifact) => artifactBasename(artifact.filename ?? artifact.label) === "hotwords.md") ??
+    sorted.find((artifact) => artifactBasename(artifact.filename ?? artifact.label) === "cards-report.json") ??
+    sorted[0] ??
+    null
   );
 }
 

@@ -129,6 +129,9 @@ test("workspace scoping and hidden artifact security hold at API boundary", asyn
 
   assert.equal(hidden.visibilityClass, "engine_secret");
   assert.equal(classifyVisibility("../../components/lfs-prompt-engine.md", true), "engine_secret");
+  assert.equal(classifyVisibility("research-runs/ww-research-2026-05-21-demo/archetypes.md", true), "public_summary");
+  assert.equal(classifyVisibility("research-runs/ww-research-2026-05-21-demo/cards-report.json", true), "public_summary");
+  assert.equal(classifyVisibility("research-runs/ww-research-2026-05-21-demo/filtered-corpus.md", true), "technical_hidden");
 
   const crossWorkspace = await app.inject({
     method: "GET",

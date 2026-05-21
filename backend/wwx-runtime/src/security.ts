@@ -20,6 +20,9 @@ const SECRET_PATTERNS = [
 
 export function classifyVisibility(filename: string, requestedPublic: boolean): VisibilityClass {
   const raw = filename.trim();
+  const isPublicResearchSummary = /^research-runs\/[^/]+\/(archetypes|hotwords|mechanisms)\.md$/.test(raw) ||
+    /^research-runs\/[^/]+\/(cards-report|queries|summary)\.json$/.test(raw) ||
+    /^research-runs\/[^/]+\/README\.md$/.test(raw);
   if (
     raw.startsWith("/") ||
     raw.includes("\\") ||
@@ -33,7 +36,7 @@ export function classifyVisibility(filename: string, requestedPublic: boolean): 
     raw === "strategy.json" ||
     raw === "spec.json" ||
     raw === "lfs-v41-manifest.json" ||
-    raw.endsWith("-report.json") ||
+    (raw.endsWith("-report.json") && !isPublicResearchSummary) ||
     raw === "batch-research-code-map.json"
   ) {
     return "engine_secret";
@@ -42,6 +45,9 @@ export function classifyVisibility(filename: string, requestedPublic: boolean): 
   if (raw.startsWith("output-v41/") && raw.endsWith(".md")) return "public_final";
   if (raw === "asset-inputs.json" || raw === "handoff-package.json" || raw.startsWith("images/")) {
     return "public_asset_input";
+  }
+  if (isPublicResearchSummary) {
+    return "public_summary";
   }
   if (raw === "batch-summary.json" || raw === "ad-analysis-index.json" || raw === "research-selection.json") {
     return "public_summary";

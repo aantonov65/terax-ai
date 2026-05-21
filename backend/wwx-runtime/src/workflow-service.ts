@@ -54,14 +54,26 @@ export class WorkflowRuntimeService {
       correlationId: auth.correlationId,
     });
     const triggerPayload = await this.prepareTriggerPayload(auth, run, input);
-    const triggerRun = await this.trigger.trigger({
-      runId: run.id,
-      workflowType,
-      workspaceId: auth.workspaceId,
-      createdByUserId: auth.user.id,
-      correlationId: run.correlationId,
-      payload: triggerPayload,
-    });
+    let triggerRun: Awaited<ReturnType<WorkflowTrigger["trigger"]>>;
+    try {
+      triggerRun = await this.trigger.trigger({
+        runId: run.id,
+        workflowType,
+        workspaceId: auth.workspaceId,
+        createdByUserId: auth.user.id,
+        correlationId: run.correlationId,
+        payload: triggerPayload,
+      });
+    } catch (error) {
+      await this.observability.markRunFailed(run.id, "orchestrator_unavailable", "Workflow could not be started.");
+      await this.observability.emitRunEvent({
+        runId: run.id,
+        eventType: "run_failed",
+        messageSafe: "Workflow could not be started.",
+        metadataSafe: { workflow_type: workflowType, failure_category: "orchestrator_unavailable" },
+      });
+      throw publicError("WORKFLOW_START_FAILED", 503);
+    }
     await this.observability.attachTriggerRunId(run.id, triggerRun.triggerRunId);
     await this.observability.emitRunEvent({
       runId: run.id,
@@ -256,6 +268,23 @@ export class WorkflowRuntimeService {
   }
 
   private async prepareTriggerPayload(auth: AuthContext, run: RunRecord, input: WorkflowRunInput): Promise<Record<string, unknown>> {
+    if (run.workflowType === "research" && this.runtimeService) {
+      const payload = sanitizeOperatorInput(input.payload ?? {});
+      const productId = stringValue(input.productId) ?? stringValue(payload.productId) ?? stringValue(payload.product_id);
+      const topic = stringValue(payload.topic);
+      if (productId && topic) {
+        const researchRun = await this.runtimeService.startResearchRun(
+          auth.workspaceId,
+          productId,
+          topic,
+          stringArray(payload.searchTerms ?? payload.search_terms),
+          "running",
+          { workflow_run_id: run.id },
+        );
+        return { ...payload, productId, topic, researchRunId: researchRun.id };
+      }
+      return payload;
+    }
     if (run.workflowType !== "lfs_ads" || !this.runtimeService) return sanitizeOperatorInput(input.payload ?? {});
     const createAdsInput = createAdsInputFromWorkflow({
       productId: input.productId,
@@ -334,6 +363,15 @@ function sanitizeOperatorInput(input: Record<string, unknown>): Record<string, u
     output[key] = value;
   }
   return output;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean);
 }
 
 function isCostQuestion(question: string): boolean {

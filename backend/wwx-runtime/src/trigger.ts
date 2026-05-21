@@ -23,36 +23,50 @@ export class TriggerDevWorkflowTrigger implements WorkflowTrigger {
   constructor(
     private readonly secretKey: string,
     private readonly apiUrl = process.env.TRIGGER_API_URL ?? "https://api.trigger.dev",
+    private readonly requestTimeoutMs = parseIntEnv("TRIGGER_REQUEST_TIMEOUT_MS", 15_000),
   ) {}
 
   async trigger(input: TriggerRunInput): Promise<{ triggerRunId: string; provider: "trigger.dev" }> {
     const taskIdentifier = taskIdentifierFor(input.workflowType);
-    const response = await fetch(`${this.apiUrl.replace(/\/$/, "")}/api/v1/tasks/${encodeURIComponent(taskIdentifier)}/trigger`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.secretKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        payload: {
-          runId: input.runId,
-          workspaceId: input.workspaceId,
-          createdByUserId: input.createdByUserId,
-          workflowType: input.workflowType,
-          correlationId: input.correlationId,
-          input: input.payload,
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiUrl.replace(/\/$/, "")}/api/v1/tasks/${encodeURIComponent(taskIdentifier)}/trigger`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.secretKey}`,
+          "content-type": "application/json",
         },
-        context: {
-          correlationId: input.correlationId,
-          workflowType: input.workflowType,
-        },
-        options: {
-          idempotencyKey: input.runId,
-          concurrencyKey: `${input.workspaceId}:${input.workflowType}`,
-          queue: queueFor(input.workflowType),
-        },
-      }),
-    });
+        body: JSON.stringify({
+          payload: {
+            runId: input.runId,
+            workspaceId: input.workspaceId,
+            createdByUserId: input.createdByUserId,
+            workflowType: input.workflowType,
+            correlationId: input.correlationId,
+            input: input.payload,
+          },
+          context: {
+            correlationId: input.correlationId,
+            workflowType: input.workflowType,
+          },
+          options: {
+            idempotencyKey: input.runId,
+            concurrencyKey: `${input.workspaceId}:${input.workflowType}`,
+            queue: queueFor(input.workflowType),
+          },
+        }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("TRIGGER_REQUEST_TIMEOUT");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       throw new Error(`TRIGGER_REQUEST_FAILED_${response.status}`);
     }

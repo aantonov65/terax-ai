@@ -21,7 +21,8 @@ export type Store = {
   ensureProduct(workspaceId: string, productId: string, name?: string, config?: Record<string, unknown>): Promise<void>;
   listProducts(workspaceId: string): Promise<Product[]>;
   listBatches(workspaceId: string, productId: string): Promise<Batch[]>;
-  createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun>;
+  createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[], status?: ResearchRun["status"], quality?: Record<string, unknown>): Promise<ResearchRun>;
+  updateResearchRun(workspaceId: string, researchRunId: string, input: { status?: ResearchRun["status"]; searchTerms?: string[]; quality?: Record<string, unknown> }): Promise<ResearchRun>;
   listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]>;
   ensureBatch(workspaceId: string, batchId: string, input: CreateAdsInput): Promise<Batch>;
   enqueueJob(workspaceId: string, batchId: string, type: QueueJob["type"], payload: Record<string, unknown>): Promise<QueueJob>;
@@ -85,7 +86,14 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun> {
+  async createResearchRun(
+    workspaceId: string,
+    productId: string,
+    topic: string,
+    searchTerms: string[],
+    status: ResearchRun["status"] = "complete",
+    quality: Record<string, unknown> = { searchTermCount: searchTerms.length, corpusRefs: searchTerms.length },
+  ): Promise<ResearchRun> {
     const now = nowMs();
     const run: ResearchRun = {
       id: id("research"),
@@ -94,13 +102,31 @@ export class MemoryStore implements Store {
       topic,
       topicSlug: topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "topic",
       searchTerms,
-      status: "complete",
-      quality: { searchTermCount: searchTerms.length, corpusRefs: searchTerms.length },
+      status,
+      quality,
       createdAt: now,
       updatedAt: now,
     };
     this.researchRuns.set(run.id, run);
     return run;
+  }
+
+  async updateResearchRun(
+    workspaceId: string,
+    researchRunId: string,
+    input: { status?: ResearchRun["status"]; searchTerms?: string[]; quality?: Record<string, unknown> },
+  ): Promise<ResearchRun> {
+    const run = this.researchRuns.get(researchRunId);
+    if (!run || run.workspaceId !== workspaceId) throw new Error("research run not found");
+    const updated: ResearchRun = {
+      ...run,
+      status: input.status ?? run.status,
+      searchTerms: input.searchTerms ?? run.searchTerms,
+      quality: input.quality ? { ...run.quality, ...input.quality } : run.quality,
+      updatedAt: nowMs(),
+    };
+    this.researchRuns.set(updated.id, updated);
+    return updated;
   }
 
   async listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]> {

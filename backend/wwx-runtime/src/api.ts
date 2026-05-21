@@ -301,6 +301,14 @@ function registerWorkflowRoutes(
     return { artifact: await workflow.getArtifact(auth, request.params.id) };
   });
 
+  app.get<{ Params: { id: string } }>("/artifacts/:id/content", async (request) => {
+    const auth = await authenticateRequest(request, observability);
+    const result = await service.getPublicArtifactContent(auth.workspaceId, request.params.id)
+      .catch(() => null);
+    if (!result) throw workflowPublicError("ARTIFACT_NOT_FOUND", 404);
+    return { artifact: sanitizeArtifact(result.artifact), content: result.content };
+  });
+
   app.post<{ Params: { id: string }; Body: { question?: string } }>("/runs/:id/question", async (request) => {
     const auth = await authenticateRequest(request, observability);
     const question = request.body?.question?.trim();
@@ -415,6 +423,9 @@ function sanitizeProductIndexItem(product: Record<string, unknown>) {
     created_at: product.createdAt,
     updated_at: product.updatedAt,
     research_runs: Array.isArray(product.researchRuns) ? product.researchRuns : [],
+    research_artifacts: Array.isArray(product.researchArtifacts)
+      ? (product.researchArtifacts as Artifact[]).map((artifact) => sanitizeArtifact(artifact))
+      : [],
     batches: Array.isArray(product.batches)
       ? (product.batches as Array<Record<string, unknown>>).map((batch) => ({
           id: batch.id,

@@ -73,6 +73,7 @@ type NativeProduct = {
   researchArtifactCount?: number;
   researchArtifactUpdatedAt?: number | null;
   researchRuns?: NativeResearchRun[];
+  researchArtifacts?: NativeArtifact[];
   batches: NativeBatch[];
 };
 
@@ -85,6 +86,7 @@ type NativeResearchRun = {
   runFolder: string;
   status: string;
   qualityJson: string;
+  artifacts?: NativeArtifact[];
   createdAt: number;
   updatedAt: number;
 };
@@ -112,6 +114,7 @@ type HostedProduct = {
   config: Record<string, unknown>;
   created_at: number;
   updated_at: number;
+  research_artifacts?: HostedArtifact[];
   research_runs?: Array<{
     id: string;
     productId?: string;
@@ -277,6 +280,9 @@ async function hostedRequest<T>(path: string, options: { method?: string; body?:
 }
 
 function hostedProductToNative(product: HostedProduct): NativeProduct {
+  const researchArtifacts = (product.research_artifacts ?? []).map((artifact) =>
+    hostedArtifactToNative(artifact, product.id),
+  );
   return {
     id: product.id,
     productCode: product.product_code,
@@ -285,18 +291,29 @@ function hostedProductToNative(product: HostedProduct): NativeProduct {
     createdAt: product.created_at,
     updatedAt: product.updated_at,
     revision: 1,
-    researchRuns: (product.research_runs ?? []).map((run) => ({
-      id: run.id,
-      productId: run.productId ?? run.product_id ?? product.id,
-      topicSlug: run.topicSlug ?? run.topic_slug ?? "topic",
-      topic: run.topic,
-      searchTermsJson: JSON.stringify(run.searchTerms ?? run.search_terms ?? []),
-      runFolder: `hosted://wwx/products/${product.id}/research-runs/${run.id}`,
-      status: run.status,
-      qualityJson: JSON.stringify(run.quality ?? {}),
-      createdAt: run.createdAt ?? run.created_at ?? Date.now(),
-      updatedAt: run.updatedAt ?? run.updated_at ?? Date.now(),
-    })),
+    researchArtifactCount: researchArtifacts.length,
+    researchArtifactUpdatedAt: latestUpdatedAt(researchArtifacts),
+    researchArtifacts,
+    researchRuns: (product.research_runs ?? []).map((run) => {
+      const quality = run.quality ?? {};
+      const topicSlug = run.topicSlug ?? run.topic_slug ?? "topic";
+      const runFolder = stringValue(quality.runFolder) ?? stringValue(quality.run_folder) ?? topicSlug;
+      return {
+        id: run.id,
+        productId: run.productId ?? run.product_id ?? product.id,
+        topicSlug,
+        topic: run.topic,
+        searchTermsJson: JSON.stringify(run.searchTerms ?? run.search_terms ?? []),
+        runFolder,
+        status: run.status,
+        qualityJson: JSON.stringify(quality),
+        artifacts: researchArtifacts.filter((artifact) =>
+          (artifact.filename ?? "").startsWith(`research-runs/${runFolder}/`),
+        ),
+        createdAt: run.createdAt ?? run.created_at ?? Date.now(),
+        updatedAt: run.updatedAt ?? run.updated_at ?? Date.now(),
+      };
+    }),
     batches: (product.batches ?? []).map((batch) => ({
       id: batch.id,
       productId: product.id,
@@ -308,25 +325,29 @@ function hostedProductToNative(product: HostedProduct): NativeProduct {
       createdAt: batch.created_at,
       updatedAt: batch.updated_at,
       revision: 1,
-      artifacts: (batch.artifacts ?? []).map((artifact) => ({
-        id: artifact.id,
-        batchId: artifact.batch_id,
-        productId: product.id,
-        kind: artifact.filename.endsWith(".json") ? "json" : "markdown",
-        label: artifact.label,
-        filename: artifact.filename,
-        mimeType: artifact.mime_type,
-        size: artifact.size,
-        source: "hosted",
-        public: artifact.visibility_class.startsWith("public_"),
-        visibilityClass: artifact.visibility_class,
-        contentSha256: artifact.content_sha256,
-        createdAt: artifact.created_at,
-        updatedAt: artifact.updated_at,
-        revision: artifact.version ?? 1,
-      })),
+      artifacts: (batch.artifacts ?? []).map((artifact) => hostedArtifactToNative(artifact, product.id)),
       runs: [],
     })),
+  };
+}
+
+function hostedArtifactToNative(artifact: HostedArtifact, productId: string): NativeArtifact {
+  return {
+    id: artifact.id,
+    batchId: artifact.batch_id,
+    productId,
+    kind: artifact.filename.endsWith(".json") ? "json" : "markdown",
+    label: artifact.label,
+    filename: artifact.filename,
+    mimeType: artifact.mime_type,
+    size: artifact.size,
+    source: "hosted",
+    public: artifact.visibility_class.startsWith("public_"),
+    visibilityClass: artifact.visibility_class,
+    contentSha256: artifact.content_sha256,
+    createdAt: artifact.created_at,
+    updatedAt: artifact.updated_at,
+    revision: artifact.version ?? 1,
   };
 }
 
@@ -375,6 +396,18 @@ export async function readWwxArtifact(artifactId: string): Promise<{
   contentText?: string | null;
   contentBlob?: number[] | null;
 }> {
+  if (shouldUseHostedSource()) {
+    const hosted = await hostedRequest<{ artifact: HostedArtifact; content?: string }>(
+      `/artifacts/${encodeURIComponent(artifactId)}/content`,
+    ).catch(() => null);
+    if (hosted?.artifact) {
+      return {
+        artifact: mapArtifact(hostedArtifactToNative(hosted.artifact, "")),
+        contentText: hosted.content ?? null,
+        contentBlob: null,
+      };
+    }
+  }
   const result = await invoke<NativeArtifactContent>("wwx_read_artifact", {
     artifactId,
   });
@@ -471,7 +504,11 @@ function mapProduct(product: NativeProduct): ProductSummary {
     },
     researchArtifactCount: product.researchArtifactCount ?? 0,
     researchArtifactUpdatedAt: product.researchArtifactUpdatedAt ?? null,
-    researchRuns: product.researchRuns ?? [],
+    researchArtifacts: (product.researchArtifacts ?? []).map(mapArtifact),
+    researchRuns: (product.researchRuns ?? []).map((run) => ({
+      ...run,
+      artifacts: (run.artifacts ?? []).map(mapArtifact),
+    })),
     batchCount: batches.length,
     statusCounts: statusCounts(batches),
     updatedAt: product.updatedAt,
@@ -537,8 +574,14 @@ function mapArtifact(artifact: NativeArtifact): ArtifactSummary {
     contentSha256: artifact.contentSha256,
     size: artifact.size,
     mtime: artifact.updatedAt,
-    source: "account",
+    source: artifact.source === "hosted" ? "hosted" : "account",
   };
+}
+
+function latestUpdatedAt(artifacts: NativeArtifact[]): number | null {
+  let latest = 0;
+  for (const artifact of artifacts) latest = Math.max(latest, artifact.updatedAt || 0);
+  return latest || null;
 }
 
 function isFinalLfsOutputArtifact(artifact: NativeArtifact): boolean {
@@ -575,17 +618,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function toBatchStatus(status: string): BatchStatus {
-  if (["draft", "ready", "running", "review", "complete", "blocked", "unknown"].includes(status)) {
-    return status as BatchStatus;
+  const normalized = status.toLowerCase();
+  if (["draft", "ready", "running", "review", "complete", "blocked", "unknown"].includes(normalized)) {
+    return normalized as BatchStatus;
   }
-  return "ready";
+  if (["queued", "retrying"].includes(normalized)) return "running";
+  if (["succeeded", "success", "ok", "done"].includes(normalized)) return "complete";
+  if (["failed", "cancelled", "canceled", "quarantined", "dead_letter", "stopped"].includes(normalized)) return "blocked";
+  if (["awaiting_review", "held"].includes(normalized)) return "review";
+  return "unknown";
 }
 
 function toRunStatus(status: string): RunStatus {
-  if (status === "complete" || status === "ok") return "complete";
-  if (status === "blocked" || status === "failed") return "blocked";
-  if (status === "awaiting_review" || status === "held" || status === "review") return "review";
-  if (status === "running") return "running";
+  const normalized = status.toLowerCase();
+  if (["complete", "succeeded", "success", "ok", "done"].includes(normalized)) return "complete";
+  if (["blocked", "failed", "cancelled", "canceled", "quarantined", "dead_letter", "stopped"].includes(normalized)) return "blocked";
+  if (["awaiting_review", "held", "review"].includes(normalized)) return "review";
+  if (["queued", "running", "retrying"].includes(normalized)) return "running";
+  if (["idle"].includes(normalized)) return "idle";
   return "unknown";
 }
 

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { CreateAdsInput, EngineWorkItem, ResearchWorkflowInput, StrategyWorkflowInput } from "./model.js";
 
 export type Engine = {
@@ -43,7 +43,7 @@ export class LegacyLfs41Engine implements Engine {
   ) {}
 
   planCreateAds(input: CreateAdsInput): EngineWorkItem[] {
-    const root = mkdtempSync(join(this.workRoot, "wwx-lfs41-"));
+    const root = this.makeTempRoot("wwx-lfs41-");
     try {
       const sourcePath = this.writeSource(root, input);
       const python = this.pythonBin();
@@ -71,33 +71,43 @@ export class LegacyLfs41Engine implements Engine {
   }
 
   runResearchPipeline(input: ResearchWorkflowInput): { items: EngineWorkItem[]; searchTerms: string[]; quality: Record<string, unknown> } {
-    const root = mkdtempSync(join(this.workRoot, "wwx-research-"));
+    const root = this.makeTempRoot("wwx-research-");
     try {
       const productCode = productCodeFrom(input.productCode ?? input.productId);
       const productDir = join(root, "products", productCode);
       mkdirSync(join(productDir, "research"), { recursive: true });
       writeFileSync(join(productDir, "config.json"), stringifyJson(input.configJson ?? { product_code: productCode, name: input.productName ?? input.productId }));
 
-      this.runWw(["research", productCode, "--topic", input.topic.trim(), "--base-path", root]);
+      const maxThreads = parsePositiveInt(process.env.WWX_RESEARCH_MAX_THREADS, 40);
+      this.runWw(
+        ["research", productCode, "--topic", input.topic.trim(), "--max-threads", String(maxThreads), "--base-path", root],
+        { timeoutMs: parsePositiveInt(process.env.WWX_RESEARCH_COMMAND_TIMEOUT_MS, 3 * 60 * 1000), env: hostedResearchEnv() },
+      );
       const researchRoot = join(productDir, "research");
       const runDir = latestResearchRunDir(researchRoot);
       if (!runDir) throw new Error("RESEARCH_RUN_FOLDER_MISSING");
-      this.runWw(["research", "synthesize", productCode, "--from", runDir, "--base-path", root]);
-      this.runWw(["research-cards", productCode, "--force", "--base-path", root]);
-      this.runWw(["research-cards", productCode, "--verify", "--base-path", root]);
+      this.runWw(
+        ["research", "synthesize", productCode, "--from", runDir, "--base-path", root],
+        { timeoutMs: parsePositiveInt(process.env.WWX_SYNTHESIS_COMMAND_TIMEOUT_MS, 3 * 60 * 1000), env: hostedResearchEnv() },
+      );
+      this.runWw(["research-cards", productCode, "--force", "--base-path", root], { timeoutMs: 60_000 });
+      this.runWw(["research-cards", productCode, "--verify", "--base-path", root], { timeoutMs: 60_000 });
 
       const runFolder = basename(runDir);
       const items: EngineWorkItem[] = [];
       for (const name of ["archetypes.md", "hotwords.md", "mechanisms.md", "cards-report.json"]) {
-        pushFile(items, "research", join(researchRoot, name), `research/${name}`, name, "technical_hidden");
+        pushFile(items, "research", join(researchRoot, name), `research-runs/${runFolder}/${name}`, name, "public_summary");
       }
-      for (const name of ["README.md", "queries.json", "filtered_threads.json", "filtered-corpus.md", "opus-analysis.md", "opus-usage.txt", "summary.json"]) {
+      for (const name of ["README.md", "queries.json", "summary.json"]) {
+        pushFile(items, "research", join(runDir, name), `research-runs/${runFolder}/${name}`, name, "public_summary");
+      }
+      for (const name of ["filtered_threads.json", "filtered-corpus.md", "opus-analysis.md", "opus-usage.txt"]) {
         pushFile(items, "research", join(runDir, name), `research-runs/${runFolder}/${name}`, name, "technical_hidden");
       }
       return {
         items,
         searchTerms: researchSearchTerms(runDir, input.topic),
-        quality: researchQuality(researchRoot),
+        quality: { ...researchQuality(researchRoot), runFolder },
       };
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -105,7 +115,7 @@ export class LegacyLfs41Engine implements Engine {
   }
 
   runStrategyBuild(input: StrategyWorkflowInput): { strategyJson: string; items: EngineWorkItem[] } {
-    const root = mkdtempSync(join(this.workRoot, "wwx-strategy-"));
+    const root = this.makeTempRoot("wwx-strategy-");
     try {
       const productCode = productCodeFrom(input.productCode ?? input.productId);
       this.linkStaticRuntimeDirs(root);
@@ -168,6 +178,11 @@ export class LegacyLfs41Engine implements Engine {
     }
   }
 
+  private makeTempRoot(prefix: string): string {
+    mkdirSync(this.workRoot, { recursive: true });
+    return mkdtempSync(join(this.workRoot, prefix));
+  }
+
   private writeSource(root: string, input: CreateAdsInput): string {
     if (input.strategyPath) return input.strategyPath;
     if (input.strategyJson) {
@@ -220,26 +235,57 @@ export class LegacyLfs41Engine implements Engine {
   }
 
   private pythonBin(): string {
-    if (process.env.PYTHON_BIN_PATH) return process.env.PYTHON_BIN_PATH;
-    if (process.env.WWX_PYTHON_BIN) return process.env.WWX_PYTHON_BIN;
+    const configured = validExecutablePath(process.env.PYTHON_BIN_PATH) ?? validExecutablePath(process.env.WWX_PYTHON_BIN);
+    if (configured) return configured;
     const venvPython = join(this.engineRoot, ".venv", "bin", "python");
     return existsSync(venvPython) ? venvPython : "python3";
   }
 
-  private runWw(args: string[]): void {
-    const python = process.env.WW_PYTHON ?? process.env.PYTHON_BIN_PATH ?? process.env.WWX_PYTHON_BIN;
-    const output = spawnSync(join(this.engineRoot, "tools", "ww"), args, {
+  private runWw(args: string[], options: { timeoutMs?: number; env?: Record<string, string> } = {}): void {
+    const python = validExecutablePath(process.env.WW_PYTHON)
+      ?? validExecutablePath(process.env.PYTHON_BIN_PATH)
+      ?? validExecutablePath(process.env.WWX_PYTHON_BIN);
+    const wwBin = join(this.engineRoot, "tools", "ww");
+    if (!existsSync(wwBin)) throw new Error("WW_ENGINE_BINARY_MISSING");
+    try {
+      chmodSync(wwBin, 0o755);
+    } catch {
+      // Some deployment filesystems disallow chmod; keep going and let spawn report the actual failure.
+    }
+    const output = spawnSync(wwBin, args, {
       cwd: this.engineRoot,
       encoding: "utf8",
       env: {
         ...process.env,
+        ...options.env,
         ...(python ? { WW_PYTHON: python } : {}),
         WW_BASE_PATH: basePathFromArgs(args) ?? process.env.WW_BASE_PATH ?? this.engineRoot,
       },
+      timeout: options.timeoutMs,
       maxBuffer: 1024 * 1024 * 100,
     });
-    if (output.error) throw output.error;
+    if (output.error) {
+      const timedOut = output.signal === "SIGTERM" && options.timeoutMs;
+      console.error("WW command errored", {
+        command: args.slice(0, 2).join(" "),
+        error: timedOut ? "ETIMEDOUT" : output.error.name,
+        message: sanitizeSubprocessOutput(output.error.message),
+        signal: output.signal ?? undefined,
+        stdout: sanitizeSubprocessOutput(output.stdout),
+        stderr: sanitizeSubprocessOutput(output.stderr),
+      });
+      if (timedOut || output.error.name === "ETIMEDOUT") {
+        throw new Error(`WW_COMMAND_TIMEOUT:${args.slice(0, 2).join("_")}`);
+      }
+      throw output.error;
+    }
     if (output.status !== 0) {
+      console.error("WW command failed", {
+        command: args.slice(0, 2).join(" "),
+        status: output.status ?? "unknown",
+        stdout: sanitizeSubprocessOutput(output.stdout),
+        stderr: sanitizeSubprocessOutput(output.stderr),
+      });
       throw new Error(`WW_COMMAND_FAILED:${args.slice(0, 2).join("_")}:${output.status ?? "unknown"}`);
     }
   }
@@ -265,6 +311,41 @@ function safeJson(value: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function validExecutablePath(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  const path = value.trim();
+  return isAbsolute(path) && !existsSync(path) ? undefined : path;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function hostedResearchEnv(): Record<string, string> {
+  return {
+    // Hosted workers should not spend minutes rate-limiting a background smoke
+    // run before the first observable progress event. Operators see the run
+    // state; engineers can tune this in Trigger env for heavier research.
+    WW_RESEARCH_RATE_LIMIT_SECONDS: process.env.WW_RESEARCH_RATE_LIMIT_SECONDS ?? "0.25",
+    WW_RESEARCH_QUERY_COUNT: process.env.WW_RESEARCH_QUERY_COUNT ?? "16",
+    ANTHROPIC_TIMEOUT_SECONDS: process.env.ANTHROPIC_TIMEOUT_SECONDS ?? "120",
+    ANTHROPIC_MAX_RETRIES: process.env.ANTHROPIC_MAX_RETRIES ?? "1",
+  };
+}
+
+function sanitizeSubprocessOutput(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/(?<=api[_-]?key[=:]\s*)[A-Za-z0-9._-]+/gi, "[redacted]")
+    .replace(/(?<=authorization:\s*bearer\s+)[A-Za-z0-9._-]+/gi, "[redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[redacted-url]")
+    .replace(/https?:\/\/[^\s]*X-Amz-[^\s]+/gi, "[redacted-url]")
+    .slice(-4000);
 }
 
 function stringifyJson(value: Record<string, unknown> | string): string {

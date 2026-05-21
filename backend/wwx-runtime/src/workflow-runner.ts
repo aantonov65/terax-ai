@@ -52,6 +52,7 @@ async function executeResearchTask(
 ): Promise<WorkflowTaskResult> {
   const productId = stringValue(payload.input?.productId) ?? stringValue(payload.input?.product_id);
   const topic = stringValue(payload.input?.topic);
+  const researchRunId = stringValue(payload.input?.researchRunId) ?? stringValue(payload.input?.research_run_id);
   if (!productId || !topic) {
     await runtime.observability.markRunFailed(payload.runId, "invalid_input", "Research requires product and topic.");
     return { ok: false, runId: payload.runId, workflowType: "research", status: "failed" };
@@ -61,7 +62,15 @@ async function executeResearchTask(
   const startedAt = Date.now();
   try {
     if (!(runtime.engine instanceof LegacyLfs41Engine)) {
-      await runtime.service.startResearchRun(payload.workspaceId, productId, topic, stringArray(payload.input?.searchTerms ?? payload.input?.search_terms));
+      if (researchRunId) {
+        await runtime.service.completeResearchRun(
+          payload.workspaceId,
+          researchRunId,
+          stringArray(payload.input?.searchTerms ?? payload.input?.search_terms),
+        );
+      } else {
+        await runtime.service.startResearchRun(payload.workspaceId, productId, topic, stringArray(payload.input?.searchTerms ?? payload.input?.search_terms));
+      }
       await runtime.observability.completeStage({ stageId: stage.id, durationMs: Date.now() - startedAt });
       await runtime.observability.markRunCompleted(payload.runId);
       return { ok: true, runId: payload.runId, workflowType: "research", status: "succeeded" };
@@ -80,7 +89,9 @@ async function executeResearchTask(
       topic,
       searchTerms: stringArray(payload.input?.searchTerms ?? payload.input?.search_terms),
     });
-    const researchRun = await runtime.service.startResearchRun(payload.workspaceId, productId, topic, result.searchTerms);
+    const researchRun = researchRunId
+      ? await runtime.service.completeResearchRun(payload.workspaceId, researchRunId, result.searchTerms, result.quality)
+      : await runtime.service.startResearchRun(payload.workspaceId, productId, topic, result.searchTerms, "complete", result.quality);
     await runtime.service.store.ensureBatch(payload.workspaceId, productId, { productId, batchId: productId, batchName: `Research: ${productId}`, adCount: 1 });
     for (const item of result.items) {
       const artifact = await runtime.service.publishArtifact(payload.workspaceId, productId, item);
@@ -109,6 +120,7 @@ async function executeResearchTask(
     await runtime.observability.markRunCompleted(payload.runId);
     return { ok: true, runId: payload.runId, workflowType: "research", status: "succeeded", publicArtifactCount: 0 };
   } catch (error) {
+    if (researchRunId) await runtime.service.failResearchRun(payload.workspaceId, researchRunId).catch(() => undefined);
     await runtime.observability.failStage({
       stageId: stage.id,
       durationMs: Date.now() - startedAt,

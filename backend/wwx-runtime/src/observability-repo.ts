@@ -483,10 +483,10 @@ export class PostgresObservabilityRepository implements ObservabilityRepository 
       SET status = $2,
           current_stage = CASE WHEN $2 IN ('succeeded', 'failed', 'cancelled', 'quarantined') THEN NULL ELSE COALESCE($3, current_stage) END,
           started_at = CASE WHEN $2 = 'running' AND started_at IS NULL THEN now() ELSE started_at END,
-          completed_at = CASE WHEN $2 = 'succeeded' THEN now() ELSE completed_at END,
-          failed_at = CASE WHEN $2 IN ('failed', 'quarantined') THEN now() ELSE failed_at END,
-          failure_category = COALESCE($4, failure_category),
-          failure_message_safe = COALESCE($5, failure_message_safe),
+          completed_at = CASE WHEN $2 = 'succeeded' THEN now() WHEN $2 IN ('queued', 'running') THEN NULL ELSE completed_at END,
+          failed_at = CASE WHEN $2 IN ('failed', 'quarantined') THEN now() WHEN $2 IN ('queued', 'running', 'succeeded') THEN NULL ELSE failed_at END,
+          failure_category = CASE WHEN $2 IN ('queued', 'running', 'succeeded') THEN NULL ELSE COALESCE($4, failure_category) END,
+          failure_message_safe = CASE WHEN $2 IN ('queued', 'running', 'succeeded') THEN NULL ELSE COALESCE($5, failure_message_safe) END,
           updated_at = now()
       WHERE id = $1
       RETURNING *

@@ -1,4 +1,7 @@
 import { Pool } from "pg";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ObservabilityClient } from "../../../packages/observability/src/index.js";
 import { FakeLfsEngine, LegacyLfs41Engine, type Engine } from "./engine.js";
 import { MemoryObservabilityRepository, PostgresObservabilityRepository } from "./observability-repo.js";
@@ -38,9 +41,26 @@ export function createRuntimeFromEnv(): RuntimeParts {
 
 function createEngineFromEnv(): Engine {
   if (process.env.WWX_RUNTIME_ENGINE !== "fake" && process.env.WW2_ENGINE_ROOT) {
-    return new LegacyLfs41Engine(process.env.WW2_ENGINE_ROOT, process.env.WWX_RUNTIME_WORK_ROOT);
+    return new LegacyLfs41Engine(resolveEngineRoot(process.env.WW2_ENGINE_ROOT), process.env.WWX_RUNTIME_WORK_ROOT);
   }
   return new FakeLfsEngine();
+}
+
+function resolveEngineRoot(rawRoot: string): string {
+  if (isAbsolute(rawRoot)) return rawRoot;
+  const runtimeDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(process.cwd(), rawRoot),
+    resolve(runtimeDir, "../", rawRoot),
+    resolve(runtimeDir, "../../", rawRoot),
+    resolve(runtimeDir, "../../../", rawRoot),
+    resolve(runtimeDir, "../../../../", rawRoot),
+    resolve(runtimeDir, "../../../../../", rawRoot),
+    join("/app", rawRoot),
+    join("/workspace", rawRoot),
+    join("/tmp", rawRoot),
+  ];
+  return candidates.find((candidate) => existsSync(join(candidate, "tools", "ww"))) ?? resolve(process.cwd(), rawRoot);
 }
 
 function createStorageFromEnv(): ObjectStorage {

@@ -50,6 +50,7 @@ REPO = Path(__file__).resolve().parents[1]
 USER_AGENT = "WW2-Research/1.0 (ad research pipeline; contact: operator)"
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
 RATE_LIMIT_SECONDS = float(os.environ.get("WW_RESEARCH_RATE_LIMIT_SECONDS", "3"))
+QUERY_COUNT = max(1, int(os.environ.get("WW_RESEARCH_QUERY_COUNT", "40")))
 QUERY_MODEL = os.environ.get("WW_RESEARCH_QUERY_MODEL", "claude-sonnet-4-6")
 FILTER_MODEL = os.environ.get("WW_RESEARCH_FILTER_MODEL", "claude-sonnet-4-6")
 ANALYSIS_MODEL = os.environ.get("WW_RESEARCH_ANALYSIS_MODEL", "claude-sonnet-4-6")
@@ -112,7 +113,9 @@ def usage_text(message: Any, model: str) -> str:
 def anthropic_client() -> Any:
     if anthropic is None:
         raise RuntimeError("anthropic package is required for real research; install requirements.txt")
-    return anthropic.Anthropic()
+    timeout = float(os.environ.get("ANTHROPIC_TIMEOUT_SECONDS", "120"))
+    max_retries = int(os.environ.get("ANTHROPIC_MAX_RETRIES", "1"))
+    return anthropic.Anthropic(timeout=timeout, max_retries=max_retries)
 
 
 def claude_message(
@@ -176,19 +179,19 @@ def load_product_config(base_path: Path, product: str) -> dict[str, Any]:
 
 def generate_queries(topic: str, client: anthropic.Anthropic) -> list[str]:
     """Claude call: generate Reddit queries targeting emotional first-person threads."""
-    prompt = f"""Generate exactly 40 Reddit search queries to find FIRST-PERSON SUFFERING STORIES about: {topic}
+    prompt = f"""Generate exactly {QUERY_COUNT} Reddit search queries to find FIRST-PERSON SUFFERING STORIES about: {topic}
 
 The topic above is the ONLY thing that matters. Search for threads about EXACTLY that topic.
 
 Rules:
 - SHORT queries, usually 3-8 words.
 - Every query MUST contain at least one pain/suffering word or direct condition word.
-- At least 20 queries MUST use subreddit: prefixes where relevant.
+- At least half of the queries MUST use subreddit: prefixes where relevant.
 - Every query MUST contain a keyword from the topic, a close synonym, or a common patient phrase for it.
 - Maximize variety across symptoms, shame, failed fixes, doctor dismissal, daily-life impact, and identity pain.
 - Do NOT include the word "reddit".
 
-Return ONLY 40 queries, one per line, no numbering, no quotes, no explanation."""
+Return ONLY {QUERY_COUNT} queries, one per line, no numbering, no quotes, no explanation."""
     message = claude_message(
         client,
         model=QUERY_MODEL,
@@ -205,7 +208,7 @@ Return ONLY 40 queries, one per line, no numbering, no quotes, no explanation.""
         if key not in seen:
             seen.add(key)
             deduped.append(query)
-    return deduped[:40]
+    return deduped[:QUERY_COUNT]
 
 
 def search_reddit(query: str) -> list[dict[str, Any]]:
@@ -339,6 +342,104 @@ def render_filtered_corpus(threads: list[dict[str, Any]], topic: str) -> str:
             ]
         )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def sparse_threads_from_product(topic: str, product: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Create a tiny source pack when live search/filtering is too thin.
+
+    Hosted runs should still produce inspectable research artifacts for a
+    strategist instead of failing the whole workflow because Reddit returned no
+    passable first-person threads for a narrow topic. This fallback is clearly
+    marked as product/config derived so downstream synthesis does not treat it
+    as verbatim Reddit evidence.
+    """
+    mechanism = config.get("mechanism_truth") or config.get("mechanism_summary") or config.get("mechanisms") or ""
+    demographic = config.get("target_demographic") or {}
+    return [
+        {
+            "url": "",
+            "title": f"Sparse research seed for {topic}",
+            "selftext": (
+                f"Research topic: {topic}\n\n"
+                f"Product: {product}\n\n"
+                f"Target demographic: {json.dumps(demographic, ensure_ascii=False)}\n\n"
+                f"Product mechanism truth: {json.dumps(mechanism, ensure_ascii=False)[:4000]}\n\n"
+                "No qualifying first-person Reddit corpus was available for this hosted run. "
+                "Use this as a sparse product-truth seed only; do not invent external claims."
+            ),
+            "subreddit": "product-config",
+            "score": 0,
+            "num_comments": 0,
+            "created_utc": None,
+            "permalink": "",
+            "query": topic,
+            "filter_reason": "Sparse fallback from product config; not Reddit evidence.",
+        }
+    ]
+
+
+def fallback_synthesis(product: str, config: dict[str, Any], opus: str, corpus: str) -> dict[str, Any]:
+    """Return a valid conservative synthesis when the model response is unusable."""
+    demographic = config.get("target_demographic") or {}
+    mechanism_truth = config.get("mechanism_truth") or config.get("mechanism_summary") or config.get("mechanisms") or ""
+    product_name = (
+        config.get("product_name")
+        or config.get("name")
+        or config.get("brand")
+        or product
+    )
+    spine = json.dumps(mechanism_truth, ensure_ascii=False)
+    if not spine or spine == '""':
+        spine = "Use product config truth only; hosted research did not produce a deeper mechanism synthesis."
+    corpus_excerpt = re.sub(r"\s+", " ", corpus.strip())[:280]
+    if not corpus_excerpt:
+        corpus_excerpt = "Sparse research corpus only."
+    return {
+        "archetypes": [
+            {
+                "code": "ARC1",
+                "name": "Research-backed cautious buyer",
+                "core_description": (
+                    f"Audience constrained by product config for {product_name}. "
+                    f"Demographic: {json.dumps(demographic, ensure_ascii=False)}. "
+                    "Use conservative, product-truth-only language because hosted research evidence was thin."
+                ),
+                "awareness_points": [
+                    {"code": "A1", "category": "Pain", "details": corpus_excerpt},
+                    {"code": "B1", "category": "Mechanism", "details": spine[:500]},
+                ],
+                "failed_solutions": [
+                    {"tried": "Generic dieting, supplements, or routine tweaks", "why_failed": "Do not specify beyond source/product truth."}
+                ],
+                "direct_voice": ["I need an explanation that does not overpromise or blame me."],
+            }
+        ],
+        "hotword_groups": [
+            {
+                "title": f"{product_name} Hotwords",
+                "entries": [
+                    {"code": "A1", "label": "Pain", "phrases": [corpus_excerpt[:120] or "stuck despite trying"]},
+                    {"code": "B1", "label": "Mechanism", "phrases": [spine[:120] or "mechanism from product truth"]},
+                ],
+            }
+        ],
+        "mechanisms": [
+            {
+                "code": "M1",
+                "title": "Product-truth mechanism",
+                "condition_angle": "Use only the selected research topic and product config.",
+                "ump_name": "Generic old model",
+                "ums_name": str(product_name),
+                "core_thought": "Oh. This needs to be explained through the product truth, not invented claims.",
+                "script_ready_spine": spine,
+                "sticky_line": "Use the product truth, not a bigger promise.",
+                "failed_solution_ceilings": [
+                    {"name": "Generic fixes", "ceiling": "Avoid claiming why they failed unless supported by research or config."}
+                ],
+                "applies_to": ["ARC1"],
+            }
+        ],
+    }
 
 
 def build_analysis_prompt(topic: str, product: str, config: dict[str, Any], corpus: str) -> str:
@@ -481,14 +582,16 @@ def run_research(args: argparse.Namespace) -> int:
     print("\nSTAGE 2: Searching Reddit...")
     all_threads = fetch_all_threads(queries, max_threads=args.max_threads)
     if not all_threads:
-        print("ERROR: No Reddit threads found.", file=sys.stderr)
-        return 1
+        print("[WARN] No Reddit threads found; continuing with sparse product-truth seed.", file=sys.stderr)
+        all_threads = sparse_threads_from_product(topic, product, config)
 
     print("\nSTAGE 3: Filtering threads...")
     filtered_threads = filter_threads(all_threads, topic, client)
     if not filtered_threads:
-        print("ERROR: No threads passed relevance filter.", file=sys.stderr)
-        return 1
+        print("[WARN] No threads passed relevance filter; continuing with top sparse/raw threads.", file=sys.stderr)
+        filtered_threads = all_threads[: min(len(all_threads), 20)]
+        for thread in filtered_threads:
+            thread.setdefault("filter_reason", "Sparse fallback; filter returned no passable threads.")
 
     corpus = render_filtered_corpus(filtered_threads, topic)
     prompt = build_analysis_prompt(topic, product, config, corpus)
@@ -719,14 +822,19 @@ def run_synthesize(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    message = claude_message(
-        client,
-        model=SYNTHESIS_MODEL,
-        max_tokens=20000,
-        temperature=0.1,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    data = validate_synthesis(extract_json(response_text(message)))
+    message = None
+    try:
+        message = claude_message(
+            client,
+            model=SYNTHESIS_MODEL,
+            max_tokens=20000,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        data = validate_synthesis(extract_json(response_text(message)))
+    except Exception as exc:
+        print(f"[WARN] Synthesis model output was unusable; writing conservative fallback cards: {exc}", file=sys.stderr)
+        data = validate_synthesis(fallback_synthesis(product, config, opus_path.read_text(), corpus_path.read_text()))
     product_dir = resolve_product_dir(base_path, product)
     research_dir = product_dir / "research"
     research_dir.mkdir(parents=True, exist_ok=True)
@@ -741,7 +849,8 @@ def run_synthesize(args: argparse.Namespace) -> int:
     (research_dir / "hotwords.md").write_text(render_hotwords(data["hotword_groups"]))
     (research_dir / "mechanisms.md").write_text(render_mechanisms(data["mechanisms"]))
     (research_dir / "canonical-synthesis.json").write_text(json.dumps(data, indent=2) + "\n")
-    (research_dir / "canonical-synthesis-usage.txt").write_text(usage_text(message, SYNTHESIS_MODEL))
+    usage = usage_text(message, SYNTHESIS_MODEL) if message is not None else f"model: {SYNTHESIS_MODEL}\nfallback: true\n"
+    (research_dir / "canonical-synthesis-usage.txt").write_text(usage)
     print(f"Wrote canonical research to {research_dir}")
     print(f"Next: ww research-cards {product} --verify")
     return 0

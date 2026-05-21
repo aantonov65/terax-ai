@@ -66,7 +66,14 @@ export class PostgresStore implements Store {
     return result.rows.map(mapBatch);
   }
 
-  async createResearchRun(workspaceId: string, productId: string, topic: string, searchTerms: string[]): Promise<ResearchRun> {
+  async createResearchRun(
+    workspaceId: string,
+    productId: string,
+    topic: string,
+    searchTerms: string[],
+    status: ResearchRun["status"] = "complete",
+    quality: Record<string, unknown> = { searchTermCount: searchTerms.length, corpusRefs: searchTerms.length },
+  ): Promise<ResearchRun> {
     const now = nowMs();
     const run: ResearchRun = {
       id: id("research"),
@@ -75,8 +82,8 @@ export class PostgresStore implements Store {
       topic,
       topicSlug: slugify(topic),
       searchTerms,
-      status: "complete",
-      quality: { searchTermCount: searchTerms.length, corpusRefs: searchTerms.length },
+      status,
+      quality,
       createdAt: now,
       updatedAt: now,
     };
@@ -89,6 +96,36 @@ export class PostgresStore implements Store {
       [run.id, workspaceId, productId, topic, run.topicSlug, JSON.stringify(searchTerms), run.status, run.quality, now, now],
     );
     return run;
+  }
+
+  async updateResearchRun(
+    workspaceId: string,
+    researchRunId: string,
+    input: { status?: ResearchRun["status"]; searchTerms?: string[]; quality?: Record<string, unknown> },
+  ): Promise<ResearchRun> {
+    const now = nowMs();
+    const result = await this.pool.query(
+      `
+      UPDATE research_runs
+      SET
+        status = COALESCE($3, status),
+        search_terms = COALESCE($4, search_terms),
+        quality = quality || COALESCE($5, '{}'::jsonb),
+        updated_at = $6
+      WHERE workspace_id = $1 AND id = $2
+      RETURNING *
+      `,
+      [
+        workspaceId,
+        researchRunId,
+        input.status ?? null,
+        input.searchTerms ? JSON.stringify(input.searchTerms) : null,
+        input.quality ? JSON.stringify(input.quality) : null,
+        now,
+      ],
+    );
+    if (!result.rows[0]) throw new Error("research run not found");
+    return mapResearchRun(result.rows[0]);
   }
 
   async listResearchRuns(workspaceId: string, productId: string): Promise<ResearchRun[]> {

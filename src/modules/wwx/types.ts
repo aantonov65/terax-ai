@@ -185,6 +185,7 @@ export type ProductSummary = {
   researchArtifactCount?: number;
   researchArtifactUpdatedAt?: number | null;
   researchRuns?: ResearchRunSummary[];
+  researchArtifacts?: ArtifactSummary[];
   batchCount: number;
   statusCounts: Record<BatchStatus, number>;
   updatedAt?: number;
@@ -194,10 +195,12 @@ export type ProductSummary = {
 export type ProductResearchJob = {
   productId: string;
   topic: string;
-  status: "running" | "complete" | "blocked";
+  status: "queued" | "running" | "complete" | "blocked";
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  runId?: string;
+  researchRunId?: string;
 };
 
 export type ResearchRunSummary = {
@@ -209,6 +212,7 @@ export type ResearchRunSummary = {
   runFolder: string;
   status: string;
   qualityJson: string;
+  artifacts?: ArtifactSummary[];
   createdAt: number;
   updatedAt: number;
 };
