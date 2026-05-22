@@ -222,10 +222,10 @@ export class LegacyLfs41Engine implements Engine {
   }
 
   private readFinalOutputs(root: string, input: CreateAdsInput): EngineWorkItem[] {
-    const batchId = input.batchId ?? this.batchIdFromInput(input) ?? this.onlyBatchDir(root);
-    if (!batchId) throw new Error("LFS41_BATCH_NOT_FOUND");
-    const outputDir = this.outputDirFor(root, batchId);
-    if (!existsSync(outputDir)) throw new Error("LFS41_OUTPUT_MISSING");
+    const batchIds = this.outputBatchCandidates(root, input);
+    if (!batchIds.length) throw new Error("LFS41_BATCH_NOT_FOUND");
+    const outputDir = batchIds.map((batchId) => this.outputDirFor(root, batchId)).find((candidate) => existsSync(candidate));
+    if (!outputDir) throw new Error("LFS41_OUTPUT_MISSING");
     const files = readdirSync(outputDir)
       .filter((name) => name.endsWith(".md"))
       .sort((a, b) => a.localeCompare(b));
@@ -261,6 +261,14 @@ export class LegacyLfs41Engine implements Engine {
       : input.strategyJson;
     const batchId = raw?.batch_id ?? raw?.batchId;
     return typeof batchId === "string" && batchId.trim() ? batchId.trim() : null;
+  }
+
+  private outputBatchCandidates(root: string, input: CreateAdsInput): string[] {
+    return [...new Set([
+      input.batchId,
+      this.batchIdFromInput(input),
+      this.onlyBatchDir(root),
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
   }
 
   private onlyBatchDir(root: string): string | null {

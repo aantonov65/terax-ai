@@ -104,6 +104,13 @@ export class RuntimeWorker {
       expectedItems: expectedAdCount(input),
       completedItems: await this.completedCount(claim.workspaceId, claim.batchId, "lfs_generation"),
     });
+    const telemetryGenerationStage = this.telemetry
+      ? await this.telemetry.observability.startStage({
+          runId: this.telemetry.workflowRunId,
+          stageName: "lfs_generation",
+          provider: "lfs4.1",
+        })
+      : null;
     const heartbeat = this.startHeartbeat(claim);
     let items: EngineWorkItem[];
     try {
@@ -127,14 +134,9 @@ export class RuntimeWorker {
         message: "LFS generation failed",
         payload: engineFailurePayload(error),
       });
-      if (this.telemetry) {
-        const stage = await this.telemetry.observability.startStage({
-          runId: this.telemetry.workflowRunId,
-          stageName: "lfs_generation",
-          provider: "lfs4.1",
-        });
+      if (telemetryGenerationStage) {
         await this.telemetry.observability.failStage({
-          stageId: stage.id,
+          stageId: telemetryGenerationStage.id,
           errorCategory: "lfs_generation_failed",
           errorCode: error instanceof Error ? error.message.split(":")[0] : "LFS_GENERATION_FAILED",
           errorMessageSafe: "LFS generation failed.",
@@ -144,7 +146,7 @@ export class RuntimeWorker {
     } finally {
       clearInterval(heartbeat);
     }
-    await this.runStage(claim, "lfs_generation", items);
+    await this.runStage(claim, "lfs_generation", items, telemetryGenerationStage);
     if (await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
       await this.stopClaim(claim, "Stopped after lfs_generation");
       return;
@@ -213,8 +215,13 @@ export class RuntimeWorker {
     await this.store.completeJob(claim.id, claim.run.id, "complete");
   }
 
-  private async runStage(claim: ClaimedJob, stage: string, items: EngineWorkItem[]): Promise<void> {
-    let telemetryStage: StageRecord | null = null;
+  private async runStage(
+    claim: ClaimedJob,
+    stage: string,
+    items: EngineWorkItem[],
+    existingTelemetryStage: StageRecord | null = null,
+  ): Promise<void> {
+    let telemetryStage: StageRecord | null = existingTelemetryStage;
     await this.store.setStageState({
       workspaceId: claim.workspaceId,
       batchId: claim.batchId,
@@ -233,7 +240,7 @@ export class RuntimeWorker {
       message: "Stage started",
       payload: { expectedItems: items.length },
     });
-    if (this.telemetry) {
+    if (this.telemetry && !telemetryStage) {
       telemetryStage = await this.telemetry.observability.startStage({
         runId: this.telemetry.workflowRunId,
         stageName: stage,
