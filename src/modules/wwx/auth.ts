@@ -105,8 +105,10 @@ export async function signInWithClerkPkce(): Promise<WwxAuthSession> {
   });
 }
 
-export async function wwxAuthHeaders(): Promise<Record<string, string>> {
-  const session = await requireWwxAuthSession();
+export async function wwxAuthHeaders(options: { interactive?: boolean } = {}): Promise<Record<string, string>> {
+  const interactive = options.interactive ?? true;
+  const session = interactive ? await requireWwxAuthSession() : await getWwxAuthSession();
+  if (!session) throw new Error("Sign-in is required for hosted runtime.");
   return {
     authorization: `Bearer ${session.accessToken}`,
     "x-workspace-id": wwxWorkspaceId(),

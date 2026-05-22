@@ -267,7 +267,7 @@ async function hostedRequest<T>(path: string, options: { method?: string; body?:
     url: `${baseUrl}${path}`,
     method: options.method ?? "GET",
     headers: {
-      ...await wwxAuthHeaders(),
+      ...await wwxAuthHeaders({ interactive: false }),
       "content-type": "application/json",
     },
     body: options.body ? Array.from(new TextEncoder().encode(JSON.stringify(options.body))) : undefined,
