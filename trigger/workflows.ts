@@ -6,7 +6,7 @@ export const lfsAdsTask = task({
   id: "wwx.lfs_ads",
   queue: {
     name: "lfs_ads",
-    concurrencyLimit: Number.parseInt(process.env.TRIGGER_LFS_CONCURRENCY ?? "6", 10),
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_LFS_CONCURRENCY ?? "1", 10),
   },
   retry: {
     maxAttempts: 3,
@@ -29,7 +29,7 @@ export const researchTask = task({
   id: "wwx.research",
   queue: {
     name: "research",
-    concurrencyLimit: Number.parseInt(process.env.TRIGGER_RESEARCH_CONCURRENCY ?? "4", 10),
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_RESEARCH_CONCURRENCY ?? "1", 10),
   },
   retry: {
     maxAttempts: 2,
@@ -52,7 +52,7 @@ export const strategyTask = task({
   id: "wwx.strategy",
   queue: {
     name: "strategy",
-    concurrencyLimit: Number.parseInt(process.env.TRIGGER_STRATEGY_CONCURRENCY ?? "4", 10),
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_STRATEGY_CONCURRENCY ?? "1", 10),
   },
   retry: {
     maxAttempts: 2,

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { CreateAdsInput, EngineWorkItem, ResearchWorkflowInput, StrategyWorkflowInput } from "./model.js";
 
 export type Engine = {
@@ -40,25 +40,29 @@ export class LegacyLfs41Engine implements Engine {
   constructor(
     private readonly engineRoot: string,
     private readonly workRoot = tmpdir(),
-  ) {}
+  ) {
+    this.engineRoot = resolve(engineRoot);
+  }
 
   planCreateAds(input: CreateAdsInput): EngineWorkItem[] {
     const root = this.makeTempRoot("wwx-lfs41-");
     try {
       const sourcePath = this.writeSource(root, input);
       const python = this.pythonBin();
+      this.linkStaticRuntimeDirs(root);
+      this.writeRuntimeContext(root, input);
       const args = [join(this.engineRoot, "tools", "lfs_agent.py"), sourcePath];
       args.push(input.runMode === "full" ? "--yolo" : "--app-step");
       args.push("--base-path", root);
-      if (input.workers) args.push("--workers", String(input.workers));
-      if (input.generationWorkers) args.push("--generation-workers", String(input.generationWorkers));
+      args.push("--workers", String(input.workers ?? hostedLfsWorkers()));
+      args.push("--generation-workers", String(input.generationWorkers ?? hostedLfsGenerationWorkers()));
       if (input.fromStage) args.push("--from", input.fromStage);
 
       const output = spawnSync(python, args, {
         cwd: this.engineRoot,
         encoding: "utf8",
         env: process.env,
-        maxBuffer: 1024 * 1024 * 100,
+        maxBuffer: subprocessMaxBufferBytes(),
       });
       if (output.error) throw output.error;
       if (output.status !== 0) {
@@ -78,7 +82,7 @@ export class LegacyLfs41Engine implements Engine {
       mkdirSync(join(productDir, "research"), { recursive: true });
       writeFileSync(join(productDir, "config.json"), stringifyJson(input.configJson ?? { product_code: productCode, name: input.productName ?? input.productId }));
 
-      const maxThreads = parsePositiveInt(process.env.WWX_RESEARCH_MAX_THREADS, 40);
+      const maxThreads = parsePositiveInt(process.env.WWX_RESEARCH_MAX_THREADS, 24);
       this.runWw(
         ["research", productCode, "--topic", input.topic.trim(), "--max-threads", String(maxThreads), "--base-path", root],
         { timeoutMs: parsePositiveInt(process.env.WWX_RESEARCH_COMMAND_TIMEOUT_MS, 3 * 60 * 1000), env: hostedResearchEnv() },
@@ -102,7 +106,9 @@ export class LegacyLfs41Engine implements Engine {
         pushFile(items, "research", join(runDir, name), `research-runs/${runFolder}/${name}`, name, "public_summary");
       }
       for (const name of ["filtered_threads.json", "filtered-corpus.md", "opus-analysis.md", "opus-usage.txt"]) {
-        pushFile(items, "research", join(runDir, name), `research-runs/${runFolder}/${name}`, name, "technical_hidden");
+        pushFile(items, "research", join(runDir, name), `research-runs/${runFolder}/${name}`, name, "technical_hidden", {
+          maxBytes: hiddenArtifactMaxBytes(),
+        });
       }
       return {
         items,
@@ -119,7 +125,7 @@ export class LegacyLfs41Engine implements Engine {
     try {
       const productCode = productCodeFrom(input.productCode ?? input.productId);
       this.linkStaticRuntimeDirs(root);
-      const productDir = join(root, "products", productCode);
+      const productDir = this.productDir(root, productCode);
       const batchDir = join(productDir, "batches", input.batchId);
       const researchDir = join(productDir, "research");
       mkdirSync(batchDir, { recursive: true });
@@ -202,7 +208,7 @@ export class LegacyLfs41Engine implements Engine {
   private readFinalOutputs(root: string, input: CreateAdsInput): EngineWorkItem[] {
     const batchId = input.batchId ?? this.batchIdFromInput(input) ?? this.onlyBatchDir(root);
     if (!batchId) throw new Error("LFS41_BATCH_NOT_FOUND");
-    const outputDir = join(root, "batches", batchId, "output-v41");
+    const outputDir = this.outputDirFor(root, batchId);
     if (!existsSync(outputDir)) throw new Error("LFS41_OUTPUT_MISSING");
     const files = readdirSync(outputDir)
       .filter((name) => name.endsWith(".md"))
@@ -217,6 +223,20 @@ export class LegacyLfs41Engine implements Engine {
       mimeType: "text/markdown",
       content: readFileSync(join(outputDir, file), "utf8"),
     }));
+  }
+
+  private outputDirFor(root: string, batchId: string): string {
+    const legacy = join(root, "batches", batchId, "output-v41");
+    if (existsSync(legacy)) return legacy;
+    const productsDir = join(root, "products");
+    if (existsSync(productsDir)) {
+      for (const entry of readdirSync(productsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const candidate = join(productsDir, entry.name, "batches", batchId, "output-v41");
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+    return legacy;
   }
 
   private batchIdFromInput(input: CreateAdsInput): string | null {
@@ -262,7 +282,7 @@ export class LegacyLfs41Engine implements Engine {
         WW_BASE_PATH: basePathFromArgs(args) ?? process.env.WW_BASE_PATH ?? this.engineRoot,
       },
       timeout: options.timeoutMs,
-      maxBuffer: 1024 * 1024 * 100,
+      maxBuffer: subprocessMaxBufferBytes(),
     });
     if (output.error) {
       const timedOut = output.signal === "SIGTERM" && options.timeoutMs;
@@ -302,6 +322,38 @@ export class LegacyLfs41Engine implements Engine {
       }
     }
   }
+
+  private writeRuntimeContext(root: string, input: CreateAdsInput): void {
+    const strategy = typeof input.strategyJson === "string" ? safeJson(input.strategyJson) : input.strategyJson;
+    const productCode = stringValue(strategy?.product) ?? productCodeFrom(input.productId);
+    for (const productDir of this.productDirs(root, productCode)) {
+      const researchDir = join(productDir, "research");
+      mkdirSync(researchDir, { recursive: true });
+      if (input.configJson) {
+        writeFileSync(join(productDir, "config.json"), stringifyJson(input.configJson));
+      }
+      if (input.researchFiles?.archetypes) writeFileSync(join(researchDir, "archetypes.md"), input.researchFiles.archetypes);
+      if (input.researchFiles?.hotwords) writeFileSync(join(researchDir, "hotwords.md"), input.researchFiles.hotwords);
+      if (input.researchFiles?.mechanisms) writeFileSync(join(researchDir, "mechanisms.md"), input.researchFiles.mechanisms);
+    }
+  }
+
+  private productDir(root: string, productCode: string): string {
+    return join(root, "products", this.productFolder(productCode));
+  }
+
+  private productDirs(root: string, productCode: string): string[] {
+    return [...new Set([productCode, this.productFolder(productCode)])].map((folder) => join(root, "products", folder));
+  }
+
+  private productFolder(productCode: string): string {
+    const contextPath = join(this.engineRoot, "tools", "context.py");
+    if (!existsSync(contextPath)) return productCode;
+    const text = readFileSync(contextPath, "utf8");
+    const escaped = productCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(new RegExp(`[\"']${escaped}[\"']\\s*:\\s*[\"']([^\"']+)[\"']`));
+    return match?.[1] ?? productCode;
+  }
 }
 
 function safeJson(value: string): Record<string, unknown> | null {
@@ -324,13 +376,29 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function hostedLfsWorkers(): number {
+  return parsePositiveInt(process.env.WWX_LFS_WORKERS, 1);
+}
+
+function hostedLfsGenerationWorkers(): number {
+  return parsePositiveInt(process.env.WWX_LFS_GENERATION_WORKERS, 1);
+}
+
+function subprocessMaxBufferBytes(): number {
+  return parsePositiveInt(process.env.WWX_SUBPROCESS_MAX_BUFFER_BYTES, 8 * 1024 * 1024);
+}
+
+function hiddenArtifactMaxBytes(): number {
+  return parsePositiveInt(process.env.WWX_HIDDEN_ARTIFACT_MAX_BYTES, 512 * 1024);
+}
+
 function hostedResearchEnv(): Record<string, string> {
   return {
     // Hosted workers should not spend minutes rate-limiting a background smoke
     // run before the first observable progress event. Operators see the run
     // state; engineers can tune this in Trigger env for heavier research.
     WW_RESEARCH_RATE_LIMIT_SECONDS: process.env.WW_RESEARCH_RATE_LIMIT_SECONDS ?? "0.25",
-    WW_RESEARCH_QUERY_COUNT: process.env.WW_RESEARCH_QUERY_COUNT ?? "16",
+    WW_RESEARCH_QUERY_COUNT: process.env.WW_RESEARCH_QUERY_COUNT ?? "10",
     ANTHROPIC_TIMEOUT_SECONDS: process.env.ANTHROPIC_TIMEOUT_SECONDS ?? "120",
     ANTHROPIC_MAX_RETRIES: process.env.ANTHROPIC_MAX_RETRIES ?? "1",
   };
@@ -372,8 +440,27 @@ function pushFile(
   filename: string,
   label: string,
   visibilityClass: EngineWorkItem["visibilityClass"],
+  options: { maxBytes?: number } = {},
 ): void {
   if (!existsSync(path)) return;
+  const size = statSync(path).size;
+  if (options.maxBytes && size > options.maxBytes) {
+    items.push({
+      stage,
+      itemKey: `${filename}.metadata`,
+      filename: `${filename}.metadata.json`,
+      label: `${label} metadata`,
+      visibilityClass,
+      mimeType: "application/json",
+      content: JSON.stringify({
+        schema: "wwx-hidden-artifact-omitted/v1",
+        original_filename: filename,
+        original_size_bytes: size,
+        omitted_reason: "hidden_artifact_exceeded_hosted_publish_cap",
+      }, null, 2),
+    });
+    return;
+  }
   items.push({
     stage,
     itemKey: filename,
@@ -383,6 +470,10 @@ function pushFile(
     mimeType: filename.endsWith(".json") ? "application/json" : "text/markdown",
     content: readFileSync(path, "utf8"),
   });
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function researchSearchTerms(runDir: string, topic: string): string[] {

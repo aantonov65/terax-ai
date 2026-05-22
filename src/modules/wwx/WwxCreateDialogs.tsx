@@ -359,9 +359,10 @@ export function ResearchPreviewDialog({
     () => buildResearchItems(product, artifacts, researchJob),
     [product, artifacts, researchJob],
   );
-  const selected = researchItems
-    .flatMap((item) => item.artifacts)
-    .find((artifact) => artifact.id === selectedId) ?? null;
+  const expandedResearchItem = researchItems.find((item) => item.id === expandedResearchId) ?? null;
+  const selected = expandedResearchItem && !researchIsBlocked(expandedResearchItem.status)
+    ? expandedResearchItem.artifacts.find((artifact) => artifact.id === selectedId) ?? null
+    : null;
 
   useEffect(() => {
     if (!open) return;

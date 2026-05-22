@@ -23,6 +23,8 @@ export function createAdsInputFromWorkflow(input: {
     strategyJson: objectOrString(payload.strategyJson ?? payload.strategy_json),
     strategyPath: stringValue(payload.strategyPath) ?? stringValue(payload.strategy_path) ?? undefined,
     anglesMarkdown: stringValue(payload.anglesMarkdown) ?? stringValue(payload.angles_markdown) ?? undefined,
+    configJson: objectOrString(payload.configJson ?? payload.config_json),
+    researchFiles: researchFiles(payload.researchFiles ?? payload.research_files),
     runMode: payload.runMode === "app_step" || payload.runMode === "full" ? payload.runMode : "full",
     workers: numberValue(payload.workers),
     generationWorkers: numberValue(payload.generationWorkers ?? payload.generation_workers),
@@ -49,4 +51,15 @@ function objectOrString(value: unknown): Record<string, unknown> | string | unde
   if (typeof value === "string" && value.trim()) return value;
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return undefined;
+}
+
+function researchFiles(value: unknown): CreateAdsInput["researchFiles"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const files = {
+    archetypes: stringValue(raw.archetypes) ?? undefined,
+    hotwords: stringValue(raw.hotwords) ?? undefined,
+    mechanisms: stringValue(raw.mechanisms) ?? undefined,
+  };
+  return files.archetypes || files.hotwords || files.mechanisms ? files : undefined;
 }

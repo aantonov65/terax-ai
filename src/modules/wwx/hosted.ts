@@ -67,6 +67,7 @@ export async function startHostedLfsRun(input: {
   generationWorkers?: number;
 }): Promise<HostedRun> {
   return startHostedLfsRunForBatch({
+    product: input.product,
     productId: input.product.id,
     batch: input.batch,
     workers: input.workers,
@@ -75,6 +76,7 @@ export async function startHostedLfsRun(input: {
 }
 
 export async function startHostedLfsRunForBatch(input: {
+  product?: ProductSummary;
   productId: string;
   batch: BatchSummary;
   anglesMarkdown?: string;
@@ -85,6 +87,7 @@ export async function startHostedLfsRunForBatch(input: {
   const anglesMarkdown = input.anglesMarkdown?.trim()
     || await readBatchArtifactText(input.batch, "angles.md")
     || await readBatchArtifactText(input.batch, "source-angle.md");
+  const researchFiles = input.product ? await readProductResearchFiles(input.product) : undefined;
   const adCount = inferRequestedAdCount(input.batch, strategyJson);
   const response = await hostedRequest<HostedCreateRunResponse>("/runs", {
     method: "POST",
@@ -99,6 +102,8 @@ export async function startHostedLfsRunForBatch(input: {
         adCount,
         strategyJson: strategyJson ? safeJson(strategyJson) ?? strategyJson : undefined,
         anglesMarkdown: strategyJson ? undefined : anglesMarkdown ?? undefined,
+        configJson: input.product?.rawConfig,
+        researchFiles,
         runMode: "full",
         workers: input.workers,
         generationWorkers: input.generationWorkers,
@@ -329,6 +334,27 @@ async function readBatchArtifactText(batch: BatchSummary, filename: string): Pro
   if (!artifact) return null;
   const content = await readWwxArtifact(artifact.id).catch(() => null);
   return content?.contentText?.trim() || null;
+}
+
+async function readProductResearchFiles(product: ProductSummary): Promise<{ archetypes?: string; hotwords?: string; mechanisms?: string } | undefined> {
+  const allArtifacts = [
+    ...(product.researchArtifacts ?? []),
+    ...(product.researchRuns ?? []).flatMap((run) => run.artifacts ?? []),
+  ];
+  const files: { archetypes?: string; hotwords?: string; mechanisms?: string } = {};
+  for (const key of ["archetypes", "hotwords", "mechanisms"] as const) {
+    const artifact = allArtifacts.find((item) => basename(item.filename ?? item.label) === `${key}.md`);
+    if (!artifact) continue;
+    const content = await readWwxArtifact(artifact.id).catch(() => null);
+    const text = content?.contentText?.trim();
+    if (text) files[key] = text;
+  }
+  return files.archetypes || files.hotwords || files.mechanisms ? files : undefined;
+}
+
+function basename(value: string | undefined): string {
+  const parts = (value ?? "").split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
 }
 
 function inferRequestedAdCount(batch: BatchSummary, strategyJson: string | null): number {

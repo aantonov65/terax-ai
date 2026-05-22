@@ -29,6 +29,8 @@ export type Product = {
   updatedAt: number;
 };
 
+export type ResearchRunStatus = "queued" | "running" | "complete" | "failed" | "blocked" | "cancelled" | "quarantined";
+
 export type ResearchRun = {
   id: string;
   workspaceId: string;
@@ -36,7 +38,7 @@ export type ResearchRun = {
   topic: string;
   topicSlug: string;
   searchTerms: string[];
-  status: "queued" | "running" | "complete" | "failed";
+  status: ResearchRunStatus;
   quality: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
@@ -156,6 +158,12 @@ export type CreateAdsInput = {
   strategyJson?: Record<string, unknown> | string;
   strategyPath?: string;
   anglesMarkdown?: string;
+  configJson?: Record<string, unknown> | string;
+  researchFiles?: {
+    archetypes?: string;
+    hotwords?: string;
+    mechanisms?: string;
+  };
   runMode?: "app_step" | "full";
   workers?: number;
   generationWorkers?: number;

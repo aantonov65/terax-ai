@@ -89,11 +89,11 @@ function taskIdentifierFor(workflowType: WorkflowType): string {
 function queueFor(workflowType: WorkflowType): { name: string; concurrencyLimit: number } {
   switch (workflowType) {
     case "lfs_ads":
-      return { name: "lfs_ads", concurrencyLimit: parseIntEnv("TRIGGER_LFS_CONCURRENCY", 6) };
+      return { name: "lfs_ads", concurrencyLimit: parseIntEnv("TRIGGER_LFS_CONCURRENCY", 1) };
     case "research":
-      return { name: "research", concurrencyLimit: parseIntEnv("TRIGGER_RESEARCH_CONCURRENCY", 2) };
+      return { name: "research", concurrencyLimit: parseIntEnv("TRIGGER_RESEARCH_CONCURRENCY", 1) };
     case "strategy":
-      return { name: "strategy", concurrencyLimit: parseIntEnv("TRIGGER_STRATEGY_CONCURRENCY", 4) };
+      return { name: "strategy", concurrencyLimit: parseIntEnv("TRIGGER_STRATEGY_CONCURRENCY", 1) };
     case "image_batch":
       return { name: "image_batch", concurrencyLimit: parseIntEnv("TRIGGER_IMAGE_CONCURRENCY", 3) };
     case "modular_video":
