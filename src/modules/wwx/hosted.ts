@@ -166,6 +166,7 @@ export async function startHostedStrategyRun(input: {
   strategyPlanJson: Record<string, unknown> | string;
   adCount?: number;
 }): Promise<HostedRun> {
+  const researchFiles = await readProductResearchFiles(input.product);
   const response = await hostedRequest<HostedCreateRunResponse>("/runs", {
     method: "POST",
     body: {
@@ -180,6 +181,7 @@ export async function startHostedStrategyRun(input: {
         productName: input.product.name,
         configJson: input.product.rawConfig,
         strategyPlanJson: input.strategyPlanJson,
+        researchFiles,
         adCount: input.adCount ?? input.batch.totalScripts ?? 1,
       },
     },
