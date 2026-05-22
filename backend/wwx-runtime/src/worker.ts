@@ -95,7 +95,22 @@ export class RuntimeWorker {
         metadataSafe: { batch_id: claim.batchId },
       });
     }
-    const items = this.engine.planCreateAds(input);
+    await this.store.setStageState({
+      workspaceId: claim.workspaceId,
+      batchId: claim.batchId,
+      runId: claim.run.id,
+      stage: "lfs_generation",
+      status: "running",
+      expectedItems: expectedAdCount(input),
+      completedItems: await this.completedCount(claim.workspaceId, claim.batchId, "lfs_generation"),
+    });
+    const heartbeat = this.startHeartbeat(claim);
+    let items: EngineWorkItem[];
+    try {
+      items = await this.engine.planCreateAds(input);
+    } finally {
+      clearInterval(heartbeat);
+    }
     await this.runStage(claim, "lfs_generation", items);
     if (await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
       await this.stopClaim(claim, "Stopped after lfs_generation");
@@ -339,9 +354,35 @@ export class RuntimeWorker {
     }
     await this.store.completeJob(claim.id, claim.run.id, "stopped");
   }
+
+  private startHeartbeat(claim: ClaimedJob): ReturnType<typeof setInterval> {
+    const interval = setInterval(() => {
+      void this.store.heartbeatJob(claim.id, claim.run.id, this.workerId, LEASE_MS).catch(() => {
+        // Best-effort lease extension while a legacy engine subprocess is running.
+      });
+    }, Math.max(5_000, Math.floor(LEASE_MS / 3)));
+    interval.unref?.();
+    return interval;
+  }
 }
 
 function inputProductId(payload: Record<string, unknown>): string | null {
   const value = payload.productId;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function expectedAdCount(input: CreateAdsInput): number {
+  const raw = typeof input.strategyJson === "string" ? safeJson(input.strategyJson) : input.strategyJson;
+  const ads = raw?.ads;
+  if (Array.isArray(ads) && ads.length > 0) return ads.length;
+  return Math.max(1, Math.min(input.adCount || 1, 50));
+}
+
+function safeJson(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }

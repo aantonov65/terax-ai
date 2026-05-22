@@ -1,11 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { CreateAdsInput, EngineWorkItem, ResearchWorkflowInput, StrategyWorkflowInput } from "./model.js";
 
 export type Engine = {
-  planCreateAds(input: CreateAdsInput): EngineWorkItem[];
+  planCreateAds(input: CreateAdsInput): EngineWorkItem[] | Promise<EngineWorkItem[]>;
 };
 
 export class FakeLfsEngine implements Engine {
@@ -44,7 +44,25 @@ export class LegacyLfs41Engine implements Engine {
     this.engineRoot = resolve(engineRoot);
   }
 
-  planCreateAds(input: CreateAdsInput): EngineWorkItem[] {
+  async planCreateAds(input: CreateAdsInput): Promise<EngineWorkItem[]> {
+    const chunks = chunkedCreateAdsInputs(input);
+    if (chunks.length > 1) {
+      const allItems: EngineWorkItem[] = [];
+      for (const chunk of chunks) {
+        console.error("Running hosted LFS chunk", {
+          batchId: input.batchId,
+          chunk: chunk.index,
+          chunks: chunks.length,
+          adCount: chunk.adCount,
+        });
+        allItems.push(...await this.planCreateAdsOnce(chunk.input));
+      }
+      return uniqueItems(allItems);
+    }
+    return this.planCreateAdsOnce(input);
+  }
+
+  private async planCreateAdsOnce(input: CreateAdsInput): Promise<EngineWorkItem[]> {
     const root = this.makeTempRoot("wwx-lfs41-");
     try {
       const sourcePath = this.writeSource(root, input);
@@ -58,16 +76,7 @@ export class LegacyLfs41Engine implements Engine {
       args.push("--generation-workers", String(input.generationWorkers ?? hostedLfsGenerationWorkers()));
       if (input.fromStage) args.push("--from", input.fromStage);
 
-      const output = spawnSync(python, args, {
-        cwd: this.engineRoot,
-        encoding: "utf8",
-        env: process.env,
-        maxBuffer: subprocessMaxBufferBytes(),
-      });
-      if (output.error) throw output.error;
-      if (output.status !== 0) {
-        throw new Error(`LFS41_RUN_FAILED:${output.status ?? "unknown"}`);
-      }
+      await this.runPythonLfs(python, args);
       return this.readFinalOutputs(root, input);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -310,6 +319,60 @@ export class LegacyLfs41Engine implements Engine {
     }
   }
 
+  private runPythonLfs(python: string, args: string[]): Promise<void> {
+    return new Promise((resolvePromise, reject) => {
+      const child = spawn(python, args, {
+        cwd: this.engineRoot,
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdoutTail = "";
+      let stderrTail = "";
+      let timedOut = false;
+      const timeoutMs = parsePositiveInt(process.env.WWX_LFS_COMMAND_TIMEOUT_MS, 90 * 60 * 1000);
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 10_000).unref();
+      }, timeoutMs);
+      timeout.unref();
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdoutTail = appendTail(stdoutTail, chunk.toString("utf8"));
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrTail = appendTail(stderrTail, chunk.toString("utf8"));
+      });
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timeout);
+        if (timedOut) {
+          console.error("LFS command timed out", {
+            signal: signal ?? undefined,
+            stdout: sanitizeSubprocessOutput(stdoutTail),
+            stderr: sanitizeSubprocessOutput(stderrTail),
+          });
+          reject(new Error("LFS41_RUN_TIMEOUT"));
+          return;
+        }
+        if (code !== 0) {
+          console.error("LFS command failed", {
+            status: code ?? "unknown",
+            signal: signal ?? undefined,
+            stdout: sanitizeSubprocessOutput(stdoutTail),
+            stderr: sanitizeSubprocessOutput(stderrTail),
+          });
+          reject(new Error(`LFS41_RUN_FAILED:${code ?? "unknown"}`));
+          return;
+        }
+        resolvePromise();
+      });
+    });
+  }
+
   private linkStaticRuntimeDirs(root: string): void {
     for (const name of ["components", "formats"]) {
       const source = join(this.engineRoot, name);
@@ -365,6 +428,48 @@ function safeJson(value: string): Record<string, unknown> | null {
   }
 }
 
+function chunkedCreateAdsInputs(input: CreateAdsInput): Array<{ index: number; adCount: number; input: CreateAdsInput }> {
+  const strategy = typeof input.strategyJson === "string" ? safeJson(input.strategyJson) : input.strategyJson;
+  if (!strategy || typeof strategy !== "object") return [{ index: 1, adCount: input.adCount || 1, input }];
+  const ads = strategy.ads;
+  if (!Array.isArray(ads) || ads.length === 0) return [{ index: 1, adCount: input.adCount || 1, input }];
+  const chunkSize = lfsChunkSize();
+  if (ads.length <= chunkSize) return [{ index: 1, adCount: ads.length, input }];
+
+  const chunks: Array<{ index: number; adCount: number; input: CreateAdsInput }> = [];
+  for (let offset = 0; offset < ads.length; offset += chunkSize) {
+    const chunkAds = ads.slice(offset, offset + chunkSize);
+    const taskIds = chunkAds
+      .map((ad) => ad && typeof ad === "object" && !Array.isArray(ad) ? (ad as Record<string, unknown>).task_id : null)
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    const chunkStrategy = JSON.parse(JSON.stringify(strategy)) as Record<string, unknown>;
+    chunkStrategy.ads = chunkAds;
+    chunkStrategy.task_ids = taskIds;
+    chunks.push({
+      index: chunks.length + 1,
+      adCount: chunkAds.length,
+      input: {
+        ...input,
+        adCount: chunkAds.length,
+        strategyJson: chunkStrategy,
+      },
+    });
+  }
+  return chunks;
+}
+
+function uniqueItems(items: EngineWorkItem[]): EngineWorkItem[] {
+  const seen = new Set<string>();
+  const unique: EngineWorkItem[] = [];
+  for (const item of items) {
+    const key = `${item.stage}:${item.filename}:${item.itemKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique.sort((a, b) => a.filename.localeCompare(b.filename));
+}
+
 function validExecutablePath(value: string | undefined): string | undefined {
   if (!value?.trim()) return undefined;
   const path = value.trim();
@@ -384,8 +489,23 @@ function hostedLfsGenerationWorkers(): number {
   return parsePositiveInt(process.env.WWX_LFS_GENERATION_WORKERS, 1);
 }
 
+function lfsChunkSize(): number {
+  return parsePositiveInt(process.env.WWX_LFS_CHUNK_SIZE, 3);
+}
+
 function subprocessMaxBufferBytes(): number {
   return parsePositiveInt(process.env.WWX_SUBPROCESS_MAX_BUFFER_BYTES, 8 * 1024 * 1024);
+}
+
+function subprocessLogTailBytes(): number {
+  return parsePositiveInt(process.env.WWX_SUBPROCESS_LOG_TAIL_BYTES, 128 * 1024);
+}
+
+function appendTail(current: string, next: string): string {
+  const combined = current + next;
+  const maxBytes = subprocessLogTailBytes();
+  if (Buffer.byteLength(combined, "utf8") <= maxBytes) return combined;
+  return combined.slice(Math.max(0, combined.length - maxBytes));
 }
 
 function hiddenArtifactMaxBytes(): number {
