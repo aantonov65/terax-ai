@@ -6,7 +6,7 @@ export const lfsAdsTask = task({
   id: "wwx.lfs_ads",
   queue: {
     name: "lfs_ads",
-    concurrencyLimit: Number.parseInt(process.env.TRIGGER_LFS_CONCURRENCY ?? "1", 10),
+    concurrencyLimit: Number.parseInt(process.env.TRIGGER_LFS_CONCURRENCY ?? "3", 10),
   },
   retry: {
     maxAttempts: 3,
