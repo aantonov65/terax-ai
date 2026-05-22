@@ -1,4 +1,4 @@
-import type { Engine } from "./engine.js";
+import { EngineRunError, type Engine } from "./engine.js";
 import type { RuntimeService } from "./service.js";
 import type { ClaimedJob, Store } from "./store.js";
 import type { CreateAdsInput, EngineWorkItem, StageWorkItem } from "./model.js";
@@ -108,6 +108,39 @@ export class RuntimeWorker {
     let items: EngineWorkItem[];
     try {
       items = await this.engine.planCreateAds(input);
+    } catch (error) {
+      await this.store.setStageState({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        stage: "lfs_generation",
+        status: "failed",
+        expectedItems: expectedAdCount(input),
+        completedItems: await this.completedCount(claim.workspaceId, claim.batchId, "lfs_generation"),
+      });
+      await this.store.appendEvent({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        type: "run_failed",
+        stage: "lfs_generation",
+        message: "LFS generation failed",
+        payload: engineFailurePayload(error),
+      });
+      if (this.telemetry) {
+        const stage = await this.telemetry.observability.startStage({
+          runId: this.telemetry.workflowRunId,
+          stageName: "lfs_generation",
+          provider: "lfs4.1",
+        });
+        await this.telemetry.observability.failStage({
+          stageId: stage.id,
+          errorCategory: "lfs_generation_failed",
+          errorCode: error instanceof Error ? error.message.split(":")[0] : "LFS_GENERATION_FAILED",
+          errorMessageSafe: "LFS generation failed.",
+        });
+      }
+      throw error;
     } finally {
       clearInterval(heartbeat);
     }
@@ -385,4 +418,15 @@ function safeJson(value: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function engineFailurePayload(error: unknown): Record<string, unknown> {
+  const message = error instanceof Error ? error.message : "LFS_GENERATION_FAILED";
+  const payload: Record<string, unknown> = {
+    reason_code: message.split(":")[0],
+  };
+  if (error instanceof EngineRunError) {
+    payload.details = error.details;
+  }
+  return payload;
 }

@@ -4,6 +4,13 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { CreateAdsInput, EngineWorkItem, ResearchWorkflowInput, StrategyWorkflowInput } from "./model.js";
 
+export class EngineRunError extends Error {
+  constructor(message: string, readonly details: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "EngineRunError";
+  }
+}
+
 export type Engine = {
   planCreateAds(input: CreateAdsInput): EngineWorkItem[] | Promise<EngineWorkItem[]>;
 };
@@ -350,22 +357,33 @@ export class LegacyLfs41Engine implements Engine {
       child.on("close", (code, signal) => {
         clearTimeout(timeout);
         if (timedOut) {
-          console.error("LFS command timed out", {
+        console.error("LFS command timed out", {
+          signal: signal ?? undefined,
+          stdout: sanitizeSubprocessOutput(stdoutTail),
+          stderr: sanitizeSubprocessOutput(stderrTail),
+        });
+          reject(new EngineRunError("LFS41_RUN_TIMEOUT", {
             signal: signal ?? undefined,
-            stdout: sanitizeSubprocessOutput(stdoutTail),
-            stderr: sanitizeSubprocessOutput(stderrTail),
-          });
-          reject(new Error("LFS41_RUN_TIMEOUT"));
+            stdout_tail: sanitizeSubprocessOutput(stdoutTail),
+            stderr_tail: sanitizeSubprocessOutput(stderrTail),
+          }));
           return;
         }
         if (code !== 0) {
+          const stdout = sanitizeSubprocessOutput(stdoutTail);
+          const stderr = sanitizeSubprocessOutput(stderrTail);
           console.error("LFS command failed", {
             status: code ?? "unknown",
             signal: signal ?? undefined,
-            stdout: sanitizeSubprocessOutput(stdoutTail),
-            stderr: sanitizeSubprocessOutput(stderrTail),
+            stdout,
+            stderr,
           });
-          reject(new Error(`LFS41_RUN_FAILED:${code ?? "unknown"}`));
+          reject(new EngineRunError(`LFS41_RUN_FAILED:${code ?? "unknown"}`, {
+            status: code ?? "unknown",
+            signal: signal ?? undefined,
+            stdout_tail: stdout,
+            stderr_tail: stderr,
+          }));
           return;
         }
         resolvePromise();
