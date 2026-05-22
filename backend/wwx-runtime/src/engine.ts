@@ -85,14 +85,14 @@ export class LegacyLfs41Engine implements Engine {
       const maxThreads = parsePositiveInt(process.env.WWX_RESEARCH_MAX_THREADS, 24);
       this.runWw(
         ["research", productCode, "--topic", input.topic.trim(), "--max-threads", String(maxThreads), "--base-path", root],
-        { timeoutMs: parsePositiveInt(process.env.WWX_RESEARCH_COMMAND_TIMEOUT_MS, 3 * 60 * 1000), env: hostedResearchEnv() },
+        { timeoutMs: parsePositiveInt(process.env.WWX_RESEARCH_COMMAND_TIMEOUT_MS, 10 * 60 * 1000), env: hostedResearchEnv() },
       );
       const researchRoot = join(productDir, "research");
       const runDir = latestResearchRunDir(researchRoot);
       if (!runDir) throw new Error("RESEARCH_RUN_FOLDER_MISSING");
       this.runWw(
         ["research", "synthesize", productCode, "--from", runDir, "--base-path", root],
-        { timeoutMs: parsePositiveInt(process.env.WWX_SYNTHESIS_COMMAND_TIMEOUT_MS, 3 * 60 * 1000), env: hostedResearchEnv() },
+        { timeoutMs: parsePositiveInt(process.env.WWX_SYNTHESIS_COMMAND_TIMEOUT_MS, 10 * 60 * 1000), env: hostedResearchEnv() },
       );
       this.runWw(["research-cards", productCode, "--force", "--base-path", root], { timeoutMs: 60_000 });
       this.runWw(["research-cards", productCode, "--verify", "--base-path", root], { timeoutMs: 60_000 });

@@ -143,8 +143,19 @@ export class WorkflowRuntimeService {
     const run = await this.requireRun(auth, runId);
     const stages = await this.observability.listStages(runId);
     const artifacts = await this.observability.listArtifacts(runId);
+    const activeStage = [...stages].reverse().find((stage) => stage.status === "running");
+    const operatorVisibleRun = activeStage
+      ? {
+          ...run,
+          status: "running" as const,
+          currentStage: activeStage.stageName,
+          failedAt: null,
+          failureCategory: null,
+          failureMessageSafe: null,
+        }
+      : run;
     return {
-      run: operatorRun(run),
+      run: operatorRun(operatorVisibleRun),
       stages: stages.map((stage) => ({
         id: stage.id,
         stage_name: stage.stageName,
