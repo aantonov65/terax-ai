@@ -1442,7 +1442,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 self.batch_ref(),
                 base_path=self.base_path,
                 output_subdir="output-v41",
-                max_rounds=1,
+                max_rounds=env_int("WWX_LFS_OBJECTIVE_MAX_ROUNDS", 3, minimum=0),
             ),
         )
 
@@ -1470,7 +1470,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 self.batch_ref(),
                 base_path=self.base_path,
                 output_subdir="output-v41",
-                max_rounds=1,
+                max_rounds=env_int("WWX_LFS_OBJECTIVE_MAX_ROUNDS", 3, minimum=0),
             ),
         )
 

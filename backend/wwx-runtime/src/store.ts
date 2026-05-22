@@ -43,6 +43,7 @@ export type Store = {
   updateWorkItemStatus(workspaceId: string, batchId: string, stage: string, itemKey: string, status: WorkItemStatus, artifactId?: string | null): Promise<StageWorkItem>;
   listWorkItems(workspaceId: string, batchId: string, stage?: string): Promise<StageWorkItem[]>;
   publishArtifact(input: Omit<Artifact, "id" | "createdAt" | "updatedAt" | "version">): Promise<Artifact>;
+  markArtifactsForRunStatus(workspaceId: string, batchId: string, runId: string, status: string): Promise<number>;
   listPublicArtifacts(workspaceId: string, batchId: string): Promise<Artifact[]>;
   getPublicArtifact(workspaceId: string, artifactId: string): Promise<Artifact | null>;
   getArtifactContent(artifactId: string): Promise<string | null>;
@@ -280,11 +281,14 @@ export class MemoryStore implements Store {
     }
     if (run) {
       run.status = status;
+      run.currentStage = null;
       run.finishedAt = now;
       run.heartbeatAt = now;
+      await this.markArtifactsForRunStatus(run.workspaceId, run.batchId, runId, status);
       const batch = this.batches.get(`${run.workspaceId}:${run.batchId}`);
       if (batch) {
         batch.status = status;
+        batch.currentStage = null;
         batch.updatedAt = now;
       }
     }
@@ -296,8 +300,10 @@ export class MemoryStore implements Store {
     const run = this.runs.get(runId);
     if (run) {
       run.status = "failed";
+      run.currentStage = null;
       run.finishedAt = now;
       run.heartbeatAt = now;
+      await this.markArtifactsForRunStatus(run.workspaceId, run.batchId, runId, "failed");
     }
     if (!job) return;
     job.status = job.attempts >= job.maxAttempts ? "dead_letter" : "queued";
@@ -401,6 +407,19 @@ export class MemoryStore implements Store {
     const artifact: Artifact = { ...input, id: id("art"), version, createdAt: now, updatedAt: now };
     this.artifacts.set(artifact.id, artifact);
     return artifact;
+  }
+
+  async markArtifactsForRunStatus(workspaceId: string, batchId: string, runId: string, status: string): Promise<number> {
+    let count = 0;
+    const cancelled = status === "stopped" || status === "cancelled" || status === "canceled";
+    for (const artifact of this.artifacts.values()) {
+      if (artifact.workspaceId !== workspaceId || artifact.batchId !== batchId || artifact.sourceRunId !== runId) continue;
+      artifact.sourceRunStatus = status;
+      artifact.sourceRunCancelled = cancelled;
+      artifact.updatedAt = nowMs();
+      count += 1;
+    }
+    return count;
   }
 
   async listPublicArtifacts(workspaceId: string, batchId: string): Promise<Artifact[]> {

@@ -11,6 +11,7 @@ import { NoopWorkflowTrigger, type TriggerRunInput, type WorkflowTrigger } from 
 import { RuntimeWorker } from "../src/worker.js";
 import { WorkflowRuntimeService } from "../src/workflow-service.js";
 import { executeWorkflowTask } from "../src/workflow-runner.js";
+import type { CreateAdsInput, EngineWorkItem } from "../src/model.js";
 import { ObservabilityClient, sanitizeTelemetryPayload } from "../../../packages/observability/src/index.js";
 
 const workspaceId = "ws_test";
@@ -87,6 +88,9 @@ test("stop and continue resumes only the missing work item", async () => {
   assert.equal(stoppedStatus?.batch.status, "stopped");
   assert.equal(stoppedStatus?.workItems.filter((item) => item.status === "succeeded").length, 2);
   assert.equal(stoppedStatus?.workItems.find((item) => item.itemKey === "LFS_003")?.status, "canceled");
+  assert.equal(stoppedStatus?.artifacts.length, 2);
+  assert.equal(stoppedStatus?.artifacts.every((artifact) => artifact.sourceRunCancelled), true);
+  assert.equal(stoppedStatus?.artifacts.every((artifact) => artifact.sourceRunStatus === "stopped"), true);
 
   await service.continueBatch(workspaceId, "batch_resume");
   assert.equal(await worker.runOne(), true);
@@ -94,7 +98,33 @@ test("stop and continue resumes only the missing work item", async () => {
   const completedStatus = await service.getBatchStatus(workspaceId, "batch_resume");
   assert.equal(completedStatus?.batch.status, "complete");
   assert.equal(completedStatus?.workItems.filter((item) => item.status === "succeeded").length, 3);
+  assert.equal(completedStatus?.artifacts.filter((artifact) => artifact.sourceRunCancelled).length, 2);
   assert.equal((await service.listFinalAds(workspaceId, "batch_resume")).length, 3);
+});
+
+test("streaming LFS chunks publish artifacts before the full engine run finishes", async () => {
+  const store = new MemoryStore();
+  const service = new RuntimeService(store, new MemoryObjectStorage());
+  const engine = new StreamingTestEngine();
+  const worker = new RuntimeWorker("worker-streaming", store, service, engine, {
+    afterArtifactPublished: async () => {
+      engine.publishedSnapshots.push((await service.listFinalAds(workspaceId, "batch_stream")).length);
+    },
+  });
+
+  await service.createAds(workspaceId, "batch_stream", {
+    productId: "prod_hair",
+    adCount: 4,
+    strategyJson: { ads: [{ task_id: "LFS_001" }, { task_id: "LFS_002" }, { task_id: "LFS_003" }, { task_id: "LFS_004" }] },
+  });
+  assert.equal(await worker.runOne(), true);
+
+  assert.deepEqual(engine.publishedSnapshots.slice(0, 2), [1, 2]);
+  assert.equal(engine.secondChunkStartedAfterPublished, true);
+  const status = await service.getBatchStatus(workspaceId, "batch_stream");
+  assert.equal(status?.stages.find((stage) => stage.stage === "lfs_generation")?.completedItems, 4);
+  assert.equal(status?.batch.status, "complete");
+  assert.equal((await service.listFinalAds(workspaceId, "batch_stream")).length, 4);
 });
 
 test("queue enforces six active jobs and one active run per batch", async () => {
@@ -524,5 +554,37 @@ class CapturingWorkflowTrigger implements WorkflowTrigger {
   async trigger(input: TriggerRunInput): Promise<{ triggerRunId: string; provider: "noop" }> {
     this.lastInput = input;
     return { triggerRunId: `captured_${input.runId}`, provider: "noop" };
+  }
+}
+
+class StreamingTestEngine {
+  publishedSnapshots: number[] = [];
+  secondChunkStartedAfterPublished = false;
+
+  async planCreateAds(input: CreateAdsInput): Promise<EngineWorkItem[]> {
+    const items: EngineWorkItem[] = [];
+    for await (const chunk of this.streamCreateAds(input)) {
+      items.push(...chunk.items);
+    }
+    return items;
+  }
+
+  async *streamCreateAds() {
+    yield { index: 1, total: 2, adCount: 2, items: [this.item(1), this.item(2)] };
+    this.secondChunkStartedAfterPublished = this.publishedSnapshots.length >= 2;
+    yield { index: 2, total: 2, adCount: 2, items: [this.item(3), this.item(4)] };
+  }
+
+  private item(index: number): EngineWorkItem {
+    const taskId = `LFS_${String(index).padStart(3, "0")}`;
+    return {
+      stage: "lfs_generation",
+      itemKey: taskId,
+      filename: `output-v41/${taskId}.md`,
+      label: taskId,
+      visibilityClass: "public_final",
+      mimeType: "text/markdown",
+      content: `# ${taskId}\n\nHair loss proof ${index}.`,
+    };
   }
 }

@@ -255,7 +255,7 @@ export class RuntimeService {
     });
   }
 
-  async publishArtifact(workspaceId: string, batchId: string, item: EngineWorkItem): Promise<Artifact> {
+  async publishArtifact(workspaceId: string, batchId: string, item: EngineWorkItem, sourceRunId: string | null = null): Promise<Artifact> {
     const visibilityClass = classifyVisibility(item.filename, item.visibilityClass.startsWith("public_"));
     const contentSha256 = sha256(item.content);
     const objectKey = `${workspaceId}/${batchId}/${visibilityClass}/${contentSha256}`;
@@ -263,6 +263,9 @@ export class RuntimeService {
     const artifact = await this.store.publishArtifact({
       workspaceId,
       batchId,
+      sourceRunId,
+      sourceRunStatus: sourceRunId ? "running" : "unknown",
+      sourceRunCancelled: false,
       filename: item.filename,
       label: item.label,
       mimeType: item.mimeType,

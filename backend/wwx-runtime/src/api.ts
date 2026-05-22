@@ -403,6 +403,8 @@ function sanitizeArtifact(artifact: Artifact) {
     label: artifact.label,
     mime_type: artifact.mimeType,
     visibility_class: artifact.visibilityClass,
+    source_run_status: artifact.sourceRunStatus,
+    source_run_cancelled: artifact.sourceRunCancelled,
     content_sha256: artifact.contentSha256,
     size: artifact.size,
     version: artifact.version,

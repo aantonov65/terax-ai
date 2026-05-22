@@ -12,6 +12,11 @@ export type WorkItemStatus = "pending" | "running" | "succeeded" | "failed" | "c
 export type EventType =
   | "run_started"
   | "stage_started"
+  | "engine_stage_started"
+  | "engine_stage_completed"
+  | "engine_stage_failed"
+  | "chunk_started"
+  | "chunk_completed"
   | "work_item_started"
   | "artifact_published"
   | "stage_completed"
@@ -96,6 +101,9 @@ export type Artifact = {
   id: string;
   workspaceId: string;
   batchId: string;
+  sourceRunId: string | null;
+  sourceRunStatus: string;
+  sourceRunCancelled: boolean;
   filename: string;
   label: string;
   mimeType: string;
@@ -167,6 +175,7 @@ export type CreateAdsInput = {
   runMode?: "app_step" | "full";
   workers?: number;
   generationWorkers?: number;
+  chunkSize?: number;
   fromStage?: string;
 };
 

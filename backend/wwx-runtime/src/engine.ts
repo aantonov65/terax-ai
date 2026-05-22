@@ -12,7 +12,32 @@ export class EngineRunError extends Error {
 }
 
 export type Engine = {
-  planCreateAds(input: CreateAdsInput): EngineWorkItem[] | Promise<EngineWorkItem[]>;
+  planCreateAds(input: CreateAdsInput, options?: EngineRunOptions): EngineWorkItem[] | Promise<EngineWorkItem[]>;
+  streamCreateAds?(input: CreateAdsInput, options?: EngineRunOptions): AsyncIterable<EngineWorkChunk>;
+};
+
+export type EngineRunOptions = {
+  onProgress?: (event: EngineProgressEvent) => Promise<void> | void;
+};
+
+export type EngineProgressEvent = {
+  event: string;
+  stage?: string;
+  batchId?: string;
+  chunkIndex?: number;
+  chunkTotal?: number;
+  artifactCount?: number;
+  validation?: unknown;
+  error?: string;
+  reason?: string;
+  ts?: string;
+};
+
+export type EngineWorkChunk = {
+  index: number;
+  total: number;
+  adCount: number;
+  items: EngineWorkItem[];
 };
 
 export class FakeLfsEngine implements Engine {
@@ -51,25 +76,48 @@ export class LegacyLfs41Engine implements Engine {
     this.engineRoot = resolve(engineRoot);
   }
 
-  async planCreateAds(input: CreateAdsInput): Promise<EngineWorkItem[]> {
-    const chunks = chunkedCreateAdsInputs(input);
-    if (chunks.length > 1) {
-      const allItems: EngineWorkItem[] = [];
-      for (const chunk of chunks) {
-        console.error("Running hosted LFS chunk", {
-          batchId: input.batchId,
-          chunk: chunk.index,
-          chunks: chunks.length,
-          adCount: chunk.adCount,
-        });
-        allItems.push(...await this.planCreateAdsOnce(chunk.input));
-      }
-      return uniqueItems(allItems);
+  async planCreateAds(input: CreateAdsInput, options: EngineRunOptions = {}): Promise<EngineWorkItem[]> {
+    const allItems: EngineWorkItem[] = [];
+    for await (const chunk of this.streamCreateAds(input, options)) {
+      allItems.push(...chunk.items);
     }
-    return this.planCreateAdsOnce(input);
+    return uniqueItems(allItems);
   }
 
-  private async planCreateAdsOnce(input: CreateAdsInput): Promise<EngineWorkItem[]> {
+  async *streamCreateAds(input: CreateAdsInput, options: EngineRunOptions = {}): AsyncIterable<EngineWorkChunk> {
+    const chunks = chunkedCreateAdsInputs(input);
+    const seen = new Set<string>();
+    for (const chunk of chunks) {
+      console.error("Running hosted LFS chunk", {
+        batchId: input.batchId,
+        chunk: chunk.index,
+        chunks: chunks.length,
+        adCount: chunk.adCount,
+      });
+      await options.onProgress?.({
+        event: "chunk_started",
+        batchId: input.batchId,
+        chunkIndex: chunk.index,
+        chunkTotal: chunks.length,
+        artifactCount: chunk.adCount,
+        ts: new Date().toISOString(),
+      });
+      const items = uniqueItems(await this.planCreateAdsOnce(chunk.input, options)).filter((item) => {
+        const key = `${item.stage}:${item.filename}:${item.itemKey}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      yield {
+        index: chunk.index,
+        total: chunks.length,
+        adCount: chunk.adCount,
+        items,
+      };
+    }
+  }
+
+  private async planCreateAdsOnce(input: CreateAdsInput, options: EngineRunOptions): Promise<EngineWorkItem[]> {
     const root = this.makeTempRoot("wwx-lfs41-");
     try {
       const sourcePath = this.writeSource(root, input);
@@ -83,7 +131,7 @@ export class LegacyLfs41Engine implements Engine {
       args.push("--generation-workers", String(input.generationWorkers ?? hostedLfsGenerationWorkers()));
       if (input.fromStage) args.push("--from", input.fromStage);
 
-      await this.runPythonLfs(python, args);
+      await this.runPythonLfs(python, args, options);
       return this.readFinalOutputs(root, input);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -232,7 +280,7 @@ export class LegacyLfs41Engine implements Engine {
     if (!files.length) throw new Error("LFS41_FINAL_ADS_MISSING");
     return files.map((file, index) => ({
       stage: "lfs_generation",
-      itemKey: file.replace(/\.md$/, "") || `LFS_${String(index + 1).padStart(3, "0")}`,
+      itemKey: stableLfsItemKey(file) || `LFS_${String(index + 1).padStart(3, "0")}`,
       filename: `output-v41/${file}`,
       label: file,
       visibilityClass: "public_final",
@@ -334,7 +382,7 @@ export class LegacyLfs41Engine implements Engine {
     }
   }
 
-  private runPythonLfs(python: string, args: string[]): Promise<void> {
+  private runPythonLfs(python: string, args: string[], options: EngineRunOptions): Promise<void> {
     return new Promise((resolvePromise, reject) => {
       const child = spawn(python, args, {
         cwd: this.engineRoot,
@@ -343,6 +391,9 @@ export class LegacyLfs41Engine implements Engine {
       });
       let stdoutTail = "";
       let stderrTail = "";
+      let stdoutRemainder = "";
+      let stderrRemainder = "";
+      const progressWrites: Array<Promise<void>> = [];
       let timedOut = false;
       const timeoutMs = parsePositiveInt(process.env.WWX_LFS_COMMAND_TIMEOUT_MS, 90 * 60 * 1000);
       const timeout = setTimeout(() => {
@@ -353,10 +404,14 @@ export class LegacyLfs41Engine implements Engine {
       timeout.unref();
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdoutTail = appendTail(stdoutTail, chunk.toString("utf8"));
+        const text = chunk.toString("utf8");
+        stdoutTail = appendTail(stdoutTail, text);
+        stdoutRemainder = consumeProgressLines(stdoutRemainder + text, options.onProgress, progressWrites);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderrTail = appendTail(stderrTail, chunk.toString("utf8"));
+        const text = chunk.toString("utf8");
+        stderrTail = appendTail(stderrTail, text);
+        stderrRemainder = consumeProgressLines(stderrRemainder + text, options.onProgress, progressWrites);
       });
       child.on("error", (error) => {
         clearTimeout(timeout);
@@ -364,37 +419,41 @@ export class LegacyLfs41Engine implements Engine {
       });
       child.on("close", (code, signal) => {
         clearTimeout(timeout);
+        stdoutRemainder = consumeProgressLines(`${stdoutRemainder}\n`, options.onProgress, progressWrites);
+        stderrRemainder = consumeProgressLines(`${stderrRemainder}\n`, options.onProgress, progressWrites);
+        const finish = async () => {
+          await Promise.allSettled(progressWrites);
+        };
         if (timedOut) {
         console.error("LFS command timed out", {
           signal: signal ?? undefined,
           stdout: sanitizeSubprocessOutput(stdoutTail),
           stderr: sanitizeSubprocessOutput(stderrTail),
         });
-          reject(new EngineRunError("LFS41_RUN_TIMEOUT", {
+          void finish().finally(() => reject(new EngineRunError("LFS41_RUN_TIMEOUT", {
             signal: signal ?? undefined,
             stdout_tail: sanitizeSubprocessOutput(stdoutTail),
             stderr_tail: sanitizeSubprocessOutput(stderrTail),
-          }));
+          })));
           return;
         }
         if (code !== 0) {
           const stdout = sanitizeSubprocessOutput(stdoutTail);
           const stderr = sanitizeSubprocessOutput(stderrTail);
           console.error("LFS command failed", {
-            status: code ?? "unknown",
             signal: signal ?? undefined,
             stdout,
             stderr,
           });
-          reject(new EngineRunError(`LFS41_RUN_FAILED:${code ?? "unknown"}`, {
+          void finish().finally(() => reject(new EngineRunError(`LFS41_RUN_FAILED:${code ?? "unknown"}`, {
             status: code ?? "unknown",
             signal: signal ?? undefined,
             stdout_tail: stdout,
             stderr_tail: stderr,
-          }));
+          })));
           return;
         }
-        resolvePromise();
+        void finish().then(resolvePromise, reject);
       });
     });
   }
@@ -459,7 +518,7 @@ function chunkedCreateAdsInputs(input: CreateAdsInput): Array<{ index: number; a
   if (!strategy || typeof strategy !== "object") return [{ index: 1, adCount: input.adCount || 1, input }];
   const ads = strategy.ads;
   if (!Array.isArray(ads) || ads.length === 0) return [{ index: 1, adCount: input.adCount || 1, input }];
-  const chunkSize = lfsChunkSize();
+  const chunkSize = lfsChunkSize(input.chunkSize);
   if (ads.length <= chunkSize) return [{ index: 1, adCount: ads.length, input }];
 
   const chunks: Array<{ index: number; adCount: number; input: CreateAdsInput }> = [];
@@ -515,8 +574,84 @@ function hostedLfsGenerationWorkers(): number {
   return parsePositiveInt(process.env.WWX_LFS_GENERATION_WORKERS, 1);
 }
 
-function lfsChunkSize(): number {
-  return parsePositiveInt(process.env.WWX_LFS_CHUNK_SIZE, 3);
+function lfsChunkSize(inputChunkSize?: number): number {
+  if (Number.isFinite(inputChunkSize) && inputChunkSize && inputChunkSize > 0) {
+    return Math.max(1, Math.floor(inputChunkSize));
+  }
+  return parsePositiveInt(process.env.WWX_LFS_CHUNK_SIZE, 1);
+}
+
+function stableLfsItemKey(filename: string): string {
+  return filename
+    .replace(/\.md$/i, "")
+    .replace(/_\d{8}_\d{6}$/i, "");
+}
+
+function consumeProgressLines(
+  buffer: string,
+  onProgress: EngineRunOptions["onProgress"],
+  writes: Array<Promise<void>>,
+): string {
+  const lines = buffer.split(/\r?\n/);
+  const remainder = lines.pop() ?? "";
+  if (!onProgress) return remainder;
+  for (const raw of lines) {
+    const event = parseProgressLine(raw);
+    if (!event) continue;
+    try {
+      const result = onProgress(event);
+      if (result && typeof (result as Promise<void>).then === "function") {
+        writes.push(Promise.resolve(result));
+      }
+    } catch {
+      // Progress publishing must never kill the engine subprocess.
+    }
+  }
+  return remainder;
+}
+
+function parseProgressLine(raw: string): EngineProgressEvent | null {
+  const line = raw.trim();
+  if (!line.startsWith("{") || !line.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const event = typeof record.event === "string" ? record.event : null;
+    if (!event) return null;
+    return {
+      event,
+      stage: stringValue(record.stage) ?? undefined,
+      batchId: stringValue(record.batch_id) ?? stringValue(record.batchId) ?? undefined,
+      artifactCount: numberValue(record.artifact_count),
+      validation: safeProgressValidation(record.validation),
+      error: safeProgressString(record.error),
+      reason: safeProgressString(record.reason),
+      ts: stringValue(record.ts) ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function safeProgressValidation(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of ["status", "failed", "passed", "repaired", "generated", "copied", "skipped", "clean", "total_scripts", "artifact_count"]) {
+    const item = input[key];
+    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") output[key] = item;
+  }
+  return output;
+}
+
+function safeProgressString(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return sanitizeSubprocessOutput(value).slice(-500);
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function subprocessMaxBufferBytes(): number {

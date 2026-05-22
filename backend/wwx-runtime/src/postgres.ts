@@ -355,13 +355,23 @@ export class PostgresStore implements Store {
         [jobId, jobStatus, now],
       );
       await client.query(
-        "UPDATE batch_runs SET status = $2, finished_at = $3, heartbeat_at = $3 WHERE id = $1",
+        "UPDATE batch_runs SET status = $2, current_stage = NULL, finished_at = $3, heartbeat_at = $3 WHERE id = $1",
         [runId, status, now],
       );
       const row = job.rows[0];
       if (row) {
         await client.query(
-          "UPDATE batches SET status = $3, updated_at = $4 WHERE workspace_id = $1 AND id = $2",
+          `
+          UPDATE artifacts
+          SET source_run_status = $4,
+              source_run_cancelled = $5,
+              updated_at = $6
+          WHERE workspace_id = $1 AND batch_id = $2 AND source_run_id = $3
+          `,
+          [row.workspace_id, row.batch_id, runId, status, status === "stopped", now],
+        );
+        await client.query(
+          "UPDATE batches SET status = $3, current_stage = NULL, updated_at = $4 WHERE workspace_id = $1 AND id = $2",
           [row.workspace_id, row.batch_id, status, now],
         );
       }
@@ -377,7 +387,7 @@ export class PostgresStore implements Store {
   async failJob(jobId: string, runId: string, reason: string): Promise<void> {
     const now = nowMs();
     await this.pool.query(
-      "UPDATE batch_runs SET status = 'failed', finished_at = $2, heartbeat_at = $2, error_reason = $3 WHERE id = $1",
+      "UPDATE batch_runs SET status = 'failed', current_stage = NULL, finished_at = $2, heartbeat_at = $2, error_reason = $3 WHERE id = $1",
       [runId, now, sanitizeReason(reason)],
     );
     const updated = await this.pool.query(
@@ -394,9 +404,21 @@ export class PostgresStore implements Store {
       [jobId, now, sanitizeReason(reason)],
     );
     const row = updated.rows[0];
+    if (row) {
+      await this.pool.query(
+        `
+        UPDATE artifacts
+        SET source_run_status = 'failed',
+            source_run_cancelled = false,
+            updated_at = $4
+        WHERE workspace_id = $1 AND batch_id = $2 AND source_run_id = $3
+        `,
+        [row.workspace_id, row.batch_id, runId, now],
+      );
+    }
     if (row?.status === "dead_letter") {
       await this.pool.query(
-        "UPDATE batches SET status = 'failed', updated_at = $3 WHERE workspace_id = $1 AND id = $2",
+        "UPDATE batches SET status = 'failed', current_stage = NULL, updated_at = $3 WHERE workspace_id = $1 AND id = $2",
         [row.workspace_id, row.batch_id, now],
       );
     }
@@ -586,14 +608,18 @@ export class PostgresStore implements Store {
       const inserted = await client.query(
         `
         INSERT INTO artifacts
-          (id, workspace_id, batch_id, filename, label, mime_type, visibility_class, object_key, content_sha256, size, version, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+          (id, workspace_id, batch_id, source_run_id, source_run_status, source_run_cancelled,
+           filename, label, mime_type, visibility_class, object_key, content_sha256, size, version, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
         RETURNING *
         `,
         [
           artifactId,
           input.workspaceId,
           input.batchId,
+          input.sourceRunId,
+          input.sourceRunStatus,
+          input.sourceRunCancelled,
           input.filename,
           input.label,
           input.mimeType,
@@ -621,6 +647,20 @@ export class PostgresStore implements Store {
     } finally {
       client.release();
     }
+  }
+
+  async markArtifactsForRunStatus(workspaceId: string, batchId: string, runId: string, status: string): Promise<number> {
+    const result = await this.pool.query(
+      `
+      UPDATE artifacts
+      SET source_run_status = $4,
+          source_run_cancelled = $5,
+          updated_at = $6
+      WHERE workspace_id = $1 AND batch_id = $2 AND source_run_id = $3
+      `,
+      [workspaceId, batchId, runId, status, status === "stopped" || status === "cancelled" || status === "canceled", nowMs()],
+    );
+    return result.rowCount ?? 0;
   }
 
   async listPublicArtifacts(workspaceId: string, batchId: string): Promise<Artifact[]> {
@@ -855,6 +895,9 @@ function mapArtifact(row: QueryResultRow): Artifact {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
     batchId: String(row.batch_id),
+    sourceRunId: row.source_run_id ? String(row.source_run_id) : null,
+    sourceRunStatus: String(row.source_run_status ?? "unknown"),
+    sourceRunCancelled: Boolean(row.source_run_cancelled),
     filename: String(row.filename),
     label: String(row.label),
     mimeType: String(row.mime_type),
