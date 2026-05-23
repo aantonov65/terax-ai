@@ -39,7 +39,9 @@ from lfs_v41 import (  # noqa: E402
     BatchLock,
     build_v41_manifest,
     materialize_v41_candidates,
+    objective_repair_count,
     run_v41_objective_finish,
+    semantic_clean,
     step_ok,
     write_manifest,
 )
@@ -699,7 +701,7 @@ class LfsAgentRunner:
             ok = step_ok(payload) or stage in NON_BLOCKING_PAYLOAD_STAGES
             status = "ok" if ok else "failed"
             if not ok:
-                raise RuntimeError(payload.get("error", f"{stage} failed") if isinstance(payload, dict) else f"{stage} failed")
+                raise RuntimeError(self.payload_failure_summary(stage, payload))
             return payload
         except Exception as exc:
             self.state["stages"][stage] = {
@@ -723,6 +725,31 @@ class LfsAgentRunner:
             self.save_state()
             self.event("stage_failed", stage=stage, error=str(exc))
             raise
+
+    def payload_failure_summary(self, stage: str, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return f"{stage} failed"
+        if payload.get("error"):
+            return str(payload["error"])
+        failed = int(payload.get("failed") or 0)
+        total = payload.get("total_tasks") or payload.get("total_scripts") or payload.get("completed_tasks")
+        bits = [f"{stage} failed"]
+        if failed:
+            bits.append(f"{failed}/{total or '?'} task(s) failed")
+        results = payload.get("results")
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status") or "")
+                success = item.get("success")
+                generated = item.get("generated")
+                if status == "failed" or success is False or generated is False:
+                    task_id = str(item.get("task_id") or "task")
+                    error = str(item.get("error") or item.get("reason") or "no safe failure detail")
+                    bits.append(f"{task_id}: {error[:240]}")
+                    break
+        return "; ".join(bits)
 
     def finish_stage(self, stage: str, payload: Any) -> list[Path]:
         artifacts = self.stage_artifacts(stage)
@@ -1357,18 +1384,36 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
             (self.require_batch_dir() / "lfs-outline-report.json").write_text(json.dumps(report, indent=2) + "\n")
             self.event("deterministic_fallback_used", stage="lfs_outline", reason="anthropic credentials unavailable")
             return report
-        return self.normalize_batch_report(
-            "lfs-outline-report.json",
-            run_outline_batch(
+        report = run_outline_batch(
+            self.batch_ref(),
+            base_path=self.base_path,
+            model=os.environ.get("LFS_OUTLINE_MODEL", "claude-sonnet-4-6"),
+            workers=self.workers,
+            force=self.should_force_stage("lfs_outline"),
+            dry_run=False,
+            max_attempts=env_int("LFS_OUTLINE_MAX_ATTEMPTS", 4, minimum=2),
+        )
+        for attempt in range(env_int("WWX_LFS_OUTLINE_STAGE_RETRIES", 1, minimum=0)):
+            if step_ok(report):
+                break
+            self.event(
+                "stage_retrying",
+                stage="lfs_outline",
+                attempt=attempt + 1,
+                failed=report.get("failed"),
+                completed_tasks=report.get("completed_tasks"),
+                pending_tasks=report.get("pending_tasks"),
+            )
+            report = run_outline_batch(
                 self.batch_ref(),
                 base_path=self.base_path,
                 model=os.environ.get("LFS_OUTLINE_MODEL", "claude-sonnet-4-6"),
                 workers=self.workers,
-                force=self.should_force_stage("lfs_outline"),
+                force=False,
                 dry_run=False,
-                max_attempts=env_int("LFS_OUTLINE_MAX_ATTEMPTS", 4, minimum=2),
-            ),
-        )
+                max_attempts=env_int("LFS_OUTLINE_RETRY_MAX_ATTEMPTS", 3, minimum=1),
+            )
+        return self.normalize_batch_report("lfs-outline-report.json", report)
 
     def stage_preflight_v41(self) -> dict[str, Any]:
         captured = io.StringIO()
@@ -1478,6 +1523,30 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
         self.require_generation_credentials("semantic_final_check")
         if self.deterministic_fallback_enabled():
             return self.write_fallback_semantic_report(stage="semantic_final_check")
+        semantic_report = self.stage_payloads.get("semantic_launchable")
+        objective_report = self.stage_payloads.get("objective_finish_final")
+        if semantic_report is None and (self.require_batch_dir() / "lfs-semantic-report.json").exists():
+            semantic_report = read_json(self.require_batch_dir() / "lfs-semantic-report.json")
+        if objective_report is None and (self.require_batch_dir() / "lfs-v41-finish-report.json").exists():
+            objective_report = read_json(self.require_batch_dir() / "lfs-v41-finish-report.json")
+        if (
+            isinstance(semantic_report, dict)
+            and isinstance(objective_report, dict)
+            and semantic_clean(semantic_report)
+            and objective_repair_count(objective_report) == 0
+        ):
+            self.event(
+                "semantic_final_reused",
+                stage="semantic_final_check",
+                reason="prior semantic verdict reused; final objective pass made no script changes",
+            )
+            return {
+                "skipped": "prior semantic verdict reused; final objective pass made no script changes",
+                "failed": 0,
+                "total_scripts": semantic_report.get("total_scripts"),
+                "passed": semantic_report.get("passed"),
+                "repaired": semantic_report.get("repaired", 0),
+            }
         return self.normalize_batch_report(
             "lfs-semantic-report.json",
             run_semantic_batch(

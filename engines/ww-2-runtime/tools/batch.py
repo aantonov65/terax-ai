@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import shutil
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +75,7 @@ def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult
         cwd=str(base_path),
         env={**os.environ, "PYTHONPATH": str(TOOLS_DIR), "PYTHONUNBUFFERED": "1"},
     )
+    forward_ai_call_events(result.stdout)
 
     if result.returncode != 0:
         return TaskResult(
@@ -110,6 +111,19 @@ def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult
         )
 
     return TaskResult(task_id=task_id, generated=True, output_file=output_file, heartbeat_file=str(heartbeat_file))
+
+
+def forward_ai_call_events(stdout: str) -> None:
+    for line in stdout.splitlines():
+        raw = line.strip()
+        if not raw.startswith("{") or not raw.endswith("}"):
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event") in {"ai_call_finished", "ai_call_failed"}:
+            print(json.dumps(payload, sort_keys=True), flush=True)
 
 
 def load_spec(batch_id: str, base_path: Path | None = None) -> dict:
@@ -203,7 +217,8 @@ def run_batch(
             results.append(result)
             print_result(result)
     else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        executor_cls = ThreadPoolExecutor if generation_executor_mode(spec) == "thread" else ProcessPoolExecutor
+        with executor_cls(max_workers=workers) as executor:
             future_to_task = {executor.submit(_run_task, item): item[0] for item in task_args}
             for future in as_completed(future_to_task):
                 task_id = future_to_task[future]
@@ -264,6 +279,22 @@ def run_batch(
         print("Next gate: run `ww lfs-finish <batch_id>` for LFS batches.", flush=True)
 
     return report
+
+
+def generation_executor_mode(spec: dict) -> str:
+    """Choose the safest parallel executor for hosted generation.
+
+    LFS generation is network-bound. A process pool duplicates the full Python
+    runtime and prompt context per task, which is wasteful on small hosted
+    workers and has caused OOM failures. Threads preserve the same generation
+    logic while keeping memory compact.
+    """
+    configured = os.environ.get("WW_GENERATE_EXECUTOR", "").strip().lower()
+    if configured in {"thread", "process"}:
+        return configured
+    if str(spec.get("format") or "").lower() == "lfs":
+        return "thread"
+    return "process"
 
 
 def print_result(result: TaskResult) -> None:

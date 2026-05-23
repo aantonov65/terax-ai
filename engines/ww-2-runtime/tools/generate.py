@@ -96,6 +96,22 @@ class GenerationHeartbeat:
         return round(time.monotonic() - self._model_started_at, 1)
 
 
+def emit_ai_call_event(*, model: str, status: str, started_at: float, usage=None) -> None:
+    payload = {
+        "event": "ai_call_finished" if status == "succeeded" else "ai_call_failed",
+        "stage": "batch_generation",
+        "provider": "anthropic",
+        "model": model,
+        "status": status,
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "cached_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "latency_ms": int((time.monotonic() - started_at) * 1000),
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
 def strip_outline(text: str) -> tuple[str, str]:
     """Extract <outline> block and return (outline, clean_script)."""
     match = re.search(r'<outline>(.*?)</outline>', text, re.DOTALL)
@@ -244,11 +260,14 @@ def generate_ad(
         prompt_chars=len(prompt),
         system_chars=len(system_prompt),
     )
+    started_at = time.monotonic()
     try:
         message = client.messages.create(**api_kwargs)
     except Exception:
+        emit_ai_call_event(model=api_kwargs["model"], status="failed", started_at=started_at)
         heartbeat.stop_model_call(status="failed")
         raise
+    emit_ai_call_event(model=api_kwargs["model"], status="succeeded", started_at=started_at, usage=getattr(message, "usage", None))
     heartbeat.stop_model_call(status="finished")
 
     # Extract generated text and strip outline

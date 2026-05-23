@@ -27,6 +27,19 @@ export type EngineProgressEvent = {
   chunkIndex?: number;
   chunkTotal?: number;
   artifactCount?: number;
+  itemCount?: number;
+  durationMs?: number;
+  attempt?: number;
+  failed?: number;
+  completedTasks?: number;
+  pendingTasks?: number;
+  provider?: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  latencyMs?: number;
+  status?: "succeeded" | "failed";
   validation?: unknown;
   error?: string;
   reason?: string;
@@ -86,35 +99,69 @@ export class LegacyLfs41Engine implements Engine {
 
   async *streamCreateAds(input: CreateAdsInput, options: EngineRunOptions = {}): AsyncIterable<EngineWorkChunk> {
     const chunks = chunkedCreateAdsInputs(input);
+    const concurrency = lfsChunkConcurrency(input.chunkConcurrency, chunks.length);
     const seen = new Set<string>();
-    for (const chunk of chunks) {
-      console.error("Running hosted LFS chunk", {
-        batchId: input.batchId,
-        chunk: chunk.index,
-        chunks: chunks.length,
-        adCount: chunk.adCount,
-      });
-      await options.onProgress?.({
-        event: "chunk_started",
-        batchId: input.batchId,
-        chunkIndex: chunk.index,
-        chunkTotal: chunks.length,
-        artifactCount: chunk.adCount,
-        ts: new Date().toISOString(),
-      });
-      const items = uniqueItems(await this.planCreateAdsOnce(chunk.input, options)).filter((item) => {
+    const active = new Map<number, Promise<EngineWorkChunk>>();
+    let nextChunk = 0;
+
+    const startChunk = (chunk: { index: number; adCount: number; input: CreateAdsInput }) => {
+      active.set(chunk.index, this.runCreateAdsChunk(input, chunks.length, chunk, options));
+    };
+    while (nextChunk < chunks.length && active.size < concurrency) startChunk(chunks[nextChunk++]);
+
+    while (active.size > 0) {
+      const { key, chunk } = await Promise.race([...active.entries()].map(([key, promise]) => promise.then((chunk) => ({ key, chunk }))));
+      active.delete(key);
+      chunk.items = chunk.items.filter((item) => {
         const key = `${item.stage}:${item.filename}:${item.itemKey}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
-      yield {
-        index: chunk.index,
-        total: chunks.length,
-        adCount: chunk.adCount,
-        items,
-      };
+      yield chunk;
+      while (nextChunk < chunks.length && active.size < concurrency) startChunk(chunks[nextChunk++]);
     }
+  }
+
+  private async runCreateAdsChunk(
+    parentInput: CreateAdsInput,
+    totalChunks: number,
+    chunk: { index: number; adCount: number; input: CreateAdsInput },
+    options: EngineRunOptions,
+  ): Promise<EngineWorkChunk> {
+    console.error("Running hosted LFS chunk", {
+      batchId: parentInput.batchId,
+      chunk: chunk.index,
+      chunks: totalChunks,
+      adCount: chunk.adCount,
+    });
+    await options.onProgress?.({
+      event: "chunk_started",
+      batchId: parentInput.batchId,
+      chunkIndex: chunk.index,
+      chunkTotal: totalChunks,
+      artifactCount: chunk.adCount,
+      itemCount: chunk.adCount,
+      ts: new Date().toISOString(),
+    });
+    const chunkStartedAt = Date.now();
+    const items = uniqueItems(await this.planCreateAdsOnce(chunk.input, options));
+    await options.onProgress?.({
+      event: "chunk_finished",
+      batchId: parentInput.batchId,
+      chunkIndex: chunk.index,
+      chunkTotal: totalChunks,
+      artifactCount: items.length,
+      itemCount: items.length,
+      durationMs: Date.now() - chunkStartedAt,
+      ts: new Date().toISOString(),
+    });
+    return {
+      index: chunk.index,
+      total: totalChunks,
+      adCount: chunk.adCount,
+      items,
+    };
   }
 
   private async planCreateAdsOnce(input: CreateAdsInput, options: EngineRunOptions): Promise<EngineWorkItem[]> {
@@ -394,6 +441,15 @@ export class LegacyLfs41Engine implements Engine {
       let stdoutRemainder = "";
       let stderrRemainder = "";
       const progressWrites: Array<Promise<void>> = [];
+      let progressChain = Promise.resolve();
+      const enqueueProgress = (event: EngineProgressEvent) => {
+        progressChain = progressChain
+          .then(() => Promise.resolve(options.onProgress?.(event)))
+          .catch(() => {
+            // Progress publishing must never kill the engine subprocess.
+          });
+        progressWrites.push(progressChain);
+      };
       let timedOut = false;
       const timeoutMs = parsePositiveInt(process.env.WWX_LFS_COMMAND_TIMEOUT_MS, 90 * 60 * 1000);
       const timeout = setTimeout(() => {
@@ -406,12 +462,12 @@ export class LegacyLfs41Engine implements Engine {
       child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
         stdoutTail = appendTail(stdoutTail, text);
-        stdoutRemainder = consumeProgressLines(stdoutRemainder + text, options.onProgress, progressWrites);
+        stdoutRemainder = consumeProgressLines(stdoutRemainder + text, enqueueProgress);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
         stderrTail = appendTail(stderrTail, text);
-        stderrRemainder = consumeProgressLines(stderrRemainder + text, options.onProgress, progressWrites);
+        stderrRemainder = consumeProgressLines(stderrRemainder + text, enqueueProgress);
       });
       child.on("error", (error) => {
         clearTimeout(timeout);
@@ -419,8 +475,8 @@ export class LegacyLfs41Engine implements Engine {
       });
       child.on("close", (code, signal) => {
         clearTimeout(timeout);
-        stdoutRemainder = consumeProgressLines(`${stdoutRemainder}\n`, options.onProgress, progressWrites);
-        stderrRemainder = consumeProgressLines(`${stderrRemainder}\n`, options.onProgress, progressWrites);
+        stdoutRemainder = consumeProgressLines(`${stdoutRemainder}\n`, enqueueProgress);
+        stderrRemainder = consumeProgressLines(`${stderrRemainder}\n`, enqueueProgress);
         const finish = async () => {
           await Promise.allSettled(progressWrites);
         };
@@ -567,18 +623,25 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 }
 
 function hostedLfsWorkers(): number {
-  return parsePositiveInt(process.env.WWX_LFS_WORKERS, 1);
+  return parsePositiveInt(process.env.WWX_LFS_WORKERS, 3);
 }
 
 function hostedLfsGenerationWorkers(): number {
-  return parsePositiveInt(process.env.WWX_LFS_GENERATION_WORKERS, 1);
+  return parsePositiveInt(process.env.WWX_LFS_GENERATION_WORKERS, 3);
 }
 
 function lfsChunkSize(inputChunkSize?: number): number {
   if (Number.isFinite(inputChunkSize) && inputChunkSize && inputChunkSize > 0) {
-    return Math.max(1, Math.floor(inputChunkSize));
+    return Math.max(1, Math.min(30, Math.floor(inputChunkSize)));
   }
-  return parsePositiveInt(process.env.WWX_LFS_CHUNK_SIZE, 1);
+  return Math.max(1, Math.min(30, parsePositiveInt(process.env.WWX_LFS_CHUNK_SIZE, 30)));
+}
+
+function lfsChunkConcurrency(inputChunkConcurrency: number | undefined, chunkCount: number): number {
+  const requested = Number.isFinite(inputChunkConcurrency) && inputChunkConcurrency && inputChunkConcurrency > 0
+    ? Math.floor(inputChunkConcurrency)
+    : parsePositiveInt(process.env.WWX_LFS_CHUNK_CONCURRENCY, 1);
+  return Math.max(1, Math.min(chunkCount, Math.min(3, requested)));
 }
 
 function stableLfsItemKey(filename: string): string {
@@ -589,23 +652,15 @@ function stableLfsItemKey(filename: string): string {
 
 function consumeProgressLines(
   buffer: string,
-  onProgress: EngineRunOptions["onProgress"],
-  writes: Array<Promise<void>>,
+  enqueueProgress: ((event: EngineProgressEvent) => void) | undefined,
 ): string {
   const lines = buffer.split(/\r?\n/);
   const remainder = lines.pop() ?? "";
-  if (!onProgress) return remainder;
+  if (!enqueueProgress) return remainder;
   for (const raw of lines) {
     const event = parseProgressLine(raw);
     if (!event) continue;
-    try {
-      const result = onProgress(event);
-      if (result && typeof (result as Promise<void>).then === "function") {
-        writes.push(Promise.resolve(result));
-      }
-    } catch {
-      // Progress publishing must never kill the engine subprocess.
-    }
+    enqueueProgress(event);
   }
   return remainder;
 }
@@ -624,6 +679,19 @@ function parseProgressLine(raw: string): EngineProgressEvent | null {
       stage: stringValue(record.stage) ?? undefined,
       batchId: stringValue(record.batch_id) ?? stringValue(record.batchId) ?? undefined,
       artifactCount: numberValue(record.artifact_count),
+      itemCount: numberValue(record.item_count) ?? numberValue(record.itemCount),
+      durationMs: numberValue(record.duration_ms) ?? numberValue(record.durationMs),
+      attempt: numberValue(record.attempt),
+      failed: numberValue(record.failed),
+      completedTasks: numberValue(record.completed_tasks) ?? numberValue(record.completedTasks),
+      pendingTasks: numberValue(record.pending_tasks) ?? numberValue(record.pendingTasks),
+      provider: stringValue(record.provider) ?? undefined,
+      model: stringValue(record.model) ?? undefined,
+      inputTokens: numberValue(record.input_tokens) ?? numberValue(record.inputTokens),
+      outputTokens: numberValue(record.output_tokens) ?? numberValue(record.outputTokens),
+      cachedTokens: numberValue(record.cached_tokens) ?? numberValue(record.cachedTokens),
+      latencyMs: numberValue(record.latency_ms) ?? numberValue(record.latencyMs),
+      status: record.status === "failed" ? "failed" : record.status === "succeeded" ? "succeeded" : undefined,
       validation: safeProgressValidation(record.validation),
       error: safeProgressString(record.error),
       reason: safeProgressString(record.reason),

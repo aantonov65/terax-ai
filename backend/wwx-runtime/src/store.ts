@@ -304,6 +304,12 @@ export class MemoryStore implements Store {
       run.finishedAt = now;
       run.heartbeatAt = now;
       await this.markArtifactsForRunStatus(run.workspaceId, run.batchId, runId, "failed");
+      const batch = this.batches.get(`${run.workspaceId}:${run.batchId}`);
+      if (batch) {
+        batch.status = "failed";
+        batch.currentStage = null;
+        batch.updatedAt = now;
+      }
     }
     if (!job) return;
     job.status = job.attempts >= job.maxAttempts ? "dead_letter" : "queued";
@@ -314,6 +320,7 @@ export class MemoryStore implements Store {
       const batch = this.batches.get(`${job.workspaceId}:${job.batchId}`);
       if (batch) {
         batch.status = "failed";
+        batch.currentStage = null;
         batch.updatedAt = now;
       }
     }

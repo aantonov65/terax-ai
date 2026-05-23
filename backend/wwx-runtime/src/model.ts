@@ -8,13 +8,16 @@ export type VisibilityClass =
 export type RunStatus = "queued" | "running" | "stopped" | "complete" | "failed";
 export type JobStatus = "queued" | "running" | "complete" | "failed" | "dead_letter" | "stopped";
 export type WorkItemStatus = "pending" | "running" | "succeeded" | "failed" | "canceled";
+export type StageStatus = WorkItemStatus | "retrying";
 
 export type EventType =
   | "run_started"
   | "stage_started"
   | "engine_stage_started"
+  | "engine_stage_retrying"
   | "engine_stage_completed"
   | "engine_stage_failed"
+  | "engine_ai_call_completed"
   | "chunk_started"
   | "chunk_completed"
   | "work_item_started"
@@ -78,7 +81,7 @@ export type StageState = {
   batchId: string;
   runId: string;
   stage: string;
-  status: WorkItemStatus;
+  status: StageStatus;
   expectedItems: number;
   completedItems: number;
   updatedAt: number;
@@ -176,6 +179,7 @@ export type CreateAdsInput = {
   workers?: number;
   generationWorkers?: number;
   chunkSize?: number;
+  chunkConcurrency?: number;
   fromStage?: string;
 };
 

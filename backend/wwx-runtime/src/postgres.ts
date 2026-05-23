@@ -415,8 +415,6 @@ export class PostgresStore implements Store {
         `,
         [row.workspace_id, row.batch_id, runId, now],
       );
-    }
-    if (row?.status === "dead_letter") {
       await this.pool.query(
         "UPDATE batches SET status = 'failed', current_stage = NULL, updated_at = $3 WHERE workspace_id = $1 AND id = $2",
         [row.workspace_id, row.batch_id, now],

@@ -324,47 +324,9 @@ export class RuntimeWorker {
     for await (const chunk of this.engine.streamCreateAds(pendingInput, {
       onProgress: (event) => this.handleEngineProgress(claim, event, telemetryStage),
     })) {
-      if (await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
-        if (telemetryStage) {
-          await this.telemetry?.observability.failStage({
-            stageId: telemetryStage.id,
-            errorCategory: "operator_stop_requested",
-            errorMessageSafe: "Stop requested before chunk.",
-          });
-        }
-        await this.stopClaim(claim, `Stopped before chunk ${chunk.index}`);
-        return;
-      }
-      await this.store.appendEvent({
-        workspaceId: claim.workspaceId,
-        batchId: claim.batchId,
-        runId: claim.run.id,
-        type: "chunk_completed",
-        stage,
-        message: `Chunk ${chunk.index} of ${chunk.total} completed by engine`,
-        payload: {
-          chunkIndex: chunk.index,
-          chunkTotal: chunk.total,
-          adCount: chunk.adCount,
-          itemCount: chunk.items.length,
-        },
+      const stopped = await this.publishItems(claim, stage, chunk.items, telemetryStage, expectedItems, {
+        preserveCompletedChunk: true,
       });
-      if (this.telemetry) {
-        await this.telemetry.observability.emitRunEvent({
-          runId: this.telemetry.workflowRunId,
-          stageId: telemetryStage?.id ?? null,
-          eventType: "chunk_completed",
-          messageSafe: `Chunk ${chunk.index} of ${chunk.total} completed by engine`,
-          metadataSafe: {
-            stage_name: stage,
-            chunk_index: chunk.index,
-            chunk_total: chunk.total,
-            ad_count: chunk.adCount,
-            item_count: chunk.items.length,
-          },
-        });
-      }
-      const stopped = await this.publishItems(claim, stage, chunk.items, telemetryStage, expectedItems);
       if (stopped) return;
       const completedItems = await this.completedCount(claim.workspaceId, claim.batchId, stage);
       await this.store.setStageState({
@@ -390,6 +352,17 @@ export class RuntimeWorker {
           completedItems,
         },
       });
+      if (await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
+        if (telemetryStage) {
+          await this.telemetry?.observability.failStage({
+            stageId: telemetryStage.id,
+            errorCategory: "operator_stop_requested",
+            errorMessageSafe: "Stop requested after completed chunk was preserved.",
+          });
+        }
+        await this.stopClaim(claim, `Stopped after publishing chunk ${chunk.index}`);
+        return;
+      }
     }
 
     const completedItems = await this.completedCount(claim.workspaceId, claim.batchId, stage);
@@ -425,11 +398,12 @@ export class RuntimeWorker {
     items: EngineWorkItem[],
     telemetryStage: StageRecord | null,
     expectedItems: number,
+    options: { preserveCompletedChunk?: boolean } = {},
   ): Promise<boolean> {
     for (const item of items) {
       const work = await this.ensureWorkItem(claim, item);
       if (work.status === "succeeded") continue;
-      if (await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
+      if (!options.preserveCompletedChunk && await this.store.shouldStop(claim.workspaceId, claim.batchId)) {
         await this.store.updateWorkItemStatus(claim.workspaceId, claim.batchId, stage, item.itemKey, "canceled");
         if (telemetryStage) {
           await this.telemetry?.observability.failStage({
@@ -546,23 +520,58 @@ export class RuntimeWorker {
     event: EngineProgressEvent,
     telemetryStage: StageRecord | null,
   ): Promise<void> {
-    if (event.event === "chunk_started") {
+    if (event.event === "chunk_started" || event.event === "chunk_finished") {
+      const type = event.event === "chunk_started" ? "chunk_started" : "chunk_completed";
+      const verb = event.event === "chunk_started" ? "Started" : "Finished";
       await this.store.appendEvent({
         workspaceId: claim.workspaceId,
         batchId: claim.batchId,
         runId: claim.run.id,
-        type: "chunk_started",
+        type,
         stage: "lfs_generation",
-        message: `Started chunk ${event.chunkIndex ?? "?"} of ${event.chunkTotal ?? "?"}`,
+        message: `${verb} chunk ${event.chunkIndex ?? "?"} of ${event.chunkTotal ?? "?"}`,
         payload: safeEngineProgressPayload(event),
       });
       if (this.telemetry) {
         await this.telemetry.observability.emitRunEvent({
           runId: this.telemetry.workflowRunId,
           stageId: telemetryStage?.id ?? null,
-          eventType: "chunk_started",
-          messageSafe: `Started chunk ${event.chunkIndex ?? "?"} of ${event.chunkTotal ?? "?"}`,
+          eventType: type,
+          messageSafe: `${verb} chunk ${event.chunkIndex ?? "?"} of ${event.chunkTotal ?? "?"}`,
           metadataSafe: safeEngineProgressPayload(event),
+        });
+      }
+      return;
+    }
+
+    if (event.event === "ai_call_finished" || event.event === "ai_call_failed") {
+      const payload = safeEngineProgressPayload(event);
+      const status = event.event === "ai_call_failed" ? "failed" : event.status ?? "succeeded";
+      const model = event.model ?? "unknown";
+      const costUsd = estimatedAiCostUsd(event);
+      await this.store.appendEvent({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        type: "engine_ai_call_completed",
+        stage: event.stage ?? "lfs_generation",
+        message: `${event.stage ?? "LFS"} model call ${status}`,
+        payload: { ...payload, cost_usd: costUsd },
+      });
+      if (this.telemetry) {
+        await this.telemetry.observability.recordAiCall({
+          runId: this.telemetry.workflowRunId,
+          stageId: telemetryStage?.id ?? null,
+          provider: event.provider ?? "anthropic",
+          model,
+          promptTemplateId: event.stage ?? "lfs_generation",
+          inputTokens: event.inputTokens ?? 0,
+          outputTokens: event.outputTokens ?? 0,
+          cachedTokens: event.cachedTokens ?? 0,
+          latencyMs: event.latencyMs ?? null,
+          costUsd,
+          status,
+          errorCategory: status === "failed" ? "provider_call_failed" : null,
         });
       }
       return;
@@ -595,6 +604,40 @@ export class RuntimeWorker {
           stageId: telemetryStage?.id ?? null,
           eventType: "engine_stage_started",
           messageSafe: engineStageLabel(event.stage, "started"),
+          metadataSafe: payload,
+        });
+      }
+      return;
+    }
+    if (event.event === "stage_retrying") {
+      const completed = event.completedTasks ?? 0;
+      const failed = event.failed ?? 0;
+      const pending = event.pendingTasks ?? 0;
+      const expected = event.artifactCount ?? Math.max(0, completed + failed + pending);
+      await this.store.setStageState({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        stage: event.stage,
+        status: "retrying",
+        expectedItems: expected,
+        completedItems: completed,
+      });
+      await this.store.appendEvent({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        type: "engine_stage_retrying",
+        stage: event.stage,
+        message: engineStageLabel(event.stage, "retrying"),
+        payload,
+      });
+      if (this.telemetry) {
+        await this.telemetry.observability.emitRunEvent({
+          runId: this.telemetry.workflowRunId,
+          stageId: telemetryStage?.id ?? null,
+          eventType: "engine_stage_retrying",
+          messageSafe: engineStageLabel(event.stage, "retrying"),
           metadataSafe: payload,
         });
       }
@@ -758,6 +801,19 @@ function safeEngineProgressPayload(event: EngineProgressEvent): Record<string, u
   if (event.chunkIndex) payload.chunk_index = event.chunkIndex;
   if (event.chunkTotal) payload.chunk_total = event.chunkTotal;
   if (event.artifactCount !== undefined) payload.artifact_count = event.artifactCount;
+  if (event.itemCount !== undefined) payload.item_count = event.itemCount;
+  if (event.durationMs !== undefined) payload.duration_ms = event.durationMs;
+  if (event.attempt !== undefined) payload.attempt = event.attempt;
+  if (event.failed !== undefined) payload.failed = event.failed;
+  if (event.completedTasks !== undefined) payload.completed_tasks = event.completedTasks;
+  if (event.pendingTasks !== undefined) payload.pending_tasks = event.pendingTasks;
+  if (event.provider) payload.provider = event.provider;
+  if (event.model) payload.model = event.model;
+  if (event.inputTokens !== undefined) payload.input_tokens = event.inputTokens;
+  if (event.outputTokens !== undefined) payload.output_tokens = event.outputTokens;
+  if (event.cachedTokens !== undefined) payload.cached_tokens = event.cachedTokens;
+  if (event.latencyMs !== undefined) payload.latency_ms = event.latencyMs;
+  if (event.status) payload.status = event.status;
   if (event.validation && typeof event.validation === "object") payload.validation = event.validation;
   if (event.error) payload.error_safe = event.error;
   if (event.reason) payload.reason_safe = event.reason;
@@ -765,9 +821,21 @@ function safeEngineProgressPayload(event: EngineProgressEvent): Record<string, u
   return payload;
 }
 
-function engineStageLabel(stage: string, status: "started" | "completed" | "failed"): string {
+function estimatedAiCostUsd(event: EngineProgressEvent): number {
+  const inputTokens = event.inputTokens ?? 0;
+  const outputTokens = event.outputTokens ?? 0;
+  const cachedTokens = event.cachedTokens ?? 0;
+  const inputRate = Number(process.env.ANTHROPIC_INPUT_USD_PER_MTOK ?? "3");
+  const outputRate = Number(process.env.ANTHROPIC_OUTPUT_USD_PER_MTOK ?? "15");
+  const cachedRate = Number(process.env.ANTHROPIC_CACHE_READ_USD_PER_MTOK ?? String(inputRate * 0.1));
+  const cost = ((inputTokens / 1_000_000) * inputRate) + ((outputTokens / 1_000_000) * outputRate) + ((cachedTokens / 1_000_000) * cachedRate);
+  return Number.isFinite(cost) ? Number(cost.toFixed(8)) : 0;
+}
+
+function engineStageLabel(stage: string, status: "started" | "retrying" | "completed" | "failed"): string {
   const label = ENGINE_STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
   if (status === "started") return `${label} started`;
+  if (status === "retrying") return `${label} retrying`;
   if (status === "completed") return `${label} completed`;
   return `${label} failed`;
 }

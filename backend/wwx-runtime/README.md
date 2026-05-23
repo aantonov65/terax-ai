@@ -36,6 +36,12 @@ Admin observability lives behind `/admin` and `/admin/*`. The operator desktop m
 - `R2_ACCESS_KEY_ID`: R2 access key.
 - `R2_SECRET_ACCESS_KEY`: R2 secret key.
 - `WORKER_CONCURRENCY`: defaults to `6`.
+- `WWX_LFS_WORKERS`: hosted LFS brief/outline/QA worker count, defaults to `3`.
+- `WWX_LFS_GENERATION_WORKERS`: hosted LFS script generation worker count, defaults to `3`.
+- `WWX_LFS_CHUNK_SIZE`: hosted LFS chunk size, defaults to `30` and is capped at `30`. Keep this high so product/batch prep runs once; lower it only when cancellation granularity matters more than speed.
+- `WWX_LFS_CHUNK_CONCURRENCY`: hosted LFS chunk fan-out, defaults to `1` and is capped at `3`. This should normally stay `1`; use it only for intentionally isolated large batch chunks.
+- `WW_GENERATE_EXECUTOR`: script generation executor, defaults to `thread` for LFS to avoid process-pool memory blowups on hosted workers. Set `process` only for CPU-heavy non-LFS local workflows.
+- `ANTHROPIC_INPUT_USD_PER_MTOK`, `ANTHROPIC_OUTPUT_USD_PER_MTOK`, `ANTHROPIC_CACHE_READ_USD_PER_MTOK`: optional admin cost-estimation rates used when hosted LFS emits sanitized token usage. Defaults are `3`, `15`, and 10% of input rate.
 - `PORT`: API port, supplied by Railway.
 - `WW2_ENGINE_ROOT`: absolute path to the private `ww-2/main` checkout for production LFS4.1 execution.
 - `WWX_RUNTIME_ENGINE=fake`: optional local/test override to force deterministic fake scripts.

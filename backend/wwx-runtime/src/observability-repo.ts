@@ -202,6 +202,13 @@ export class MemoryObservabilityRepository implements ObservabilityRepository {
       createdAt: isoNow(),
     };
     this.aiCalls.set(record.id, record);
+    if (record.stageId && record.costUsd) {
+      const stage = this.stages.get(record.stageId);
+      if (stage) {
+        this.stages.set(record.stageId, { ...stage, costUsd: stage.costUsd + record.costUsd });
+        this.recomputeRunCost(record.runId);
+      }
+    }
     return record;
   }
 
@@ -578,7 +585,12 @@ export class PostgresObservabilityRepository implements ObservabilityRepository 
         input.errorCategory ?? null,
       ],
     );
-    return mapAiCall(result.rows[0]);
+    const record = mapAiCall(result.rows[0]);
+    if (record.stageId && record.costUsd) {
+      await this.pool.query("UPDATE run_stages SET cost_usd = cost_usd + $2 WHERE id = $1", [record.stageId, record.costUsd]);
+      await this.recomputeRunCost(record.runId);
+    }
+    return record;
   }
 
   async listAiCalls(runId: string): Promise<AiCallRecord[]> {

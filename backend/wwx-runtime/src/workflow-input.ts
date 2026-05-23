@@ -28,6 +28,8 @@ export function createAdsInputFromWorkflow(input: {
     runMode: payload.runMode === "app_step" || payload.runMode === "full" ? payload.runMode : "full",
     workers: numberValue(payload.workers),
     generationWorkers: numberValue(payload.generationWorkers ?? payload.generation_workers),
+    chunkSize: numberValue(payload.chunkSize ?? payload.chunk_size),
+    chunkConcurrency: numberValue(payload.chunkConcurrency ?? payload.chunk_concurrency),
     fromStage: stringValue(payload.fromStage) ?? stringValue(payload.from_stage) ?? undefined,
   };
 }

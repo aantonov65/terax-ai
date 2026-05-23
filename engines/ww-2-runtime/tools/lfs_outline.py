@@ -34,6 +34,30 @@ OUTLINE_TITLE_PREFIXES = ("## Transcript-Derived Outline:", OUTLINE_TITLE_PREFIX
 MECHANISM_CODE_RE = re.compile(r"(?:^|_)(M\d+(?:_[A-Z]+)?)(?=_|$)")
 
 
+def emit_ai_call_event(
+    *,
+    stage: str,
+    model: str,
+    status: str,
+    started_at: float,
+    usage: Any = None,
+) -> None:
+    cached_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+    payload = {
+        "event": "ai_call_finished" if status == "succeeded" else "ai_call_failed",
+        "stage": stage,
+        "provider": "anthropic",
+        "model": model,
+        "status": status,
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "cached_tokens": cached_tokens,
+        "latency_ms": int((time.monotonic() - started_at) * 1000),
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
 @dataclass
 class OutlineResult:
     task_id: str
@@ -668,19 +692,25 @@ End with `## Scale Check`.
 RETURN ONLY THE CORRECTED OUTLINE for task `{task_id}`."""
 
 
-def call_claude(prompt: str, model: str, *, max_tokens: int = 8000) -> str:
+def call_claude(prompt: str, model: str, *, max_tokens: int = 8000, stage: str = "lfs_outline") -> str:
     try:
         import anthropic
     except ImportError as exc:
         raise RuntimeError("anthropic SDK not installed; run `pip install anthropic`") from exc
 
     client = anthropic.Anthropic(timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS, max_retries=0)
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=0.2,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    started_at = time.monotonic()
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception:
+        emit_ai_call_event(stage=stage, model=model, status="failed", started_at=started_at)
+        raise
+    emit_ai_call_event(stage=stage, model=model, status="succeeded", started_at=started_at, usage=getattr(response, "usage", None))
     return "\n".join(
         block.text for block in response.content
         if getattr(block, "type", None) == "text" and getattr(block, "text", None)

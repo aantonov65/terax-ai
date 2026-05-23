@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,22 @@ from lfs_fix import normalize_lfs_divider_spacing, split_lfs_wall_paragraphs  # 
 
 
 DEFAULT_MODEL = os.environ.get("LFS_SEMANTIC_MODEL", "claude-sonnet-4-6")
+
+
+def emit_ai_call_event(*, model: str, status: str, started_at: float, usage: Any = None) -> None:
+    payload = {
+        "event": "ai_call_finished" if status == "succeeded" else "ai_call_failed",
+        "stage": "semantic_check",
+        "provider": "anthropic",
+        "model": model,
+        "status": status,
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "cached_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "latency_ms": int((time.monotonic() - started_at) * 1000),
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
 DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("LFS_SEMANTIC_REQUEST_TIMEOUT_SECONDS", "300"))
 
 
@@ -192,12 +209,18 @@ def call_claude(prompt: str, model: str, max_tokens: int = 12_000) -> str:
     except ImportError as exc:
         raise RuntimeError("anthropic SDK not installed; run `pip install anthropic`") from exc
     client = anthropic.Anthropic(timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS, max_retries=0)
-    msg = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=0.1,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    started_at = time.monotonic()
+    try:
+        msg = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception:
+        emit_ai_call_event(model=model, status="failed", started_at=started_at)
+        raise
+    emit_ai_call_event(model=model, status="succeeded", started_at=started_at, usage=getattr(msg, "usage", None))
     return msg.content[0].text
 
 

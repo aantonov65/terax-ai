@@ -583,7 +583,12 @@ def generate_brief_for_task(
     text = ""
     errors: list[str] = []
     for attempt in range(1, attempts + 1):
-        text = call_claude(prompt if attempt == 1 else build_repair_prompt(text, errors, prompt, task_id), model, max_tokens=6000)
+        text = call_claude(
+            prompt if attempt == 1 else build_repair_prompt(text, errors, prompt, task_id),
+            model,
+            max_tokens=6000,
+            stage="lfs_brief",
+        )
         text = normalize_generated_prompt(
             text,
             task_id=task_id,
