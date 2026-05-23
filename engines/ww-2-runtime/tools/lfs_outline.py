@@ -1190,6 +1190,7 @@ def run_outline_batch(
     dry_run: bool,
     max_attempts: int = 3,
     task_timeout_seconds: int = DEFAULT_TASK_TIMEOUT_SECONDS,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
     spec_file = batch_dir / "spec.json"
@@ -1197,7 +1198,8 @@ def run_outline_batch(
         raise FileNotFoundError(f"missing spec.json: {spec_file}")
 
     spec = load_json(spec_file)
-    task_ids = spec.get("task_ids") or []
+    all_task_ids = spec.get("task_ids") or []
+    task_ids = filter_task_ids(all_task_ids, task_filter)
     product = str(spec.get("product") or "")
     if not task_ids:
         raise ValueError(f"No task_ids found in {spec_file}")
@@ -1359,6 +1361,16 @@ def run_outline_batch(
     return report
 
 
+def filter_task_ids(task_ids: list[str], task_filter: list[str] | None) -> list[str]:
+    if not task_filter:
+        return list(task_ids)
+    allowed = {item.strip() for item in task_filter if item and item.strip()}
+    missing = sorted(allowed.difference(task_ids))
+    if missing:
+        raise ValueError(f"Unknown task_id(s) for batch spec: {', '.join(missing)}")
+    return [task_id for task_id in task_ids if task_id in allowed]
+
+
 def print_result(result: OutlineResult) -> None:
     marker = "✓" if result.status in {"generated", "repaired", "dry_run"} else "↷" if result.status == "skipped" else "✗"
     attempt_note = f" attempts={result.attempts}" if result.attempts else ""
@@ -1378,6 +1390,8 @@ def main() -> None:
     parser.add_argument("--max-attempts", type=int, default=3, help="Generation + deterministic repair attempts per outline (default: 3)")
     parser.add_argument("--task-timeout-seconds", type=int, default=DEFAULT_TASK_TIMEOUT_SECONDS,
                         help=f"Fail pending outline tasks after this many seconds without progress (default: {DEFAULT_TASK_TIMEOUT_SECONDS})")
+    parser.add_argument("--task-id", dest="task_ids", action="append",
+                        help="Only generate this task id. May be passed more than once.")
     args = parser.parse_args()
 
     try:
@@ -1390,6 +1404,7 @@ def main() -> None:
             dry_run=args.dry_run,
             max_attempts=max(args.max_attempts, 1),
             task_timeout_seconds=max(args.task_timeout_seconds, 1),
+            task_filter=args.task_ids,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -174,20 +174,47 @@ def step_ok(payload: Any) -> bool:
     return True
 
 
-def script_files(batch_dir: Path, output_subdir: str) -> list[Path]:
+def script_files(batch_dir: Path, output_subdir: str, task_filter: list[str] | None = None) -> list[Path]:
     output_dir = batch_dir / output_subdir
     if not output_dir.exists():
         raise FileNotFoundError(f"output directory not found: {output_dir}")
-    return [
+    scripts = [
         p for p in sorted(output_dir.glob("*.md"))
         if "_OUTLINE" not in p.name and "_VISUALS" not in p.name
     ]
+    if task_filter:
+        allowed = {item.strip() for item in task_filter if item and item.strip()}
+        scripts = [path for path in scripts if task_id_from_script_name(path.name) in allowed]
+        found = {task_id_from_script_name(path.name) for path in scripts}
+        missing = sorted(allowed.difference(found))
+        if missing:
+            raise ValueError(f"Unknown or missing script task_id(s): {', '.join(missing)}")
+    return scripts
 
 
-def objective_results(batch_id: str, *, base_path: Path, output_subdir: str) -> list[Any]:
+def task_id_from_script_name(script_name: str) -> str:
+    task_id = script_name.removesuffix(".md")
+    if "_" in task_id:
+        parts = task_id.rsplit("_", 2)
+        if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            task_id = parts[0]
+    return task_id
+
+
+def filter_task_ids(task_ids: list[str], task_filter: list[str] | None) -> list[str]:
+    if not task_filter:
+        return list(task_ids)
+    allowed = {item.strip() for item in task_filter if item and item.strip()}
+    missing = sorted(allowed.difference(task_ids))
+    if missing:
+        raise ValueError(f"Unknown task_id(s) for batch spec: {', '.join(missing)}")
+    return [task_id for task_id in task_ids if task_id in allowed]
+
+
+def objective_results(batch_id: str, *, base_path: Path, output_subdir: str, task_filter: list[str] | None = None) -> list[Any]:
     cfg, cta = load_batch_cfg_cta(base_path, batch_id)
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
-    scripts = script_files(batch_dir, output_subdir)
+    scripts = script_files(batch_dir, output_subdir, task_filter=task_filter)
     if not scripts:
         raise ValueError(f"no scripts found in {batch_dir / output_subdir}")
     return [
@@ -202,12 +229,13 @@ def run_v41_objective_finish(
     base_path: Path,
     output_subdir: str,
     max_rounds: int = 1,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Patch only objective hard failures; leave taste/advisory issues to semantic QA."""
     cfg, cta = load_batch_cfg_cta(base_path, batch_id)
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
     rounds: list[dict[str, Any]] = []
-    results = objective_results(batch_id, base_path=base_path, output_subdir=output_subdir)
+    results = objective_results(batch_id, base_path=base_path, output_subdir=output_subdir, task_filter=task_filter)
     rounds.append({"round": 0, "objective": build_v41_objective_report(results)})
 
     repair_round = 1
@@ -242,7 +270,7 @@ def run_v41_objective_finish(
                 only_codes=V41_HARD_CODES,
             )
             repaired += 1
-        results = objective_results(batch_id, base_path=base_path, output_subdir=output_subdir)
+        results = objective_results(batch_id, base_path=base_path, output_subdir=output_subdir, task_filter=task_filter)
         rounds.append({
             "round": repair_round,
             "scripts_repaired": repaired,
@@ -258,6 +286,7 @@ def run_v41_objective_finish(
         "generated_at": utcish_now(),
         "clean": objective["hard_clean"],
         "max_rounds": max_rounds,
+        "task_filter": task_filter or [],
         "rounds": rounds,
         "objective": objective,
     }
@@ -272,6 +301,7 @@ def materialize_v41_candidates(
     base_path: Path,
     source_subdir: str = "output",
     output_subdir: str = "output-v41",
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Copy raw generated scripts into the V4.1 candidate dir without clobbering."""
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
@@ -283,6 +313,13 @@ def materialize_v41_candidates(
         p for p in sorted(source_dir.glob("*.md"))
         if "_OUTLINE" not in p.name and "_VISUALS" not in p.name
     ]
+    if task_filter:
+        allowed = {item.strip() for item in task_filter if item and item.strip()}
+        scripts = [path for path in scripts if task_id_from_script_name(path.name) in allowed]
+        found = {task_id_from_script_name(path.name) for path in scripts}
+        missing = sorted(allowed.difference(found))
+        if missing:
+            raise ValueError(f"Unknown or missing raw script task_id(s): {', '.join(missing)}")
     if not scripts:
         raise ValueError(f"no raw scripts found in {source_dir}")
 
@@ -304,6 +341,7 @@ def materialize_v41_candidates(
         "source_subdir": source_subdir,
         "output_subdir": output_subdir,
         "total_scripts": len(records),
+        "task_filter": task_filter or [],
         "copied": copied,
         "skipped": skipped,
         "failed": 0,
@@ -333,11 +371,7 @@ def build_v41_manifest(
     scripts: list[dict[str, Any]] = []
     for item in objective_report.get("scripts", []) or []:
         script_name = str(item.get("script") or "")
-        task_id = script_name.removesuffix(".md")
-        if "_" in task_id:
-            parts = task_id.rsplit("_", 2)
-            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-                task_id = parts[0]
+        task_id = task_id_from_script_name(script_name)
         semantic = semantic_by_task.get(task_id, {})
         hard_clean = bool(item.get("hard_clean"))
         semantic_passed = bool(semantic.get("passed")) if semantic_report else False
@@ -456,6 +490,7 @@ def run_lfs_v41(
     outline_task_timeout_seconds: int | None = None,
     until: str | None = None,
     dry_run: bool = False,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     strategy = load_strategy(strategy_path)
     spec = compile_spec(strategy)
@@ -478,6 +513,7 @@ def run_lfs_v41(
         "dry_run": dry_run,
         "until": None,
         "until_requested": until,
+        "task_filter": task_filter or [],
         "steps": {},
     }
     stop_stage = STAGE_ALIASES.get(until or "") if until else None
@@ -492,7 +528,8 @@ def run_lfs_v41(
         report["stopped_at"] = stage_name
         return True
 
-    task_ids = [str(task_id) for task_id in spec.get("task_ids", [])]
+    all_task_ids = [str(task_id) for task_id in spec.get("task_ids", [])]
+    task_ids = filter_task_ids(all_task_ids, task_filter)
 
     def prompts_ready() -> bool:
         return task_files_exist(batch_dir, task_ids, "prompts")
@@ -516,6 +553,7 @@ def run_lfs_v41(
             dry_run=dry_run,
             max_attempts=max(outline_max_attempts, 1),
             task_timeout_seconds=outline_task_timeout_seconds or int(os.environ.get("LFS_OUTLINE_TASK_TIMEOUT_SECONDS", "600")),
+            task_filter=task_filter,
         )
 
     def preflight_payload() -> dict[str, Any]:
@@ -546,6 +584,7 @@ def run_lfs_v41(
                 workers=workers,
                 force=False,
                 dry_run=dry_run,
+                task_filter=task_filter,
             )
 
         run_step(
@@ -577,6 +616,7 @@ def run_lfs_v41(
                     base_path=base_path,
                     output_mode="resume",
                     preflight_policy="v41",
+                    task_filter=task_filter,
                 )
             ),
         )
@@ -592,6 +632,7 @@ def run_lfs_v41(
                     batch_id,
                     base_path=base_path,
                     output_subdir=output_subdir,
+                    task_filter=task_filter,
                 )
             ),
         )
@@ -608,6 +649,7 @@ def run_lfs_v41(
                     base_path=base_path,
                     output_subdir=output_subdir,
                     max_rounds=objective_repair_rounds,
+                    task_filter=task_filter,
                 )
             ),
         )
@@ -628,6 +670,7 @@ def run_lfs_v41(
                     max_attempts=1,
                     mode="launchable",
                     preserve_opener=False,
+                    task_filter=task_filter,
                 )
             ),
             fail_on_payload=False,
@@ -645,6 +688,7 @@ def run_lfs_v41(
                     base_path=base_path,
                     output_subdir=output_subdir,
                     max_rounds=objective_repair_rounds,
+                    task_filter=task_filter,
                 )
             ),
         )
@@ -673,6 +717,7 @@ def run_lfs_v41(
                     max_attempts=0,
                     mode="launchable",
                     preserve_opener=False,
+                    task_filter=task_filter,
                 ),
                 fail_on_payload=False,
             )
@@ -758,6 +803,7 @@ def build_parallel_child_cmd(
     outline_task_timeout_seconds: int | None,
     until: str | None,
     dry_run: bool,
+    task_filter: list[str] | None = None,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -788,6 +834,8 @@ def build_parallel_child_cmd(
         cmd.extend(["--until", until])
     if dry_run:
         cmd.append("--dry-run")
+    for task_id in task_filter or []:
+        cmd.extend(["--task-id", task_id])
     return cmd
 
 
@@ -896,6 +944,7 @@ def run_lfs_v41_parallel(
     outline_task_timeout_seconds: int | None = None,
     until: str | None = None,
     dry_run: bool = False,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run many strategy files as isolated V4.1 child processes."""
     jobs_to_run = discover_strategy_jobs(strategy_root, base_path=base_path)
@@ -969,6 +1018,7 @@ def run_lfs_v41_parallel(
             outline_task_timeout_seconds=outline_task_timeout_seconds,
             until=until,
             dry_run=dry_run,
+            task_filter=task_filter,
         )
         log_file.write(
             json.dumps({
@@ -1115,6 +1165,8 @@ def main() -> int:
                     help="Stop after a V4.1 stage for staged smoke tests")
     ap.add_argument("--dry-run", action="store_true",
                     help="Validate wiring without script generation, semantic calls, or objective repair")
+    ap.add_argument("--task-id", dest="task_ids", action="append",
+                    help="Run task-scoped stages for this task id while preserving full batch spec/context. May be passed more than once.")
     args = ap.parse_args()
 
     try:
@@ -1132,6 +1184,7 @@ def main() -> int:
                 outline_task_timeout_seconds=args.outline_task_timeout_seconds,
                 until=args.until,
                 dry_run=args.dry_run,
+                task_filter=args.task_ids,
             )
             return 0 if report.get("clean") or report.get("dry_run") else 1
         report = run_lfs_v41(
@@ -1148,6 +1201,7 @@ def main() -> int:
             outline_task_timeout_seconds=args.outline_task_timeout_seconds,
             until=args.until,
             dry_run=args.dry_run,
+            task_filter=args.task_ids,
         )
     except Exception as exc:
         print(f"LFS V4.1 failed: {exc}", file=sys.stderr, flush=True)

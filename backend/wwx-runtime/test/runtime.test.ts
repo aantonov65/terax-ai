@@ -132,11 +132,12 @@ test("hosted workflow input preserves LFS chunk size", () => {
   const input = createAdsInputFromWorkflow({
     productId: "prod_hair",
     batchId: "batch_chunk",
-    payload: { adCount: 6, chunkSize: 3, chunkConcurrency: 2, generationWorkers: 1 },
+    payload: { adCount: 6, chunkSize: 3, chunkConcurrency: 2, generationWorkers: 1, taskIds: ["LFS_001", "LFS_002"] },
   });
   assert.equal(input.chunkSize, 3);
   assert.equal(input.chunkConcurrency, 2);
   assert.equal(input.generationWorkers, 1);
+  assert.deepEqual(input.taskIds, ["LFS_001", "LFS_002"]);
 });
 
 test("stop requested during a streaming chunk preserves completed chunk artifacts", async () => {

@@ -154,6 +154,7 @@ def run_batch(
     base_path: Path | None = None,
     output_mode: str = "fail",
     preflight_policy: str | None = None,
+    task_filter: list[str] | None = None,
 ) -> dict:
     """Generate all tasks in a batch once and write report.json."""
     if base_path is None:
@@ -161,7 +162,8 @@ def run_batch(
 
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
     spec = json.loads((batch_dir / "spec.json").read_text())
-    task_ids = spec.get("task_ids", [])
+    all_task_ids = spec.get("task_ids", [])
+    task_ids = filter_task_ids(all_task_ids, task_filter)
     if not task_ids:
         raise ValueError(f"No task_ids found in spec for batch '{batch_id}'")
     resolved_preflight_policy = preflight_policy or "strict"
@@ -239,6 +241,7 @@ def run_batch(
         "total_tasks": len(task_ids),
         "generated": generated,
         "failed": failed,
+        "task_filter": task_filter or [],
         "needs_lfs_qa": True,
         "output_mode": output_mode,
         "skipped_existing": len(skipped),
@@ -281,6 +284,16 @@ def run_batch(
     return report
 
 
+def filter_task_ids(task_ids: list[str], task_filter: list[str] | None) -> list[str]:
+    if not task_filter:
+        return list(task_ids)
+    allowed = {item.strip() for item in task_filter if item and item.strip()}
+    missing = sorted(allowed.difference(task_ids))
+    if missing:
+        raise ValueError(f"Unknown task_id(s) for batch spec: {', '.join(missing)}")
+    return [task_id for task_id in task_ids if task_id in allowed]
+
+
 def generation_executor_mode(spec: dict) -> str:
     """Choose the safest parallel executor for hosted generation.
 
@@ -317,6 +330,8 @@ def main() -> None:
     mode.add_argument("--append-version", action="store_true", help="Preserve existing output and add new timestamped files")
     parser.add_argument("--preflight-policy", choices=["strict", "v41"],
                         help="LFS preflight policy for this run (default: strict)")
+    parser.add_argument("--task-id", dest="task_ids", action="append",
+                        help="Only generate this task id. May be passed more than once.")
     args = parser.parse_args()
     output_mode = "clean" if args.clean_output else "resume" if args.resume_missing else "append" if args.append_version else "fail"
 
@@ -327,6 +342,7 @@ def main() -> None:
             base_path=args.base_path,
             output_mode=output_mode,
             preflight_policy=args.preflight_policy,
+            task_filter=args.task_ids,
         )
         if report["failed"] > 0:
             sys.exit(1)

@@ -31,6 +31,7 @@ export function createAdsInputFromWorkflow(input: {
     chunkSize: numberValue(payload.chunkSize ?? payload.chunk_size),
     chunkConcurrency: numberValue(payload.chunkConcurrency ?? payload.chunk_concurrency),
     fromStage: stringValue(payload.fromStage) ?? stringValue(payload.from_stage) ?? undefined,
+    taskIds: stringArray(payload.taskIds ?? payload.task_ids),
   };
 }
 

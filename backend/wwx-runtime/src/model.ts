@@ -181,6 +181,7 @@ export type CreateAdsInput = {
   chunkSize?: number;
   chunkConcurrency?: number;
   fromStage?: string;
+  taskIds?: string[];
 };
 
 export type ResearchWorkflowInput = {

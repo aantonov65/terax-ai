@@ -326,6 +326,7 @@ def run_semantic_batch(
     dry_run: bool = False,
     mode: str = "adherence",
     preserve_opener: bool = True,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     batch_dir = resolve_batch_dir(batch_id, base_path=base_path)
     output_dir = batch_dir / output_subdir
@@ -335,6 +336,13 @@ def run_semantic_batch(
         p for p in sorted(output_dir.glob("*.md"))
         if "_OUTLINE" not in p.name and "_VISUALS" not in p.name
     ]
+    if task_filter:
+        allowed = {item.strip() for item in task_filter if item and item.strip()}
+        scripts = [script for script in scripts if task_id_from_script(script) in allowed]
+        found = {task_id_from_script(script) for script in scripts}
+        missing = sorted(allowed.difference(found))
+        if missing:
+            raise ValueError(f"Unknown or missing script task_id(s): {', '.join(missing)}")
     if not scripts:
         raise ValueError(f"no scripts found in {output_dir}")
 
@@ -375,6 +383,7 @@ def run_semantic_batch(
         "mode": mode,
         "preserve_opener": preserve_opener,
         "output_subdir": output_subdir,
+        "task_filter": task_filter or [],
         "total_scripts": len(results),
         "passed": sum(1 for r in results if r.status == "passed"),
         "repaired": sum(1 for r in results if r.status == "repaired"),
@@ -405,6 +414,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--mode", choices=["adherence", "launchable"], default="adherence")
     ap.add_argument("--allow-opener-change", action="store_true", help="Allow semantic repair to improve weak openers")
+    ap.add_argument("--task-id", dest="task_ids", action="append",
+                    help="Only check this task id. May be passed more than once.")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -419,6 +430,7 @@ def main() -> int:
             dry_run=args.dry_run,
             mode=args.mode,
             preserve_opener=not args.allow_opener_change,
+            task_filter=args.task_ids,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

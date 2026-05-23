@@ -427,6 +427,7 @@ class LfsAgentRunner:
         generation_workers: int = 20,
         context_product: str | None = None,
         context_batch_id: str | None = None,
+        task_filter: list[str] | None = None,
         reviewer: Callable[["LfsAgentRunner", str, list[Path]], str] | None = None,
     ) -> None:
         if not input_path and not resume:
@@ -444,6 +445,7 @@ class LfsAgentRunner:
         self.generation_workers = max(generation_workers, 1)
         self.context_product = context_product
         self.context_batch_id = context_batch_id
+        self.task_filter = task_filter or []
         self.reviewer = reviewer
         self.strategy_path: Path | None = None
         self.batch_dir: Path | None = None
@@ -453,6 +455,22 @@ class LfsAgentRunner:
         self.spec: dict[str, Any] = {}
         self.state: dict[str, Any] = {}
         self.stage_payloads: dict[str, Any] = {}
+
+    def active_task_ids(self) -> list[str]:
+        task_ids = [str(task_id) for task_id in self.spec.get("task_ids", [])]
+        if not self.stage_task_filter():
+            return task_ids
+        allowed = {item.strip() for item in self.stage_task_filter() or [] if item and item.strip()}
+        missing = sorted(allowed.difference(task_ids))
+        if missing:
+            raise ValueError(f"Unknown task_id(s) for batch spec: {', '.join(missing)}")
+        return [task_id for task_id in task_ids if task_id in allowed]
+
+    def stage_task_filter(self) -> list[str] | None:
+        # Task-scoped agent runs are only safe once a prior full-batch prep has
+        # materialized the shared batch context. A fresh run keeps all tasks so
+        # compile/brief/outline/preflight cannot silently drop batch context.
+        return self.task_filter if self.from_stage else None
 
     @property
     def state_path(self) -> Path:
@@ -546,6 +564,7 @@ class LfsAgentRunner:
                 "status": "initialized",
                 "current_stage": None,
                 "stage_order": STAGE_ORDER,
+                "task_filter": self.task_filter,
                 "stages": {},
                 "artifact_hashes": {},
                 "artifact_metadata": {},
@@ -553,6 +572,7 @@ class LfsAgentRunner:
                 "updated_at": now(),
             }
         self.state["mode"] = "yolo" if self.yolo else "guided"
+        self.state["task_filter"] = self.task_filter
         self.save_state()
 
     def save_state(self) -> None:
@@ -830,7 +850,7 @@ class LfsAgentRunner:
     def missing_prompt_task_ids(self) -> list[str]:
         prompt_dir = self.require_batch_dir() / "prompts"
         missing = []
-        for task_id in self.spec.get("task_ids", []):
+        for task_id in self.active_task_ids():
             task = str(task_id)
             if not (prompt_dir / f"{task}.md").exists():
                 missing.append(task)
@@ -1361,6 +1381,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
             base_path=self.base_path,
             workers=self.workers,
             force=self.should_force_stage("lfs_brief"),
+            task_filter=self.stage_task_filter(),
         )
 
     def stage_lfs_outline(self) -> dict[str, Any]:
@@ -1368,7 +1389,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
         self.require_generation_credentials("lfs_outline")
         if self.deterministic_fallback_enabled():
             results = []
-            for task_id in self.spec.get("task_ids", []):
+            for task_id in self.active_task_ids():
                 item = self.item_for_task(str(task_id))
                 out_path = self.require_batch_dir() / "outlines" / f"{task_id}.md"
                 self.write_fallback_outline(str(task_id), item, out_path)
@@ -1392,6 +1413,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
             force=self.should_force_stage("lfs_outline"),
             dry_run=False,
             max_attempts=env_int("LFS_OUTLINE_MAX_ATTEMPTS", 4, minimum=2),
+            task_filter=self.stage_task_filter(),
         )
         for attempt in range(env_int("WWX_LFS_OUTLINE_STAGE_RETRIES", 1, minimum=0)):
             if step_ok(report):
@@ -1412,6 +1434,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 force=False,
                 dry_run=False,
                 max_attempts=env_int("LFS_OUTLINE_RETRY_MAX_ATTEMPTS", 3, minimum=1),
+                task_filter=self.stage_task_filter(),
             )
         return self.normalize_batch_report("lfs-outline-report.json", report)
 
@@ -1444,7 +1467,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
         if self.deterministic_fallback_enabled():
             results = []
             output_dir = self.require_batch_dir() / "output"
-            for task_id in self.spec.get("task_ids", []):
+            for task_id in self.active_task_ids():
                 item = self.item_for_task(str(task_id))
                 out_path = output_dir / f"{task_id}.md"
                 self.write_fallback_script(str(task_id), item, out_path)
@@ -1474,11 +1497,12 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 base_path=self.base_path,
                 output_mode="resume",
                 preflight_policy="v41",
+                task_filter=self.stage_task_filter(),
             ),
         )
 
     def stage_materialize_v41_candidates(self) -> dict[str, Any]:
-        return materialize_v41_candidates(self.batch_ref(), base_path=self.base_path, output_subdir="output-v41")
+        return materialize_v41_candidates(self.batch_ref(), base_path=self.base_path, output_subdir="output-v41", task_filter=self.stage_task_filter())
 
     def stage_objective_finish_pre_semantic(self) -> dict[str, Any]:
         return self.normalize_batch_report(
@@ -1488,6 +1512,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 base_path=self.base_path,
                 output_subdir="output-v41",
                 max_rounds=env_int("WWX_LFS_OBJECTIVE_MAX_ROUNDS", 3, minimum=0),
+                task_filter=self.stage_task_filter(),
             ),
         )
 
@@ -1505,6 +1530,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 max_attempts=1,
                 mode="launchable",
                 preserve_opener=False,
+                task_filter=self.stage_task_filter(),
             ),
         )
 
@@ -1516,6 +1542,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 base_path=self.base_path,
                 output_subdir="output-v41",
                 max_rounds=env_int("WWX_LFS_OBJECTIVE_MAX_ROUNDS", 3, minimum=0),
+                task_filter=self.stage_task_filter(),
             ),
         )
 
@@ -1557,12 +1584,13 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 max_attempts=0,
                 mode="launchable",
                 preserve_opener=False,
+                task_filter=self.stage_task_filter(),
             ),
         )
 
     def write_fallback_semantic_report(self, *, stage: str) -> dict[str, Any]:
         results = []
-        for task_id in self.spec.get("task_ids", []):
+        for task_id in self.active_task_ids():
             results.append({
                 "task_id": str(task_id),
                 "passed": True,
@@ -1664,6 +1692,7 @@ def run_lfs_agent(
     generation_workers: int = 20,
     context_product: str | None = None,
     context_batch_id: str | None = None,
+    task_filter: list[str] | None = None,
     reviewer: Callable[[LfsAgentRunner, str, list[Path]], str] | None = None,
 ) -> dict[str, Any]:
     runner = LfsAgentRunner(
@@ -1676,6 +1705,7 @@ def run_lfs_agent(
         generation_workers=generation_workers,
         context_product=context_product,
         context_batch_id=context_batch_id,
+        task_filter=task_filter,
         reviewer=reviewer,
     )
     return runner.run()
@@ -1691,6 +1721,7 @@ def run_lfs_agent_app_step(
     generation_workers: int = 20,
     context_product: str | None = None,
     context_batch_id: str | None = None,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     runner = LfsAgentRunner(
         input_path=input_path,
@@ -1702,6 +1733,7 @@ def run_lfs_agent_app_step(
         generation_workers=generation_workers,
         context_product=context_product,
         context_batch_id=context_batch_id,
+        task_filter=task_filter,
     )
     return runner.run_app_step()
 
@@ -1717,6 +1749,8 @@ def main() -> int:
     ap.add_argument("--generation-workers", type=int, default=20)
     ap.add_argument("--product", help="Active product code supplied by the desktop/workflow data model for uploaded angle.md")
     ap.add_argument("--batch-id", help="Active batch id supplied by the desktop/workflow data model for uploaded angle.md")
+    ap.add_argument("--task-id", dest="task_ids", action="append",
+                    help="Run task-scoped stages for this task id while preserving full batch spec/context. May be passed more than once.")
     ap.add_argument("--base-path", type=Path, default=REPO)
     args = ap.parse_args()
 
@@ -1731,6 +1765,7 @@ def main() -> int:
                 generation_workers=args.generation_workers,
                 context_product=args.product,
                 context_batch_id=args.batch_id,
+                task_filter=args.task_ids,
             )
             print(json.dumps({
                 "schema": "lfs-agent-app-step/v1",
@@ -1755,6 +1790,7 @@ def main() -> int:
                 generation_workers=args.generation_workers,
                 context_product=args.product,
                 context_batch_id=args.batch_id,
+                task_filter=args.task_ids,
             )
     except HeldRun:
         print("LFS agent held for review. Resume with: ./tools/ww lfs-agent --resume BATCH_ID", flush=True)

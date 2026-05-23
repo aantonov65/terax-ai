@@ -625,6 +625,7 @@ def run_lfs_brief(
     dry_run: bool = False,
     max_attempts: int = 3,
     write_spec: bool = True,
+    task_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     strategy = load_strategy(strategy_path)
     contract_errors = validate_intent_ads(strategy)
@@ -650,7 +651,7 @@ def run_lfs_brief(
         else:
             spec_path.write_text(json.dumps(spec, indent=2) + "\n")
 
-    task_ids = task_ids_from_strategy(strategy)
+    task_ids = filter_task_ids(task_ids_from_strategy(strategy), task_filter)
     print(f"Generating LFS V4.1 prompts for '{spec['batch_id']}' ({len(task_ids)} tasks, {workers} workers)")
     print(f"Model: {model}")
 
@@ -687,6 +688,7 @@ def run_lfs_brief(
         "batch_id": spec["batch_id"],
         "model": model,
         "dry_run": dry_run,
+        "task_filter": task_filter or [],
         "generated": sum(1 for r in results if r.status == "generated"),
         "skipped": sum(1 for r in results if r.status == "skipped"),
         "failed": sum(1 for r in results if r.status == "failed"),
@@ -699,6 +701,16 @@ def run_lfs_brief(
     return report
 
 
+def filter_task_ids(task_ids: list[str], task_filter: list[str] | None) -> list[str]:
+    if not task_filter:
+        return list(task_ids)
+    allowed = {item.strip() for item in task_filter if item and item.strip()}
+    missing = sorted(allowed.difference(task_ids))
+    if missing:
+        raise ValueError(f"Unknown task_id(s) for strategy: {', '.join(missing)}")
+    return [task_id for task_id in task_ids if task_id in allowed]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate LFS V4.1 per-task prompts from a strategist JSON")
     parser.add_argument("strategy", type=Path, help="Strategist JSON with batch metadata and ads[] intent cards")
@@ -709,6 +721,8 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="Replace existing prompts/spec")
     parser.add_argument("--dry-run", action="store_true", help="Validate strategy and print planned work without API calls")
     parser.add_argument("--max-attempts", type=int, default=3, help="Generation + repair attempts per prompt")
+    parser.add_argument("--task-id", dest="task_ids", action="append",
+                        help="Only generate this task id. May be passed more than once.")
     args = parser.parse_args()
     try:
         report = run_lfs_brief(
@@ -720,6 +734,7 @@ def main() -> int:
             force=args.force,
             dry_run=args.dry_run,
             max_attempts=args.max_attempts,
+            task_filter=args.task_ids,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

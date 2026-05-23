@@ -177,6 +177,9 @@ export class LegacyLfs41Engine implements Engine {
       args.push("--workers", String(input.workers ?? hostedLfsWorkers()));
       args.push("--generation-workers", String(input.generationWorkers ?? hostedLfsGenerationWorkers()));
       if (input.fromStage) args.push("--from", input.fromStage);
+      if (input.fromStage) {
+        for (const taskId of input.taskIds ?? []) args.push("--task-id", taskId);
+      }
 
       await this.runPythonLfs(python, args, options);
       return this.readFinalOutputs(root, input);
