@@ -141,7 +141,7 @@ export class RuntimeWorker {
         payload: engineFailurePayload(error),
       });
       if (telemetryGenerationStage) {
-        await this.telemetry.observability.failStage({
+        await this.telemetry?.observability.failStage({
           stageId: telemetryGenerationStage.id,
           errorCategory: "lfs_generation_failed",
           errorCode: error instanceof Error ? error.message.split(":")[0] : "LFS_GENERATION_FAILED",
@@ -546,7 +546,7 @@ export class RuntimeWorker {
 
     if (event.event === "ai_call_finished" || event.event === "ai_call_failed") {
       const payload = safeEngineProgressPayload(event);
-      const status = event.event === "ai_call_failed" ? "failed" : event.status ?? "succeeded";
+      const status = event.event === "ai_call_failed" || event.status === "failed" ? "failed" : "succeeded";
       const model = event.model ?? "unknown";
       const costUsd = estimatedAiCostUsd(event);
       await this.store.appendEvent({
@@ -572,6 +572,38 @@ export class RuntimeWorker {
           costUsd,
           status,
           errorCategory: status === "failed" ? "provider_call_failed" : null,
+        });
+      }
+      return;
+    }
+
+    if (event.event === "outline_task_started" || event.event === "outline_task_completed" || event.event === "outline_task_failed" || event.event === "outline_task_validation_failed") {
+      const type = event.event === "outline_task_started"
+        ? "engine_task_started"
+        : event.event === "outline_task_completed"
+          ? "engine_task_completed"
+          : "engine_task_failed";
+      const taskId = event.taskId ?? "outline_task";
+      await this.store.appendEvent({
+        workspaceId: claim.workspaceId,
+        batchId: claim.batchId,
+        runId: claim.run.id,
+        type,
+        stage: "lfs_outline",
+        message: event.event === "outline_task_validation_failed"
+          ? `Outline validation failed for ${taskId}`
+          : `Outline ${type.replace("engine_task_", "")} for ${taskId}`,
+        payload: safeEngineProgressPayload(event),
+      });
+      if (this.telemetry) {
+        await this.telemetry.observability.emitRunEvent({
+          runId: this.telemetry.workflowRunId,
+          stageId: telemetryStage?.id ?? null,
+          eventType: type,
+          messageSafe: event.event === "outline_task_validation_failed"
+            ? "Outline validation failed"
+            : `Outline ${type.replace("engine_task_", "")}`,
+          metadataSafe: safeEngineProgressPayload(event),
         });
       }
       return;
@@ -807,14 +839,19 @@ function safeEngineProgressPayload(event: EngineProgressEvent): Record<string, u
   if (event.failed !== undefined) payload.failed = event.failed;
   if (event.completedTasks !== undefined) payload.completed_tasks = event.completedTasks;
   if (event.pendingTasks !== undefined) payload.pending_tasks = event.pendingTasks;
+  if (event.taskId) payload.task_id = event.taskId;
   if (event.provider) payload.provider = event.provider;
   if (event.model) payload.model = event.model;
+  if (event.phase) payload.phase = event.phase;
+  if (event.promptChars !== undefined) payload.prompt_chars = event.promptChars;
+  if (event.promptHash) payload.prompt_hash = event.promptHash;
   if (event.inputTokens !== undefined) payload.input_tokens = event.inputTokens;
   if (event.outputTokens !== undefined) payload.output_tokens = event.outputTokens;
   if (event.cachedTokens !== undefined) payload.cached_tokens = event.cachedTokens;
   if (event.latencyMs !== undefined) payload.latency_ms = event.latencyMs;
   if (event.status) payload.status = event.status;
   if (event.validation && typeof event.validation === "object") payload.validation = event.validation;
+  if (event.errors?.length) payload.errors = event.errors;
   if (event.error) payload.error_safe = event.error;
   if (event.reason) payload.reason_safe = event.reason;
   if (event.ts) payload.engine_ts = event.ts;

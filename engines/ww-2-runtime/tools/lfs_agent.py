@@ -267,6 +267,19 @@ def preflight_failures_from_output(output: str) -> list[dict[str, str]]:
     return failures
 
 
+def failed_outline_task_ids(report: dict[str, Any]) -> list[str]:
+    failed: list[str] = []
+    for item in report.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") != "failed":
+            continue
+        task_id = str(item.get("task_id") or "").strip()
+        if task_id:
+            failed.append(task_id)
+    return failed
+
+
 def context_from_dir(path: Path, base_path: Path) -> tuple[str | None, str | None, Path | None]:
     current = path if path.is_dir() else path.parent
     for parent in (current, *current.parents):
@@ -1412,12 +1425,13 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
             workers=self.workers,
             force=self.should_force_stage("lfs_outline"),
             dry_run=False,
-            max_attempts=env_int("LFS_OUTLINE_MAX_ATTEMPTS", 4, minimum=2),
+            max_attempts=env_int("LFS_OUTLINE_MAX_ATTEMPTS", 2, minimum=1),
             task_filter=self.stage_task_filter(),
         )
         for attempt in range(env_int("WWX_LFS_OUTLINE_STAGE_RETRIES", 1, minimum=0)):
             if step_ok(report):
                 break
+            retry_task_ids = failed_outline_task_ids(report)
             self.event(
                 "stage_retrying",
                 stage="lfs_outline",
@@ -1425,6 +1439,7 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 failed=report.get("failed"),
                 completed_tasks=report.get("completed_tasks"),
                 pending_tasks=report.get("pending_tasks"),
+                task_ids=",".join(retry_task_ids[:20]),
             )
             report = run_outline_batch(
                 self.batch_ref(),
@@ -1433,8 +1448,8 @@ Plain native LFS formatting, product truth, short paragraphs, and no extra claim
                 workers=self.workers,
                 force=False,
                 dry_run=False,
-                max_attempts=env_int("LFS_OUTLINE_RETRY_MAX_ATTEMPTS", 3, minimum=1),
-                task_filter=self.stage_task_filter(),
+                max_attempts=env_int("LFS_OUTLINE_RETRY_MAX_ATTEMPTS", 2, minimum=1),
+                task_filter=retry_task_ids or self.stage_task_filter(),
             )
         return self.normalize_batch_report("lfs-outline-report.json", report)
 

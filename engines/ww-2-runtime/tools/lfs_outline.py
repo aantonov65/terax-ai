@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from research_cards import load_card_or_section, resolve_product_dir
@@ -41,6 +42,10 @@ def emit_ai_call_event(
     status: str,
     started_at: float,
     usage: Any = None,
+    task_id: str | None = None,
+    attempt: int | None = None,
+    phase: str | None = None,
+    prompt: str | None = None,
 ) -> None:
     cached_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
     payload = {
@@ -53,9 +58,39 @@ def emit_ai_call_event(
         "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
         "cached_tokens": cached_tokens,
         "latency_ms": int((time.monotonic() - started_at) * 1000),
-        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if task_id:
+        payload["task_id"] = task_id
+    if attempt is not None:
+        payload["attempt"] = attempt
+    if phase:
+        payload["phase"] = phase
+    if prompt is not None:
+        payload["prompt_chars"] = len(prompt)
+        payload["prompt_hash"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def emit_outline_event(event: str, **payload: Any) -> None:
+    safe: dict[str, Any] = {
+        "event": event,
+        "stage": "lfs_outline",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            safe[key] = value
+        elif isinstance(value, list):
+            safe[key] = [str(item)[:240] for item in value[:12]]
+        elif isinstance(value, dict):
+            safe[key] = {
+                str(k)[:80]: v for k, v in value.items()
+                if isinstance(v, (str, int, float, bool)) or v is None
+            }
+    print(json.dumps(safe, sort_keys=True), flush=True)
 
 
 @dataclass
@@ -66,6 +101,9 @@ class OutlineResult:
     status: str
     error: str | None = None
     attempts: int = 0
+    duration_ms: int | None = None
+    prompt_chars: int | None = None
+    final_errors: list[str] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +113,9 @@ class OutlineResult:
             "status": self.status,
             "error": self.error,
             "attempts": self.attempts,
+            "duration_ms": self.duration_ms,
+            "prompt_chars": self.prompt_chars,
+            "final_errors": self.final_errors or [],
         }
 
 
@@ -303,6 +344,49 @@ def sanitize_outline_meta(text: str) -> str:
     text = "\n".join(cleaned_lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip() + "\n"
+
+
+def ensure_offer_truth_lock(text: str, cfg: dict[str, Any] | None) -> str:
+    """Add exact product/offer facts deterministically instead of spending repair calls.
+
+    The outline is a production blueprint, and the task prompt still owns final
+    copy. Missing exact price or guarantee wording should not force another LLM
+    pass when the backend already has canonical product truth.
+    """
+    if not cfg:
+        return text
+    low = text.lower()
+    brand = str(cfg.get("brand") or "").strip()
+    product_name = str(cfg.get("product_name") or "").strip()
+    product_label = product_name or brand
+    price = _preferred_price_from_config(cfg)
+    guarantee = _preferred_guarantee_from_config(cfg)
+    needs_product = bool(product_label) and product_label.lower() not in low
+    needs_price = bool(price) and price.lower() not in low
+    guarantee_terms = _guarantee_terms_from_config(cfg)
+    needs_guarantee = bool(guarantee) and not any(term in low for term in guarantee_terms)
+    if not (needs_product or needs_price or needs_guarantee):
+        return text
+
+    offer_label = product_label
+    if offer_label and price:
+        offer_label = f"{offer_label} at {price}"
+    elif price:
+        offer_label = price
+    elif not offer_label and guarantee:
+        offer_label = guarantee
+    lock = (
+        "\n## Offer Truth Lock\n"
+        f"The closing offer beat anchors the product as {offer_label}."
+    )
+    if guarantee:
+        lock += f" The guarantee remains {guarantee}."
+    lock += " The close keeps this product truth exact.\n"
+
+    scale_idx = text.find("\n## Scale Check")
+    if scale_idx == -1:
+        return text.rstrip() + "\n" + lock
+    return text[:scale_idx].rstrip() + "\n" + lock + text[scale_idx:]
 
 
 def build_mystic_outline_prompt(
@@ -692,7 +776,16 @@ End with `## Scale Check`.
 RETURN ONLY THE CORRECTED OUTLINE for task `{task_id}`."""
 
 
-def call_claude(prompt: str, model: str, *, max_tokens: int = 8000, stage: str = "lfs_outline") -> str:
+def call_claude(
+    prompt: str,
+    model: str,
+    *,
+    max_tokens: int = 8000,
+    stage: str = "lfs_outline",
+    task_id: str | None = None,
+    attempt: int | None = None,
+    phase: str | None = None,
+) -> str:
     try:
         import anthropic
     except ImportError as exc:
@@ -708,9 +801,28 @@ def call_claude(prompt: str, model: str, *, max_tokens: int = 8000, stage: str =
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception:
-        emit_ai_call_event(stage=stage, model=model, status="failed", started_at=started_at)
+        emit_ai_call_event(
+            stage=stage,
+            model=model,
+            status="failed",
+            started_at=started_at,
+            task_id=task_id,
+            attempt=attempt,
+            phase=phase,
+            prompt=prompt,
+        )
         raise
-    emit_ai_call_event(stage=stage, model=model, status="succeeded", started_at=started_at, usage=getattr(response, "usage", None))
+    emit_ai_call_event(
+        stage=stage,
+        model=model,
+        status="succeeded",
+        started_at=started_at,
+        usage=getattr(response, "usage", None),
+        task_id=task_id,
+        attempt=attempt,
+        phase=phase,
+        prompt=prompt,
+    )
     return "\n".join(
         block.text for block in response.content
         if getattr(block, "type", None) == "text" and getattr(block, "text", None)
@@ -769,11 +881,11 @@ def _guarantee_terms_from_config(cfg: dict[str, Any] | None) -> list[str]:
 
 def _mechanism_terms_from_config(cfg: dict[str, Any] | None) -> list[str]:
     if not cfg:
-        return ["mechanism"]
-    terms = ["mechanism"]
+        return []
+    terms: list[str] = []
     mechanisms = cfg.get("mechanisms", {}) or {}
-    for code, mech in mechanisms.items():
-        values = [code]
+    for _code, mech in mechanisms.items():
+        values: list[Any] = []
         if isinstance(mech, dict):
             values.extend([
                 mech.get("name"),
@@ -785,10 +897,34 @@ def _mechanism_terms_from_config(cfg: dict[str, Any] | None) -> list[str]:
             if not value:
                 continue
             term = str(value).strip().lower()
-            if len(term) < 2:
+            if len(term) < 4:
                 continue
             terms.append(term)
     return sorted(set(terms), key=len, reverse=True)
+
+
+def _preferred_price_from_config(cfg: dict[str, Any] | None) -> str:
+    prices = _price_strings_from_config(cfg)
+    if not prices:
+        return ""
+    return next((price for price in prices if "." in price), prices[0])
+
+
+def _preferred_guarantee_from_config(cfg: dict[str, Any] | None) -> str:
+    if not cfg:
+        return ""
+    pricing = cfg.get("pricing_rules", {}) or {}
+    offer = cfg.get("offer_architecture", {}) or {}
+    for value in [
+        pricing.get("guarantee"),
+        cfg.get("guarantee"),
+        offer.get("guarantee_framing"),
+        *((offer.get("what_you_get", []) or [])),
+    ]:
+        if value:
+            return str(value).strip()
+    terms = _guarantee_terms_from_config(cfg)
+    return terms[0] if terms else ""
 
 
 def _product_discovery_terms_from_config(cfg: dict[str, Any] | None) -> list[str]:
@@ -996,16 +1132,20 @@ def generate_outline_for_task(
     model: str,
     force: bool,
     dry_run: bool,
-    max_attempts: int = 3,
+    max_attempts: int = 2,
     cancel_event: threading.Event | None = None,
 ) -> OutlineResult:
+    task_started_at = time.monotonic()
     prompt_file = task_prompt_path(batch_dir, task_id)
     out_file = outline_path(batch_dir, task_id)
 
+    def elapsed_ms() -> int:
+        return int((time.monotonic() - task_started_at) * 1000)
+
     if not prompt_file.exists():
-        return OutlineResult(task_id, None, str(out_file), "failed", f"missing prompt: {prompt_file}")
+        return OutlineResult(task_id, None, str(out_file), "failed", f"missing prompt: {prompt_file}", duration_ms=elapsed_ms())
     if out_file.exists() and not force and not dry_run:
-        return OutlineResult(task_id, None, str(out_file), "skipped", "outline exists; use --force to replace")
+        return OutlineResult(task_id, None, str(out_file), "skipped", "outline exists; use --force to replace", duration_ms=elapsed_ms())
 
     task_prompt = prompt_file.read_text()
     raw_source = extract_source_swipe(task_prompt)
@@ -1014,13 +1154,13 @@ def generate_outline_for_task(
     if raw_source:
         source_file = resolve_source_path(raw_source, base_path)
         if not source_file.exists():
-            return OutlineResult(task_id, str(source_file), str(out_file), "failed", "source swipe file not found")
+            return OutlineResult(task_id, str(source_file), str(out_file), "failed", "source swipe file not found", duration_ms=elapsed_ms())
         source_copy = source_file.read_text()
 
     spec = load_json(batch_dir / "spec.json") if (batch_dir / "spec.json").exists() else {}
     lfs_format_path = lfs_format_path_for_task(spec, task_id, task_prompt)
     if not lfs_format_path:
-        return OutlineResult(task_id, str(source_file) if source_file else None, str(out_file), "failed", "missing per-task LFS format routing")
+        return OutlineResult(task_id, str(source_file) if source_file else None, str(out_file), "failed", "missing per-task LFS format routing", duration_ms=elapsed_ms())
     if not (base_path / lfs_format_path).exists():
         return OutlineResult(
             task_id,
@@ -1028,6 +1168,7 @@ def generate_outline_for_task(
             str(out_file),
             "failed",
             f"LFS format template not found: {lfs_format_path}",
+            duration_ms=elapsed_ms(),
         )
     lfs_format_text = read_optional_text(base_path / lfs_format_path)
     dr_system_text = read_optional_text(base_path / "components" / "dr-system.md")
@@ -1061,9 +1202,25 @@ def generate_outline_for_task(
             product_facts=product_facts,
             mechanism_lock=mechanism_lock,
         )
+    prompt_chars = len(outline_prompt)
+    emit_outline_event(
+        "outline_task_started",
+        task_id=task_id,
+        source_swipe=bool(source_file),
+        prompt_chars=prompt_chars,
+        max_attempts=max(max_attempts, 1),
+    )
 
     if dry_run:
-        return OutlineResult(task_id, str(source_file) if source_file else None, str(out_file), "dry_run")
+        emit_outline_event("outline_task_completed", task_id=task_id, status="dry_run", duration_ms=elapsed_ms())
+        return OutlineResult(
+            task_id,
+            str(source_file) if source_file else None,
+            str(out_file),
+            "dry_run",
+            duration_ms=elapsed_ms(),
+            prompt_chars=prompt_chars,
+        )
 
     attempts = max(max_attempts, 1)
     text = ""
@@ -1077,9 +1234,11 @@ def generate_outline_for_task(
                 "failed",
                 "outline task cancelled after timeout",
                 attempts=attempt - 1,
+                duration_ms=elapsed_ms(),
+                prompt_chars=prompt_chars,
             )
         if attempt == 1:
-            text = call_claude(outline_prompt, model)
+            text = call_claude(outline_prompt, model, task_id=task_id, attempt=attempt, phase="initial")
         else:
             repair_prompt = build_outline_repair_prompt(
                 task_id=task_id,
@@ -1092,7 +1251,7 @@ def generate_outline_for_task(
                 product_facts=product_facts,
                 mechanism_lock=mechanism_lock,
             )
-            text = call_claude(repair_prompt, model)
+            text = call_claude(repair_prompt, model, task_id=task_id, attempt=attempt, phase="repair")
         if cancel_event is not None and cancel_event.is_set():
             return OutlineResult(
                 task_id,
@@ -1101,10 +1260,13 @@ def generate_outline_for_task(
                 "failed",
                 "outline task cancelled after timeout",
                 attempts=attempt,
+                duration_ms=elapsed_ms(),
+                prompt_chars=prompt_chars,
             )
         text = normalize_outline_title(text, lfs_format_path, product)
         text = sanitize_forbidden_outline_terms(text, product_config)
         text = sanitize_outline_meta(text)
+        text = ensure_offer_truth_lock(text, product_config)
         errors = validate_outline_contract(
             text,
             expected_format_path=lfs_format_path,
@@ -1119,17 +1281,42 @@ def generate_outline_for_task(
                     "failed",
                     "outline task cancelled after timeout",
                     attempts=attempt,
+                    duration_ms=elapsed_ms(),
+                    prompt_chars=prompt_chars,
                 )
             out_file.parent.mkdir(parents=True, exist_ok=True)
             out_file.write_text(text.rstrip() + "\n")
+            emit_outline_event(
+                "outline_task_completed",
+                task_id=task_id,
+                status="generated" if attempt == 1 else "repaired",
+                attempts=attempt,
+                duration_ms=elapsed_ms(),
+            )
             return OutlineResult(
                 task_id,
                 str(source_file) if source_file else None,
                 str(out_file),
                 "generated" if attempt == 1 else "repaired",
                 attempts=attempt,
+                duration_ms=elapsed_ms(),
+                prompt_chars=prompt_chars,
             )
+        emit_outline_event(
+            "outline_task_validation_failed",
+            task_id=task_id,
+            attempt=attempt,
+            errors=errors,
+            duration_ms=elapsed_ms(),
+        )
 
+    emit_outline_event(
+        "outline_task_failed",
+        task_id=task_id,
+        attempts=attempts,
+        errors=errors,
+        duration_ms=elapsed_ms(),
+    )
     return OutlineResult(
         task_id,
         str(source_file) if source_file else None,
@@ -1137,6 +1324,9 @@ def generate_outline_for_task(
         "failed",
         "; ".join(errors),
         attempts=attempts,
+        duration_ms=elapsed_ms(),
+        prompt_chars=prompt_chars,
+        final_errors=errors,
     )
 
 
@@ -1387,7 +1577,7 @@ def main() -> None:
     parser.add_argument("--workers", "-w", type=int, default=4, help="Parallel outline calls (default: 4)")
     parser.add_argument("--force", action="store_true", help="Replace existing outline files")
     parser.add_argument("--dry-run", action="store_true", help="Validate source mapping without calling Claude or writing outlines")
-    parser.add_argument("--max-attempts", type=int, default=3, help="Generation + deterministic repair attempts per outline (default: 3)")
+    parser.add_argument("--max-attempts", type=int, default=2, help="Generation + deterministic repair attempts per outline (default: 2)")
     parser.add_argument("--task-timeout-seconds", type=int, default=DEFAULT_TASK_TIMEOUT_SECONDS,
                         help=f"Fail pending outline tasks after this many seconds without progress (default: {DEFAULT_TASK_TIMEOUT_SECONDS})")
     parser.add_argument("--task-id", dest="task_ids", action="append",

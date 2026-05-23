@@ -33,14 +33,19 @@ export type EngineProgressEvent = {
   failed?: number;
   completedTasks?: number;
   pendingTasks?: number;
+  taskId?: string;
   provider?: string;
   model?: string;
+  phase?: string;
+  promptChars?: number;
+  promptHash?: string;
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
   latencyMs?: number;
-  status?: "succeeded" | "failed";
+  status?: string;
   validation?: unknown;
+  errors?: string[];
   error?: string;
   reason?: string;
   ts?: string;
@@ -688,14 +693,19 @@ function parseProgressLine(raw: string): EngineProgressEvent | null {
       failed: numberValue(record.failed),
       completedTasks: numberValue(record.completed_tasks) ?? numberValue(record.completedTasks),
       pendingTasks: numberValue(record.pending_tasks) ?? numberValue(record.pendingTasks),
+      taskId: stringValue(record.task_id) ?? stringValue(record.taskId) ?? undefined,
       provider: stringValue(record.provider) ?? undefined,
       model: stringValue(record.model) ?? undefined,
+      phase: stringValue(record.phase) ?? undefined,
+      promptChars: numberValue(record.prompt_chars) ?? numberValue(record.promptChars),
+      promptHash: stringValue(record.prompt_hash) ?? stringValue(record.promptHash) ?? undefined,
       inputTokens: numberValue(record.input_tokens) ?? numberValue(record.inputTokens),
       outputTokens: numberValue(record.output_tokens) ?? numberValue(record.outputTokens),
       cachedTokens: numberValue(record.cached_tokens) ?? numberValue(record.cachedTokens),
       latencyMs: numberValue(record.latency_ms) ?? numberValue(record.latencyMs),
-      status: record.status === "failed" ? "failed" : record.status === "succeeded" ? "succeeded" : undefined,
+      status: stringValue(record.status) ?? undefined,
       validation: safeProgressValidation(record.validation),
+      errors: safeProgressStringArray(record.errors),
       error: safeProgressString(record.error),
       reason: safeProgressString(record.reason),
       ts: stringValue(record.ts) ?? undefined,
@@ -703,6 +713,14 @@ function parseProgressLine(raw: string): EngineProgressEvent | null {
   } catch {
     return null;
   }
+}
+
+function safeProgressStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .slice(0, 12)
+    .map((item) => item.slice(0, 240));
 }
 
 function safeProgressValidation(value: unknown): unknown {

@@ -604,7 +604,7 @@ class StreamingTestEngine {
     return items;
   }
 
-  async *streamCreateAds() {
+  async *streamCreateAds(_input?: CreateAdsInput) {
     yield { index: 1, total: 2, adCount: 2, items: [this.item(1), this.item(2)] };
     this.secondChunkStartedAfterPublished = this.publishedSnapshots.length >= 2;
     yield { index: 2, total: 2, adCount: 2, items: [this.item(3), this.item(4)] };
@@ -635,7 +635,7 @@ class StoppingStreamingEngine {
     return items;
   }
 
-  async *streamCreateAds() {
+  async *streamCreateAds(_input?: CreateAdsInput) {
     await this.beforeYield();
     yield { index: 1, total: 2, adCount: 2, items: [this.item(1), this.item(2)] };
     yield { index: 2, total: 2, adCount: 2, items: [this.item(3), this.item(4)] };
