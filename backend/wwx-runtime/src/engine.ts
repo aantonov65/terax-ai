@@ -47,6 +47,9 @@ export type EngineProgressEvent = {
   validation?: unknown;
   errors?: string[];
   error?: string;
+  errorCategory?: string;
+  errorCode?: string;
+  retryable?: boolean;
   reason?: string;
   ts?: string;
 };
@@ -707,6 +710,9 @@ function parseProgressLine(raw: string): EngineProgressEvent | null {
       validation: safeProgressValidation(record.validation),
       errors: safeProgressStringArray(record.errors),
       error: safeProgressString(record.error),
+      errorCategory: stringValue(record.error_category) ?? stringValue(record.errorCategory) ?? undefined,
+      errorCode: stringValue(record.error_code) ?? stringValue(record.errorCode) ?? undefined,
+      retryable: booleanValue(record.retryable),
       reason: safeProgressString(record.reason),
       ts: stringValue(record.ts) ?? undefined,
     };
@@ -741,6 +747,10 @@ function safeProgressString(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function subprocessMaxBufferBytes(): number {

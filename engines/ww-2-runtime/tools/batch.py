@@ -13,7 +13,9 @@ import os
 import subprocess
 import sys
 import shutil
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import time
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +47,10 @@ class TaskResult:
     output_file: str | None
     error: str | None = None
     heartbeat_file: str | None = None
+    error_category: str | None = None
+    error_code: str | None = None
+    retryable: bool = True
+    duration_ms: int | None = None
 
     @property
     def success(self) -> bool:
@@ -54,6 +60,8 @@ class TaskResult:
 
 def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult:
     """Run generate.py once for a task."""
+    started_at = time.monotonic()
+    emit_generation_task_event("generation_task_started", task_id=task_id)
     generate_script = TOOLS_DIR / "generate.py"
     heartbeat_file = output_dir.parent / "generation-heartbeats" / f"{task_id}.jsonl"
     cmd = [
@@ -75,15 +83,29 @@ def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult
         cwd=str(base_path),
         env={**os.environ, "PYTHONPATH": str(TOOLS_DIR), "PYTHONUNBUFFERED": "1"},
     )
-    forward_ai_call_events(result.stdout)
+    forward_progress_events(result.stdout)
+    duration_ms = int((time.monotonic() - started_at) * 1000)
 
     if result.returncode != 0:
+        failure = classify_generation_failure(result.stdout, result.stderr)
+        emit_generation_task_event(
+            "generation_task_failed",
+            task_id=task_id,
+            duration_ms=duration_ms,
+            error_category=failure["error_category"],
+            error_code=failure["error_code"],
+            retryable=failure["retryable"],
+        )
         return TaskResult(
             task_id=task_id,
             generated=False,
             output_file=None,
-            error=(result.stderr or result.stdout).strip(),
+            error=failure["message"],
             heartbeat_file=str(heartbeat_file),
+            error_category=failure["error_category"],
+            error_code=failure["error_code"],
+            retryable=bool(failure["retryable"]),
+            duration_ms=duration_ms,
         )
 
     output_file = None
@@ -99,6 +121,10 @@ def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult
             output_file=None,
             error="generate.py exited 0 but did not print a Generated: path",
             heartbeat_file=str(heartbeat_file),
+            error_category="generation_output_missing",
+            error_code="GENERATION_OUTPUT_MISSING",
+            retryable=True,
+            duration_ms=duration_ms,
         )
 
     if not Path(output_file).exists():
@@ -108,12 +134,22 @@ def generate_once(task_id: str, output_dir: Path, base_path: Path) -> TaskResult
             output_file=output_file,
             error="generate.py reported an output path that does not exist",
             heartbeat_file=str(heartbeat_file),
+            error_category="generation_output_missing",
+            error_code="GENERATION_OUTPUT_MISSING",
+            retryable=True,
+            duration_ms=duration_ms,
         )
 
-    return TaskResult(task_id=task_id, generated=True, output_file=output_file, heartbeat_file=str(heartbeat_file))
+    emit_generation_task_event(
+        "generation_task_completed",
+        task_id=task_id,
+        duration_ms=duration_ms,
+        output_file=output_file,
+    )
+    return TaskResult(task_id=task_id, generated=True, output_file=output_file, heartbeat_file=str(heartbeat_file), duration_ms=duration_ms)
 
 
-def forward_ai_call_events(stdout: str) -> None:
+def forward_progress_events(stdout: str) -> None:
     for line in stdout.splitlines():
         raw = line.strip()
         if not raw.startswith("{") or not raw.endswith("}"):
@@ -124,6 +160,70 @@ def forward_ai_call_events(stdout: str) -> None:
             continue
         if payload.get("event") in {"ai_call_finished", "ai_call_failed"}:
             print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def emit_generation_task_event(event: str, *, task_id: str, **payload) -> None:
+    record = {
+        "event": event,
+        "stage": "batch_generation",
+        "task_id": task_id,
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+        **payload,
+    }
+    print(json.dumps(record, sort_keys=True), flush=True)
+
+
+def classify_generation_failure(stdout: str, stderr: str) -> dict[str, object]:
+    combined = f"{stdout}\n{stderr}".lower()
+    if "anthropic_credit_low" in combined or "credit balance is too low" in combined or "purchase credits" in combined:
+        return {
+            "error_category": "provider_billing_insufficient",
+            "error_code": "ANTHROPIC_CREDIT_LOW",
+            "retryable": False,
+            "message": "Provider billing/credits are unavailable.",
+        }
+    if "anthropic_auth_failed" in combined or "authentication" in combined or "unauthorized" in combined or "api key" in combined:
+        return {
+            "error_category": "provider_auth_failed",
+            "error_code": "ANTHROPIC_AUTH_FAILED",
+            "retryable": False,
+            "message": "Provider authentication is unavailable.",
+        }
+    if "anthropic_rate_limited" in combined or "rate limit" in combined or "rate_limit" in combined:
+        return {
+            "error_category": "provider_rate_limited",
+            "error_code": "ANTHROPIC_RATE_LIMITED",
+            "retryable": True,
+            "message": "Provider rate limit reached.",
+        }
+    if (
+        "anthropic_transient" in combined
+        or "overloaded" in combined
+        or "timeout" in combined
+        or "timed out" in combined
+        or "connection" in combined
+        or "error code: 500" in combined
+        or "error code: 502" in combined
+        or "error code: 503" in combined
+        or "error code: 504" in combined
+        or "error code: 529" in combined
+    ):
+        return {
+            "error_category": "provider_transient",
+            "error_code": "ANTHROPIC_TRANSIENT",
+            "retryable": True,
+            "message": "Provider temporarily unavailable.",
+        }
+    return {
+        "error_category": "generation_failed",
+        "error_code": "GENERATION_FAILED",
+        "retryable": True,
+        "message": "Script generation failed.",
+    }
+
+
+def fail_fast_generation_category(category: str | None) -> bool:
+    return category in {"provider_billing_insufficient", "provider_auth_failed"}
 
 
 def load_spec(batch_id: str, base_path: Path | None = None) -> dict:
@@ -218,18 +318,39 @@ def run_batch(
             result = _run_task(item)
             results.append(result)
             print_result(result)
+            if fail_fast_generation_category(result.error_category):
+                remaining = [task_id for task_id, _, _ in task_args[len(results):]]
+                results.extend(blocked_results(remaining, result))
+                break
     else:
         executor_cls = ThreadPoolExecutor if generation_executor_mode(spec) == "thread" else ProcessPoolExecutor
         with executor_cls(max_workers=workers) as executor:
-            future_to_task = {executor.submit(_run_task, item): item[0] for item in task_args}
-            for future in as_completed(future_to_task):
-                task_id = future_to_task[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    result = TaskResult(task_id=task_id, generated=False, output_file=None, error=str(e))
-                results.append(result)
-                print_result(result)
+            pending = deque(task_args)
+            future_to_task = {}
+            aborted_by: TaskResult | None = None
+
+            def submit_more() -> None:
+                while pending and len(future_to_task) < workers and aborted_by is None:
+                    item = pending.popleft()
+                    future_to_task[executor.submit(_run_task, item)] = item[0]
+
+            submit_more()
+            while future_to_task:
+                done, _ = wait(future_to_task, return_when=FIRST_COMPLETED)
+                for future in done:
+                    task_id = future_to_task.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        result = TaskResult(task_id=task_id, generated=False, output_file=None, error=str(e))
+                    results.append(result)
+                    print_result(result)
+                    if fail_fast_generation_category(result.error_category):
+                        aborted_by = result
+                submit_more()
+            if aborted_by is not None and pending:
+                remaining = [task_id for task_id, _, _ in pending]
+                results.extend(blocked_results(remaining, aborted_by))
 
     results.extend(skipped)
     generated = sum(1 for r in results if r.generated)
@@ -255,6 +376,10 @@ def run_batch(
                 "output_file": r.output_file,
                 "error": r.error,
                 "heartbeat_file": r.heartbeat_file,
+                "error_category": r.error_category,
+                "error_code": r.error_code,
+                "retryable": r.retryable,
+                "duration_ms": r.duration_ms,
             }
             for r in results
         ],
@@ -308,6 +433,28 @@ def generation_executor_mode(spec: dict) -> str:
     if str(spec.get("format") or "").lower() == "lfs":
         return "thread"
     return "process"
+
+
+def blocked_results(task_ids: list[str], cause: TaskResult) -> list[TaskResult]:
+    blocked: list[TaskResult] = []
+    for task_id in task_ids:
+        emit_generation_task_event(
+            "generation_task_failed",
+            task_id=task_id,
+            error_category=cause.error_category or "generation_blocked",
+            error_code=cause.error_code or "GENERATION_BLOCKED",
+            retryable=False,
+        )
+        blocked.append(TaskResult(
+            task_id=task_id,
+            generated=False,
+            output_file=None,
+            error="Generation skipped because provider is unavailable.",
+            error_category=cause.error_category or "generation_blocked",
+            error_code=cause.error_code or "GENERATION_BLOCKED",
+            retryable=False,
+        ))
+    return blocked
 
 
 def print_result(result: TaskResult) -> None:

@@ -571,28 +571,40 @@ export class RuntimeWorker {
           latencyMs: event.latencyMs ?? null,
           costUsd,
           status,
-          errorCategory: status === "failed" ? "provider_call_failed" : null,
+          errorCategory: status === "failed" ? event.errorCategory ?? "provider_call_failed" : null,
+          errorCode: status === "failed" ? event.errorCode ?? null : null,
         });
       }
       return;
     }
 
-    if (event.event === "outline_task_started" || event.event === "outline_task_completed" || event.event === "outline_task_failed" || event.event === "outline_task_validation_failed") {
+    if (
+      event.event === "outline_task_started"
+      || event.event === "outline_task_completed"
+      || event.event === "outline_task_failed"
+      || event.event === "outline_task_validation_failed"
+      || event.event === "generation_task_started"
+      || event.event === "generation_task_completed"
+      || event.event === "generation_task_failed"
+    ) {
       const type = event.event === "outline_task_started"
+        || event.event === "generation_task_started"
         ? "engine_task_started"
-        : event.event === "outline_task_completed"
+        : event.event === "outline_task_completed" || event.event === "generation_task_completed"
           ? "engine_task_completed"
           : "engine_task_failed";
-      const taskId = event.taskId ?? "outline_task";
+      const taskId = event.taskId ?? (event.event.startsWith("generation_") ? "generation_task" : "outline_task");
+      const taskStage = event.event.startsWith("generation_") ? "batch_generation" : "lfs_outline";
+      const taskLabel = event.event.startsWith("generation_") ? "Generation" : "Outline";
       await this.store.appendEvent({
         workspaceId: claim.workspaceId,
         batchId: claim.batchId,
         runId: claim.run.id,
         type,
-        stage: "lfs_outline",
+        stage: taskStage,
         message: event.event === "outline_task_validation_failed"
           ? `Outline validation failed for ${taskId}`
-          : `Outline ${type.replace("engine_task_", "")} for ${taskId}`,
+          : `${taskLabel} ${type.replace("engine_task_", "")} for ${taskId}`,
         payload: safeEngineProgressPayload(event),
       });
       if (this.telemetry) {
@@ -602,7 +614,7 @@ export class RuntimeWorker {
           eventType: type,
           messageSafe: event.event === "outline_task_validation_failed"
             ? "Outline validation failed"
-            : `Outline ${type.replace("engine_task_", "")}`,
+            : `${taskLabel} ${type.replace("engine_task_", "")}`,
           metadataSafe: safeEngineProgressPayload(event),
         });
       }
@@ -850,6 +862,9 @@ function safeEngineProgressPayload(event: EngineProgressEvent): Record<string, u
   if (event.cachedTokens !== undefined) payload.cached_tokens = event.cachedTokens;
   if (event.latencyMs !== undefined) payload.latency_ms = event.latencyMs;
   if (event.status) payload.status = event.status;
+  if (event.errorCategory) payload.error_category = event.errorCategory;
+  if (event.errorCode) payload.error_code = event.errorCode;
+  if (event.retryable !== undefined) payload.retryable = event.retryable;
   if (event.validation && typeof event.validation === "object") payload.validation = event.validation;
   if (event.errors?.length) payload.errors = event.errors;
   if (event.error) payload.error_safe = event.error;

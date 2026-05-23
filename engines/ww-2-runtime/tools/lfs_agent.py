@@ -724,6 +724,8 @@ class LfsAgentRunner:
 
     def run_stage(self, stage: str) -> Any:
         started = time.monotonic()
+        failure_kind: str | None = None
+        failure_retryable = True
         self.state["status"] = "running"
         self.state["current_stage"] = stage
         self.state["active_lock_owner"] = {"pid": os.getpid(), "stage": stage, "started_at": now()}
@@ -734,6 +736,8 @@ class LfsAgentRunner:
             ok = step_ok(payload) or stage in NON_BLOCKING_PAYLOAD_STAGES
             status = "ok" if ok else "failed"
             if not ok:
+                failure_kind = self.payload_failure_kind(payload)
+                failure_retryable = self.payload_retryable(payload)
                 raise RuntimeError(self.payload_failure_summary(stage, payload))
             return payload
         except Exception as exc:
@@ -752,11 +756,12 @@ class LfsAgentRunner:
                 primary_action={"kind": "repair", "label": "Repair and continue"},
                 secondary_action={"kind": "provide_input", "label": "Provide missing input"},
                 operator_needed=True,
-                retryable=True,
+                retryable=failure_retryable,
+                failure_kind=failure_kind,
                 reason=str(exc),
             )
             self.save_state()
-            self.event("stage_failed", stage=stage, error=str(exc))
+            self.event("stage_failed", stage=stage, error=str(exc), error_category=failure_kind, retryable=failure_retryable)
             raise
 
     def payload_failure_summary(self, stage: str, payload: Any) -> str:
@@ -783,6 +788,30 @@ class LfsAgentRunner:
                     bits.append(f"{task_id}: {error[:240]}")
                     break
         return "; ".join(bits)
+
+    def payload_failure_kind(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        if isinstance(payload.get("error_category"), str):
+            return str(payload["error_category"])
+        results = payload.get("results")
+        if isinstance(results, list):
+            for item in results:
+                if isinstance(item, dict) and isinstance(item.get("error_category"), str):
+                    return str(item["error_category"])
+        return None
+
+    def payload_retryable(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return True
+        if payload.get("retryable") is False:
+            return False
+        results = payload.get("results")
+        if isinstance(results, list):
+            for item in results:
+                if isinstance(item, dict) and item.get("retryable") is False:
+                    return False
+        return True
 
     def finish_stage(self, stage: str, payload: Any) -> list[Path]:
         artifacts = self.stage_artifacts(stage)

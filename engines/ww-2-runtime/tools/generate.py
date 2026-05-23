@@ -39,6 +39,56 @@ class GenerationValidationError(Exception):
     """Model output is not a shippable generated script."""
 
 
+def provider_failure(exc: Exception) -> dict[str, object]:
+    text = str(exc).lower()
+    type_name = type(exc).__name__
+    if "credit balance is too low" in text or "purchase credits" in text or "billing" in text:
+        return {
+            "error_category": "provider_billing_insufficient",
+            "error_code": "ANTHROPIC_CREDIT_LOW",
+            "retryable": False,
+            "message": "Provider billing/credits are unavailable.",
+        }
+    if "authentication" in text or "unauthorized" in text or "api key" in text:
+        return {
+            "error_category": "provider_auth_failed",
+            "error_code": "ANTHROPIC_AUTH_FAILED",
+            "retryable": False,
+            "message": "Provider authentication is unavailable.",
+        }
+    if "rate limit" in text or "rate_limit" in text or "429" in text:
+        return {
+            "error_category": "provider_rate_limited",
+            "error_code": "ANTHROPIC_RATE_LIMITED",
+            "retryable": True,
+            "message": "Provider rate limit reached.",
+        }
+    if (
+        "overloaded" in text
+        or "timeout" in text
+        or "timed out" in text
+        or "connection" in text
+        or "529" in text
+        or "500" in text
+        or "502" in text
+        or "503" in text
+        or "504" in text
+        or type_name in {"APITimeoutError", "APIConnectionError"}
+    ):
+        return {
+            "error_category": "provider_transient",
+            "error_code": "ANTHROPIC_TRANSIENT",
+            "retryable": True,
+            "message": "Provider temporarily unavailable.",
+        }
+    return {
+        "error_category": "provider_call_failed",
+        "error_code": "ANTHROPIC_API_ERROR",
+        "retryable": False,
+        "message": "Provider call failed.",
+    }
+
+
 class GenerationHeartbeat:
     """Append-only progress trail for long single-script generation calls."""
 
@@ -96,7 +146,16 @@ class GenerationHeartbeat:
         return round(time.monotonic() - self._model_started_at, 1)
 
 
-def emit_ai_call_event(*, model: str, status: str, started_at: float, usage=None) -> None:
+def emit_ai_call_event(
+    *,
+    model: str,
+    status: str,
+    started_at: float,
+    usage=None,
+    error_category: str | None = None,
+    error_code: str | None = None,
+    retryable: bool | None = None,
+) -> None:
     payload = {
         "event": "ai_call_finished" if status == "succeeded" else "ai_call_failed",
         "stage": "batch_generation",
@@ -109,6 +168,12 @@ def emit_ai_call_event(*, model: str, status: str, started_at: float, usage=None
         "latency_ms": int((time.monotonic() - started_at) * 1000),
         "ts": datetime.utcnow().isoformat(timespec="seconds"),
     }
+    if error_category:
+        payload["error_category"] = error_category
+    if error_code:
+        payload["error_code"] = error_code
+    if retryable is not None:
+        payload["retryable"] = retryable
     print(json.dumps(payload, sort_keys=True), flush=True)
 
 
@@ -263,8 +328,16 @@ def generate_ad(
     started_at = time.monotonic()
     try:
         message = client.messages.create(**api_kwargs)
-    except Exception:
-        emit_ai_call_event(model=api_kwargs["model"], status="failed", started_at=started_at)
+    except Exception as exc:
+        failure = provider_failure(exc)
+        emit_ai_call_event(
+            model=api_kwargs["model"],
+            status="failed",
+            started_at=started_at,
+            error_category=str(failure["error_category"]),
+            error_code=str(failure["error_code"]),
+            retryable=bool(failure["retryable"]),
+        )
         heartbeat.stop_model_call(status="failed")
         raise
     emit_ai_call_event(model=api_kwargs["model"], status="succeeded", started_at=started_at, usage=getattr(message, "usage", None))
@@ -335,8 +408,16 @@ def main():
         )
         print(f"Generated: {output_file}", flush=True)
     except anthropic.APIError as e:
-        heartbeat.mark("failed", error=str(e), error_type=type(e).__name__)
-        print(f"API Error: {e}", file=sys.stderr)
+        failure = provider_failure(e)
+        heartbeat.mark(
+            "failed",
+            error=str(failure["message"]),
+            error_type=type(e).__name__,
+            error_category=failure["error_category"],
+            error_code=failure["error_code"],
+            retryable=failure["retryable"],
+        )
+        print(f"API Error: {failure['message']} [{failure['error_code']}]", file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError as e:
         heartbeat.mark("failed", error=str(e), error_type=type(e).__name__)
